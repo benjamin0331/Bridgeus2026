@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<title>語意距離視覺化</title>
+
+<style>
+/* =========================
+   基本版面設定
+   ========================= */
+body {
+  margin: 0;
+  display: flex;
+  height: 100vh;
+  font-family: sans-serif;
+}
+
+/* 左側畫布 */
+svg {
+  flex: 1;
+  background: #fafafa;
+}
+
+/* 右側控制面板 */
+#controls {
+  width: 320px;
+  padding: 14px;
+  border-left: 1px solid #ccc;
+  overflow-y: auto;
+}
+
+.control-item {
+  margin-bottom: 14px;
+  font-size: 13px;
+}
+
+.control-item label {
+  display: block;
+  margin-bottom: 4px;
+}
+</style>
+</head>
+
+<body>
+
+<!-- =========================
+     SVG 畫布
+     ========================= -->
+<svg></svg>
+
+<!-- =========================
+     右側距離控制區
+     ========================= -->
+<div id="controls">
+<h3>語意距離控制</h3>
+<p style="font-size:12px;color:#555;">
+不知道該説什麽反正隨便打點字
+</p>
+</div>
+
+<!-- 引入 D3 -->
+<script src="https://d3js.org/d3.v7.min.js"></script>
+
+<script>
+
+/* =====================================================
+   1. 畫布尺寸設定
+   ===================================================== */
+
+const width = window.innerWidth - 320;
+const height = window.innerHeight;
+
+const svg = d3.select("svg")
+  .attr("width", width)
+  .attr("height", height);
+
+/* 建立一個群組 g，之後所有圖形都畫在這裡
+   這樣 zoom 時只要縮放這個 g 即可 */
+const container = svg.append("g");
+
+
+/* =====================================================
+   2. 節點資料（圓形大小 / 群體）
+   ===================================================== */
+
+const nodes = [
+  { id: "AI", size: 50, group: 1 },
+  { id: "情緒", size: 22, group: 2 },
+  { id: "對話", size: 24, group: 1 },
+  { id: "衝突", size: 30, group: 2 },
+  { id: "理解", size: 26, group: 3 },
+  { id: "偏見", size: 22, group: 2 },
+  { id: "溝通", size: 24, group: 1 },
+  { id: "立場", size: 26, group: 2 },
+  { id: "共識", size: 28, group: 3 },
+  { id: "理性", size: 15, group: 3 }
+];
+
+
+/* =====================================================
+   3. 顏色比例尺（群體分類用）
+   ===================================================== */
+
+const colorScale = d3.scaleOrdinal()
+  .domain([1,2,3])
+  .range(["#4a90e2", "#e94e77", "#50c878"]);
+
+
+/* =====================================================
+   4️. 關係資料（語意距離）
+   ===================================================== */
+
+const links = [
+  { source: "AI", target: "對話", sourceLabel:"AI", targetLabel:"對話", distance: 90 },
+  { source: "對話", target: "情緒", sourceLabel:"對話", targetLabel:"情緒", distance: 70 },
+  { source: "情緒", target: "衝突", sourceLabel:"情緒", targetLabel:"衝突", distance: 50 },
+  { source: "衝突", target: "理解", sourceLabel:"衝突", targetLabel:"理解", distance: 160 },
+  { source: "理解", target: "共識", sourceLabel:"理解", targetLabel:"共識", distance: 80 },
+  { source: "立場", target: "偏見", sourceLabel:"立場", targetLabel:"偏見", distance: 60 },
+  { source: "立場", target: "衝突", sourceLabel:"立場", targetLabel:"衝突", distance: 100 },
+  { source: "理性", target: "共識", sourceLabel:"理性", targetLabel:"共識", distance: 70 },
+  { source: "溝通", target: "理解", sourceLabel:"溝通", targetLabel:"理解", distance: 90 }
+];
+
+
+/* =====================================================
+   5️. Force 模擬（物理引擎）
+   ===================================================== */
+
+const simulation = d3.forceSimulation(nodes)
+  .force("link",
+    d3.forceLink(links)
+      .id(d => d.id)
+      .distance(d => d.distance)
+  )
+  .force("charge", d3.forceManyBody().strength(-150))  // 節點排斥力
+  .force("x", d3.forceX(width/2).strength(0.02))      // X 軸回中心
+  .force("y", d3.forceY(height/2).strength(0.02))     // Y 軸回中心
+  .force("collision", d3.forceCollide().radius(d => d.size + 5))
+  .alphaDecay(0.03);
+
+
+/* =====================================================
+   6️. 畫線
+   ===================================================== */
+
+const link = container.append("g")
+  .attr("stroke", "#999")
+  .attr("stroke-opacity", 0.6)
+  .selectAll("line")
+  .data(links)
+  .enter()
+  .append("line");
+
+
+/* =====================================================
+   7️. 畫節點（圓 + 文字）
+   ===================================================== */
+
+const node = container.append("g")
+  .selectAll("g")
+  .data(nodes)
+  .enter()
+  .append("g");
+
+node.append("circle")
+  .attr("r", d => d.size)
+  .attr("fill", d => colorScale(d.group));
+
+node.append("text")
+  .text(d => d.id)
+  .attr("text-anchor", "middle")
+  .attr("dy", "0.35em")
+  .attr("fill", "white")
+  .style("font-size", "11px");
+
+
+/* =====================================================
+   8️. 節點拖曳功能
+   ===================================================== */
+
+const drag = d3.drag()
+  .on("start", (event, d) => {
+    if (!event.active) simulation.alphaTarget(0.3).restart();
+    d.fx = d.x;
+    d.fy = d.y;
+  })
+  .on("drag", (event, d) => {
+    d.fx = event.x;
+    d.fy = event.y;
+  })
+  .on("end", (event, d) => {
+    if (!event.active) simulation.alphaTarget(0);
+    d.fx = null;
+    d.fy = null;
+  });
+
+node.call(drag);
+
+
+/* =====================================================
+   9️. 每幀更新位置
+   ===================================================== */
+
+simulation.on("tick", () => {
+
+  link
+    .attr("x1", d => d.source.x)
+    .attr("y1", d => d.source.y)
+    .attr("x2", d => d.target.x)
+    .attr("y2", d => d.target.y);
+
+  node
+    .attr("transform", d => `translate(${d.x}, ${d.y})`);
+});
+
+
+/* =====================================================
+   . 滾輪縮放 + 拖動畫布
+   ===================================================== */
+
+const zoom = d3.zoom()
+  .scaleExtent([0.3, 3]) // 最小與最大縮放倍率
+  .on("zoom", (event) => {
+    container.attr("transform", event.transform);
+  });
+
+svg.call(zoom);
+
+
+/* =====================================================
+   1️1️. 右側距離滑桿控制
+   ===================================================== */
+
+const controls = d3.select("#controls");
+
+links.forEach(l => {
+
+  const item = controls.append("div")
+    .attr("class", "control-item");
+
+  item.append("label")
+    .text(`${l.sourceLabel} ↔ ${l.targetLabel}`);
+
+   // item.append("label") 
+   // .text(${l.source} ↔ ${l.target}); 
+
+  item.append("input")
+    .attr("type", "range")
+    .attr("min", 20)
+    .attr("max", 350)
+    .attr("value", l.distance)
+    .on("change", function () {
+      l.distance = +this.value;
+      simulation.force("link").distance(d => d.distance);
+      simulation.alpha(0.08).restart(); // 拖動滑桿時縮放的速度
+    });
+
+});
+
+</script>
+</body>
+</html>
