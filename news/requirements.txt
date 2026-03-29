@@ -1,6 +1,0 @@
-requests
-feedparser
-trafilatura
-googlenewsdecoder
-beautifulsoup4
-psycopg2-binary
