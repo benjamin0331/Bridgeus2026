@@ -23,8 +23,18 @@ from pathlib import Path
 BACKEND_DIR = Path(__file__).resolve().parent.parent / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
 
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
+# 載入 .env（優先找 backend/.env，其次找專案根目錄 .env）
+try:
+    from dotenv import load_dotenv
+    for env_path in [BACKEND_DIR / ".env", BACKEND_DIR.parent / ".env"]:
+        if env_path.exists():
+            load_dotenv(env_path)
+            break
+except ImportError:
+    pass
+
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_chroma import Chroma
 from langchain_core.documents import Document
 
 from core.llm_provider import get_embeddings
@@ -58,10 +68,12 @@ def load_json_documents(data_dir: Path) -> list[Document]:
             if not content.strip():
                 continue
 
+            # 支援 source/title 直接在頂層，或 nested 在 metadata 欄位內
+            nested = item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}
             metadata = {
-                "source": item.get("source", json_path.name),
-                "title": item.get("title", ""),
-                "collection": item.get("collection", ""),
+                "source": item.get("source") or nested.get("source", json_path.name),
+                "title": item.get("title") or item.get("document", ""),
+                "collection": item.get("collection") or nested.get("type", ""),
             }
             documents.append(Document(page_content=content, metadata=metadata))
 

@@ -13,6 +13,7 @@ Usage:
 
 import os
 from enum import Enum
+from functools import lru_cache
 
 
 class LLMProvider(Enum):
@@ -35,63 +36,95 @@ def _get_provider() -> LLMProvider:
 
 def get_llm(temperature: float = 0.3):
     """
-    Return a LangChain-compatible Chat LLM instance.
+    Return a cached LangChain-compatible Chat LLM instance.
 
     Switches provider based on LLM_PROVIDER env var.
+    Instances are cached per (provider, model, temperature) so repeated calls
+    — e.g. on every WebSocket message — do not rebuild the HTTP client.
     """
     provider = _get_provider()
 
     if provider == LLMProvider.GEMINI:
-        from langchain_google_genai import ChatGoogleGenerativeAI
-
-        model = os.getenv("GEMINI_CHAT_MODEL", "gemini-1.5-flash")
-        return ChatGoogleGenerativeAI(model=model, temperature=temperature)
+        model = os.getenv("GEMINI_CHAT_MODEL", "gemini-2.0-flash")
+        return _cached_llm(provider.value, model, temperature)
 
     elif provider == LLMProvider.CLAUDE:
-        # TODO: 正式開發階段切換至 Claude 3.5 Sonnet
-        from langchain_anthropic import ChatAnthropic
-
         model = os.getenv("CLAUDE_CHAT_MODEL", "claude-3-5-sonnet-20241022")
-        return ChatAnthropic(model=model, temperature=temperature)
+        return _cached_llm(provider.value, model, temperature)
 
     elif provider == LLMProvider.OPENAI:
-        from langchain_openai import ChatOpenAI
-
         model = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o")
-        return ChatOpenAI(model=model, temperature=temperature)
+        return _cached_llm(provider.value, model, temperature)
 
     raise ValueError(f"Unhandled provider: {provider}")
+
+
+@lru_cache(maxsize=16)
+def _cached_llm(provider: str, model: str, temperature: float):
+    """Inner cached factory — keyed by (provider, model, temperature)."""
+    p = LLMProvider(provider)
+
+    if p == LLMProvider.GEMINI:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        return ChatGoogleGenerativeAI(model=model, temperature=temperature)
+
+    if p == LLMProvider.CLAUDE:
+        from langchain_anthropic import ChatAnthropic
+        return ChatAnthropic(model=model, temperature=temperature)
+
+    if p == LLMProvider.OPENAI:
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(model=model, temperature=temperature)
+
+    raise ValueError(f"Unhandled provider: {p}")
 
 
 def get_embeddings():
     """
-    Return a LangChain-compatible Embeddings instance.
+    Return a cached LangChain-compatible Embeddings instance.
 
-    Note: Embedding model 不一定要跟 chat model 同 provider。
-    目前統一跟隨 LLM_PROVIDER，未來可獨立設定。
+    由 EMBEDDING_PROVIDER 環境變數獨立控制，與 LLM_PROVIDER 解耦。
+    支援：local（sentence-transformers）、gemini、openai
+    預設：local
+
+    HuggingFaceEmbeddings 在首次呼叫時載入模型權重，後續呼叫直接回傳同一實例，
+    避免每次 DialogueAgent.__init__() 都重新載入。
     """
-    provider = _get_provider()
+    embedding_provider = os.getenv("EMBEDDING_PROVIDER", "local").lower()
 
-    if provider == LLMProvider.GEMINI:
-        from langchain_google_genai import GoogleGenerativeAIEmbeddings
-
-        model = os.getenv("GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-001")
-        return GoogleGenerativeAIEmbeddings(model=model)
-
-    elif provider == LLMProvider.CLAUDE:
-        # Anthropic 沒有自己的 embedding model，用 OpenAI 或 HuggingFace
-        # 正式版改用 Sentence-Transformers (local, 免費, 無 API 依賴)
-        from langchain_huggingface import HuggingFaceEmbeddings
-
+    if embedding_provider == "local":
         model = os.getenv(
             "EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
         )
+        return _cached_embeddings(embedding_provider, model)
+
+    elif embedding_provider == "gemini":
+        model = os.getenv("GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-001")
+        return _cached_embeddings(embedding_provider, model)
+
+    elif embedding_provider == "openai":
+        model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+        return _cached_embeddings(embedding_provider, model)
+
+    raise ValueError(
+        f"Unsupported EMBEDDING_PROVIDER: '{embedding_provider}'. "
+        f"Choose from: local, gemini, openai"
+    )
+
+
+@lru_cache(maxsize=8)
+def _cached_embeddings(provider: str, model: str):
+    """Inner cached factory — keyed by (provider, model)."""
+    if provider == "local":
+        from langchain_huggingface import HuggingFaceEmbeddings
         return HuggingFaceEmbeddings(model_name=model)
 
-    elif provider == LLMProvider.OPENAI:
-        from langchain_openai import OpenAIEmbeddings
+    if provider == "gemini":
+        from langchain_google_genai import GoogleGenerativeAIEmbeddings
+        return GoogleGenerativeAIEmbeddings(model=model)
 
-        model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+    if provider == "openai":
+        from langchain_openai import OpenAIEmbeddings
         return OpenAIEmbeddings(model=model)
 
-    raise ValueError(f"Unhandled provider: {provider}")
+    raise ValueError(f"Unsupported EMBEDDING_PROVIDER: '{provider}'")

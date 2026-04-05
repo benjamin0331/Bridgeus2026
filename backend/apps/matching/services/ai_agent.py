@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -109,6 +109,13 @@ class DialogueMessage:
     role: str  # "user" or "agent"
     content: str
 
+    def to_dict(self) -> dict:
+        return {"role": self.role, "content": self.content}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "DialogueMessage":
+        return cls(role=data["role"], content=data["content"])
+
 
 @dataclass
 class DialogueSession:
@@ -118,6 +125,10 @@ class DialogueSession:
     儲存對話歷史、使用者立場資訊、當前階段等。
     由 M4 Dialogue Room 在 WebSocket 連線時建立，
     每次使用者發言後更新，傳入 DialogueAgent.respond()。
+
+    序列化：
+        data = session.to_dict()       # 存入 Django cache / DB
+        session = DialogueSession.from_dict(data)  # WebSocket 重連後還原
     """
     topic: str = ""
     topic_description: str = ""
@@ -127,6 +138,37 @@ class DialogueSession:
     user_stance_score: float = 0.5
     dialogue_phase: DialoguePhase = DialoguePhase.ENGAGEMENT
     history: list[DialogueMessage] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        """序列化為 JSON-safe dict，供 Django cache 或資料庫儲存。"""
+        return {
+            "topic": self.topic,
+            "topic_description": self.topic_description,
+            "agent_stance": self.agent_stance,
+            "agent_stance_summary": self.agent_stance_summary,
+            "user_stance_label": self.user_stance_label,
+            "user_stance_score": self.user_stance_score,
+            "dialogue_phase": self.dialogue_phase.value,
+            "history": [m.to_dict() for m in self.history],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "DialogueSession":
+        """從 dict 還原 DialogueSession（WebSocket 重連後使用）。"""
+        return cls(
+            topic=data.get("topic", ""),
+            topic_description=data.get("topic_description", ""),
+            agent_stance=data.get("agent_stance", ""),
+            agent_stance_summary=data.get("agent_stance_summary", ""),
+            user_stance_label=data.get("user_stance_label", ""),
+            user_stance_score=data.get("user_stance_score", 0.5),
+            dialogue_phase=DialoguePhase(
+                data.get("dialogue_phase", DialoguePhase.ENGAGEMENT.value)
+            ),
+            history=[
+                DialogueMessage.from_dict(m) for m in data.get("history", [])
+            ],
+        )
 
     @property
     def turn_count(self) -> int:
@@ -139,19 +181,38 @@ class DialogueSession:
     def add_agent_message(self, content: str) -> None:
         self.history.append(DialogueMessage(role="agent", content=content))
 
-    def format_history(self) -> str:
+    def format_history(
+        self,
+        exclude_last: bool = False,
+        max_turns: int | None = None,
+    ) -> str:
         """
         將對話歷史格式化為 prompt 可讀的字串。
+
+        Args:
+            exclude_last: 若為 True，排除最後一則訊息。
+                          respond() 傳入 exclude_last=True 以避免最新使用者訊息
+                          同時出現在 {conversation_history}（system）和
+                          ("human", "{user_message}") 兩處造成重複。
+            max_turns:    保留最近 N 輪（一輪 = 使用者 + 代理人各一則）。
+                          None 表示不限制。DialogueAgent 預設傳入 20，
+                          避免長對話超過 LLM context window。
 
         格式：
             使用者：我覺得核能不安全...
             對話者：其實從數據來看...
         """
-        if not self.history:
+        messages = self.history[:-1] if exclude_last and self.history else self.history
+
+        if max_turns is not None:
+            # 一輪 = 2 則訊息（user + agent），取最後 max_turns 輪
+            messages = messages[-(max_turns * 2):]
+
+        if not messages:
             return "（這是對話的第一輪，尚無歷史紀錄。）"
 
         lines = []
-        for msg in self.history:
+        for msg in messages:
             label = "使用者" if msg.role == "user" else "對話者"
             lines.append(f"{label}：{msg.content}")
         return "\n\n".join(lines)
@@ -193,6 +254,7 @@ class DialogueAgent:
         retriever_k: int = 5,
         temperature: float = 0.3,
         prompt_file: str = _DEFAULT_PROMPT_FILE,
+        max_history_turns: int = 20,
     ):
         self._chroma_dir = chroma_dir or os.getenv(
             "CHROMA_PERSIST_DIR", "./chroma_data"
@@ -200,6 +262,7 @@ class DialogueAgent:
         self._collection_name = collection_name
         self._retriever_k = retriever_k
         self._temperature = temperature
+        self._max_history_turns = max_history_turns
 
         # Load system prompt from file
         system_prompt_text = load_system_prompt(prompt_file)
@@ -264,14 +327,24 @@ class DialogueAgent:
             "user_stance_label": session.user_stance_label,
             "user_stance_score": str(session.user_stance_score),
             "rag_context": rag_context,
-            "conversation_history": session.format_history(),
+            "conversation_history": session.format_history(
+                exclude_last=True, max_turns=self._max_history_turns
+            ),
             "turn_count": str(session.turn_count),
             "dialogue_phase": session.dialogue_phase.value,
             "user_message": latest_msg,
         }
 
         chain = self._prompt | self._llm | StrOutputParser()
-        return chain.invoke(prompt_vars)
+        try:
+            return chain.invoke(prompt_vars)
+        except Exception as exc:
+            # LLM API 失敗（rate limit、network、invalid key）時，
+            # 回傳 graceful 訊息讓 M4 能繼續維持 WebSocket 連線，
+            # 同時把原始例外往上拋供 caller 記錄 log。
+            raise RuntimeError(
+                f"DialogueAgent LLM 呼叫失敗（輪次 {session.turn_count}）：{exc}"
+            ) from exc
 
     def respond_simple(self, user_message: str) -> str:
         """
@@ -298,13 +371,23 @@ class DialogueAgent:
 if __name__ == "__main__":
     """
     快速測試：
-        LLM_PROVIDER=gemini python -m apps.matching.services.ai_agent
+        python -m apps.matching.services.ai_agent
 
     前置：
         python scripts/build_knowledge_base.py \
-            --input data/articles.json data/ptt_processed.json data/laws_processed.json \
-            --collection nuclear_energy_all
+            --data-dir data/nuclear_energy --collection nuclear_energy_all
     """
+    from pathlib import Path as _Path
+    try:
+        from dotenv import load_dotenv as _load_dotenv
+        for _p in [_Path(__file__).resolve().parents[3] / ".env",
+                   _Path(__file__).resolve().parents[4] / ".env"]:
+            if _p.exists():
+                _load_dotenv(_p)
+                break
+    except ImportError:
+        pass
+
     print("🚀 初始化 DialogueAgent...")
     agent = DialogueAgent(collection_name="nuclear_energy_all")
 
@@ -320,20 +403,26 @@ if __name__ == "__main__":
         user_stance_score=0.75,
     )
 
-    test_messages = [
-        "核電廠萬一出事就是不可逆的災難，日本福島就是最好的例子，台灣這麼小根本承受不起。",
-        "就算技術進步了，核廢料問題到現在還是無解啊，你要放哪裡？",
-    ]
+    print("輸入 'exit' 或按 Ctrl+C 結束對話\n")
 
-    for msg in test_messages:
-        print(f"\n{'='*60}")
-        print(f"👤 使用者：{msg}")
-        session.add_user_message(msg)
+    while True:
+        try:
+            user_input = input("👤 你：").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\n對話結束。")
+            break
 
-        session.dialogue_phase = DialoguePhase.from_turn_count(
-            session.turn_count
-        )
+        if user_input.lower() == "exit":
+            print("對話結束。")
+            break
+        if not user_input:
+            continue
 
+        session.add_user_message(user_input)
+        session.dialogue_phase = DialoguePhase.from_turn_count(session.turn_count)
+
+        print("\n🤖 代理人：", end="", flush=True)
         response = agent.respond(session)
         session.add_agent_message(response)
-        print(f"\n🤖 代理人：{response}")
+        print(response)
+        print(f"\n[第 {session.turn_count} 輪 | 階段：{session.dialogue_phase.value}]\n")
