@@ -21,7 +21,7 @@ def get_llm(temperature: float = 0.3):
     Model 預設 claude-3-5-sonnet-20241022，可透過 CLAUDE_CHAT_MODEL 覆寫。
     以 lru_cache 快取，避免每次 WebSocket 訊息都重建 HTTP client。
     """
-    model = os.getenv("CLAUDE_CHAT_MODEL", "claude-3-5-sonnet-20241022")
+    model = os.getenv("CLAUDE_CHAT_MODEL", "claude-sonnet-4-6")
     return _cached_llm(model, temperature)
 
 
