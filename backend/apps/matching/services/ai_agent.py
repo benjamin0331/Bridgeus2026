@@ -377,7 +377,10 @@ if __name__ == "__main__":
         python scripts/build_knowledge_base.py \
             --data-dir data/nuclear_energy --collection nuclear_energy_all
     """
+    import os
     from pathlib import Path as _Path
+
+    # 載入 .env
     try:
         from dotenv import load_dotenv as _load_dotenv
         for _p in [_Path(__file__).resolve().parents[3] / ".env",
@@ -388,6 +391,17 @@ if __name__ == "__main__":
     except ImportError:
         pass
 
+    # 若 ANTHROPIC_API_KEY 未設定，在執行時詢問
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print("═" * 50)
+        key = input("請輸入 Anthropic API Key：").strip()
+        if not key:
+            print("未輸入 API Key，程式結束。")
+            raise SystemExit(1)
+        os.environ["ANTHROPIC_API_KEY"] = key
+        print("═" * 50)
+
+    print("正在載入 embedding 模型（首次執行需下載 ~90MB，請稍候）...")
     print("🚀 初始化 DialogueAgent...")
     agent = DialogueAgent(collection_name="nuclear_energy_all")
 
