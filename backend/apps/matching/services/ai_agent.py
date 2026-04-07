@@ -391,33 +391,15 @@ if __name__ == "__main__":
     except ImportError:
         pass
 
-    # 若 LLM_PROVIDER 未設定，詢問要使用哪個 provider 及對應的 API key
-    if not os.environ.get("LLM_PROVIDER"):
-        print("═" * 50)
-        print("選擇 LLM Provider：")
-        print("  1. claude  (Anthropic)")
-        print("  2. gemini  (Google)")
-        choice = input("請輸入 1 或 2（預設 1）：").strip() or "1"
-        provider = "gemini" if choice == "2" else "claude"
-        os.environ["LLM_PROVIDER"] = provider
-        print(f"已選擇：{provider}")
-
-    provider = os.environ.get("LLM_PROVIDER", "claude")
-    if provider == "claude" and not os.environ.get("ANTHROPIC_API_KEY"):
+    # 若 ANTHROPIC_API_KEY 未設定，在執行時詢問
+    if not os.environ.get("ANTHROPIC_API_KEY"):
         print("═" * 50)
         key = input("請輸入 Anthropic API Key：").strip()
         if not key:
             print("未輸入 API Key，程式結束。")
             raise SystemExit(1)
         os.environ["ANTHROPIC_API_KEY"] = key
-    elif provider == "gemini" and not os.environ.get("GOOGLE_API_KEY"):
         print("═" * 50)
-        key = input("請輸入 Google API Key：").strip()
-        if not key:
-            print("未輸入 API Key，程式結束。")
-            raise SystemExit(1)
-        os.environ["GOOGLE_API_KEY"] = key
-    print("═" * 50)
 
     print("正在載入 embedding 模型（首次執行需下載 ~90MB，請稍候）...")
     print("🚀 初始化 DialogueAgent...")
