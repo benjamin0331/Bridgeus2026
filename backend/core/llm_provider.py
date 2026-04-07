@@ -45,7 +45,7 @@ def get_llm(temperature: float = 0.3):
     provider = _get_provider()
 
     if provider == LLMProvider.GEMINI:
-        model = os.getenv("GEMINI_CHAT_MODEL", "gemini-2.0-flash")
+        model = os.getenv("GEMINI_CHAT_MODEL", "gemini-1.5-flash")
         return _cached_llm(provider.value, model, temperature)
 
     elif provider == LLMProvider.CLAUDE:
