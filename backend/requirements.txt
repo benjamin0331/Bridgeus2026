@@ -1,39 +1,47 @@
 # Django Core
-Django==5.0.6
-djangorestframework==3.15.2
-django-cors-headers==4.4.0
+Django>=5.0.6
+djangorestframework>=3.15.2
+django-cors-headers>=4.4.0
 
 # ASGI / WebSocket
-channels==4.1.0
-channels-redis==4.2.0
-daphne==4.1.2
+channels>=4.1.0
+channels-redis>=4.2.0
+daphne>=4.1.2
 
 # Auth
-djangorestframework-simplejwt==5.3.1
+djangorestframework-simplejwt>=5.3.1
 
 # Database
-psycopg2-binary==2.9.9
-pgvector==0.3.2
+psycopg2-binary>=2.9.9
+pgvector>=0.3.2
 
 # AI / NLP
-anthropic==0.34.2
-openai==1.45.0
-sentence-transformers==3.1.1
-langchain==0.3.1
-langchain-community==0.3.1
+anthropic==0.89.0
+sentence-transformers==5.3.0
+tokenizers==0.22.2
+transformers==5.4.0
+torch==2.11.0
+
+# LangChain
+langchain==1.2.14
+langchain-core==1.2.23
+langchain-community==0.4.1
+langchain-text-splitters==1.1.1
 langchain-anthropic==1.4.0
-langchain-google-genai==2.0.5
 langchain-huggingface==1.2.1
-langchain-chroma==0.1.4
-chromadb==0.5.11
-nltk==3.9.1
+langchain-chroma==1.1.0
+
+# Vector Store
+chromadb==1.5.5
 
 # Utils
-python-decouple==3.8
-celery==5.4.0
-redis==5.1.0
+python-dotenv==1.2.2
+python-decouple>=3.8
+celery>=5.4.0
+redis>=5.1.0
+nltk>=3.9.1
 
 # Dev / Testing
-pytest==8.3.3
-pytest-django==4.9.0
-factory-boy==3.3.1
+pytest>=8.3.3
+pytest-django>=4.9.0
+factory-boy>=3.3.1
