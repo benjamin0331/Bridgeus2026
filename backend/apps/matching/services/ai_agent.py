@@ -136,6 +136,7 @@ class DialogueSession:
     agent_stance_summary: str = ""
     user_stance_label: str = ""
     user_stance_score: float = 0.5
+    user_initial_argument: str = ""
     dialogue_phase: DialoguePhase = DialoguePhase.ENGAGEMENT
     history: list[DialogueMessage] = field(default_factory=list)
 
@@ -148,6 +149,7 @@ class DialogueSession:
             "agent_stance_summary": self.agent_stance_summary,
             "user_stance_label": self.user_stance_label,
             "user_stance_score": self.user_stance_score,
+            "user_initial_argument": self.user_initial_argument,
             "dialogue_phase": self.dialogue_phase.value,
             "history": [m.to_dict() for m in self.history],
         }
@@ -162,6 +164,7 @@ class DialogueSession:
             agent_stance_summary=data.get("agent_stance_summary", ""),
             user_stance_label=data.get("user_stance_label", ""),
             user_stance_score=data.get("user_stance_score", 0.5),
+            user_initial_argument=data.get("user_initial_argument", ""),
             dialogue_phase=DialoguePhase(
                 data.get("dialogue_phase", DialoguePhase.ENGAGEMENT.value)
             ),
@@ -326,6 +329,7 @@ class DialogueAgent:
             "agent_stance_summary": session.agent_stance_summary,
             "user_stance_label": session.user_stance_label,
             "user_stance_score": str(session.user_stance_score),
+            "user_initial_argument": session.user_initial_argument,
             "rag_context": rag_context,
             "conversation_history": session.format_history(
                 exclude_last=True, max_turns=self._max_history_turns
