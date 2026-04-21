@@ -1,61 +1,19 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-venv/
-.venv/
-env/
-*.egg-info/
-dist/
-build/
+.DS_Store
+AGENTS.md
+BridgeUs_2026/
+BridgeUs/agent.md
+BridgeUs_Django_withLLM/agent.md
 
-# Django
-db.sqlite3
-media/
-staticfiles/
-local_settings.py
+# Local backups created while flattening the existing nested repos
+.git.local-backup/
+.git.backup/
+.git.backup-*/
 
-# Environment
-.env
-.env.*
-!.env.example
-
-# IDE
-.vscode/
+# Editor files
 .idea/
+.vscode/
 *.swp
 *.swo
 
-# OS
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# Secrets & Keys
-*.pem
-*.key
-*.cert
-
-# ChromaDB local data
-chroma_data/
-chroma_db/
-
-# Node (frontend)
-node_modules/
-dist/
-.next/
-.nuxt/
-build/
-
 # Logs
 *.log
-logs/
-
-# Coverage
-.coverage
-htmlcov/
-.pytest_cache/
-
-# Docker
-.docker/

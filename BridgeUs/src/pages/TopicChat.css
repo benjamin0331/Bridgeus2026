@@ -1,0 +1,160 @@
+/* --- 聊天頁面主容器佈局 --- */
+.chat-page-container {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  height: 100%;
+  gap: 30px;
+  align-items: stretch;
+  padding: 0 20px 20px 20px;
+  box-sizing: border-box;
+}
+
+/* 左側：對話與互動核心區域 */
+.chat-left-interaction-area {
+  flex: 2;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: 100%;
+}
+
+/* --- 標題區塊：縮減間距以最大化對話空間 --- */
+.current-topic-section {
+  margin-top: 10px;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+
+.topic-title {
+  font-size: 28px;
+  font-weight: bold;
+  margin: 0;
+  line-height: 1.2;
+  color: #1a1a1a;
+}
+
+/* --- 訊息歷史顯示區：設定為自動捲動並填滿剩餘高度 --- */
+.chat-messages-display {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px; 
+  min-height: 0;
+  padding-right: 10px;
+  margin-bottom: 15px;
+}
+
+/* 訊息列基礎佈局 */
+.message-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+/* 使用者訊息樣式：透過 flex-direction 反轉排列方向 (頭像在右) */
+.message-row.user-message {
+  flex-direction: row-reverse; 
+  text-align: right;
+}
+
+/* 訊息發送者資訊 (頭像與名稱) */
+.message-user-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.message-avatar {
+  width: 45px;
+  height: 45px;
+  border-radius: 50%;
+  background-color: #eee;
+  object-fit: cover;
+}
+
+.message-username {
+  font-size: 11px;
+  color: #888;
+  white-space: nowrap;
+}
+
+/* 對話氣泡基礎樣式 */
+.message-bubble {
+  padding: 10px 16px;
+  border-radius: 18px;
+  font-size: 15px;
+  line-height: 1.5;
+  max-width: 70%;
+  word-wrap: break-word;
+  background-color: #f0f0f0;
+  color: #333;
+}
+
+/* 使用者專屬氣泡樣式 */
+.user-message .message-bubble {
+  background-color: #f2e9e4;
+  border-bottom-right-radius: 4px;
+}
+
+/* --- 底部對話輸入區域 --- */
+.chat-input-area {
+  flex-shrink: 0;
+  margin-bottom: 5px;
+}
+
+.chat-text-input {
+  width: 100%;
+  padding: 14px 25px;
+  border-radius: 15px;
+  border: none;
+  background-color: #f1ede8;
+  font-size: 16px;
+  box-sizing: border-box;
+  color: #333;
+}
+
+.chat-text-input:focus {
+  outline: 2px solid #e0d8cf;
+}
+
+/* --- 右側功能導航區：包含主要功能盒與次要工具列 --- */
+.chat-right-function-area {
+  flex: 1.2;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* 右側主要功能區塊佔比 */
+.right-major-feature-box { 
+  flex: 9; 
+  background: #eee; 
+  border-radius: 20px; 
+}
+
+/* 右側底部小功能列 */
+.right-minor-feature-row { 
+  flex: 1.5; 
+  display: flex; 
+  gap: 15px; 
+}
+
+.minor-feature-box { 
+  flex: 1; 
+  background: #eee; 
+  border-radius: 15px; 
+}
+
+/* 客製化捲動條樣式 (WebKit 瀏覽器) */
+.chat-messages-display::-webkit-scrollbar { 
+  width: 6px; 
+}
+
+.chat-messages-display::-webkit-scrollbar-thumb { 
+  background: rgba(0,0,0,0.1); 
+  border-radius: 10px; 
+}
