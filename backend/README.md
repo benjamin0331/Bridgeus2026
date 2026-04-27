@@ -8,6 +8,32 @@ This repository contains:
 - The RAG dialogue agent under `apps/matching/services/ai_agent.py`
 - Knowledge-base build scripts and source data under `scripts/` and `data/`
 
+## Git Notes
+
+Current workspace note:
+
+- As of April 22, 2026, `/Users/light/code` is not an active git working tree because `.git` is absent.
+- The old git metadata directory currently exists as `/Users/light/code/.git.removed-20260422`.
+- Any future chat that needs git operations should check the workspace state first instead of assuming `/Users/light/code` is still a live repo.
+
+Last known git layout before `.git` was removed:
+
+- Intended main repo root: `/Users/light/code`
+- Main repo remote: `https://github.com/bridgeus2026/Bridgeus2026.git`
+- Main working branch used in previous sessions: `feat/Light`
+- Backend-only mirror repo: `https://github.com/Bridge-US2026/Light_Django_backend.git`
+- The backend-only repo should receive only the contents of `backend/`, not the whole monorepo.
+
+Recommended first checks for future git work:
+
+```bash
+ls -la /Users/light/code
+git -C /Users/light/code status
+```
+
+If `/Users/light/code/.git` is still missing, a future chat should inspect `.git.removed-20260422`
+or re-clone from GitHub before attempting `pull`, `push`, or branch operations.
+
 The sibling frontend repo at `../BridgeUs` currently expects:
 
 - Vite dev server on `http://localhost:5173`

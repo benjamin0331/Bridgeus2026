@@ -8,6 +8,13 @@ class AIConversationSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
+class DialogueTopicSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    title = serializers.CharField(max_length=255)
+    description = serializers.CharField(max_length=500)
+    date = serializers.CharField(max_length=32)
+
+
 class DialogueSessionCreateSerializer(serializers.Serializer):
     topic_id = serializers.IntegerField()
     topic_title = serializers.CharField(max_length=255)

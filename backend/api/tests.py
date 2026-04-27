@@ -25,6 +25,21 @@ class DialogueSessionApiTests(APITestCase):
         )
         self.client.force_authenticate(user=self.user)
 
+    def test_topic_list_returns_supported_topics(self):
+        response = self.client.get("/api/dialogue/topics/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(
+            response.data[0],
+            {
+                "id": 102,
+                "title": "邁向淨零碳排的必經之路？",
+                "description": "台灣是否應重啟核電廠以應對能源轉型與減碳需求",
+                "date": "2026/03/22",
+            },
+        )
+
     def test_session_creation_requires_authentication(self):
         self.client.force_authenticate(user=None)
 

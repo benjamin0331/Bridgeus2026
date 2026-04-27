@@ -13,6 +13,7 @@ from .serializers import (
     AIConversationSerializer,
     DialogueReplySerializer,
     DialogueSessionCreateSerializer,
+    DialogueTopicSerializer,
 )
 
 SESSION_TTL_SECONDS = 60 * 60 * 12
@@ -21,11 +22,21 @@ DEFAULT_DIALOGUE_COLLECTION = os.getenv(
     "DEFAULT_DIALOGUE_COLLECTION",
     "general_knowledge",
 )
-TOPIC_CONFIGS = {
-    102: {
+DIALOGUE_TOPICS = (
+    {
+        "id": 102,
+        "title": "邁向淨零碳排的必經之路？",
+        "description": "台灣是否應重啟核電廠以應對能源轉型與減碳需求",
+        "date": "2026/03/22",
         "collection_name": "nuclear_energy_all",
-        "topic_description": "台灣是否應重啟核電廠以應對能源轉型與減碳需求",
     },
+)
+TOPIC_CONFIGS = {
+    topic["id"]: {
+        "collection_name": topic["collection_name"],
+        "topic_description": topic["description"],
+    }
+    for topic in DIALOGUE_TOPICS
 }
 
 
@@ -121,6 +132,14 @@ class AIConversationDetail(generics.RetrieveUpdateDestroyAPIView):
     queryset = AIConversation.objects.all()
     serializer_class = AIConversationSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+
+class DialogueTopicListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        serializer = DialogueTopicSerializer(DIALOGUE_TOPICS, many=True)
+        return Response(serializer.data)
 
 
 class DialogueSessionCreateView(APIView):
