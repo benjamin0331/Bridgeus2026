@@ -11,7 +11,7 @@ RUN npm run build
 FROM nginx:1.27-alpine
 
 ENV BACKEND_HOST=host.docker.internal
-ENV BACKEND_PORT=8000
+ENV BACKEND_PORT=8005
 
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html

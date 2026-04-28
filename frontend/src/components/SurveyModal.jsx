@@ -1,33 +1,60 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import './SurveyModal.css';
 
-function SurveyModal({ isOpen, onSubmit }) {
+function SurveyModal({ isOpen, survey, isLoading, error, onSubmit }) {
   const navigate = useNavigate();
   const [selectedAnswers, setSelectedAnswers] = useState({});
+  const [openAnswers, setOpenAnswers] = useState({});
+
+  const surveyTitle = survey?.title || '立場檢測問卷';
+  const surveySubtitle = survey?.subtitle || '正在整理問卷內容...';
+  const questions = survey?.questions || [];
+  const openQuestions = survey?.open_questions || [];
+  const scaleMin = survey?.scale?.min ?? 1;
+  const scaleMax = survey?.scale?.max ?? 7;
+  const scaleValues = Array.from(
+    { length: scaleMax - scaleMin + 1 },
+    (_, index) => scaleMin + index,
+  );
+  const minLabel = survey?.scale?.min_label || '';
+  const maxLabel = survey?.scale?.max_label || '';
+
+  useEffect(() => {
+    setSelectedAnswers({});
+    setOpenAnswers({});
+  }, [survey?.topic_id]);
 
   // 若 isOpen 為 false，則不渲染此元件
   if (!isOpen) return null;
-
-  // 問卷題目設定
-  const dynamicQuestions = [
-    { id: 1, tag: "整體態度", text: "整體而言，我認同目前對此議題的政策／主張方向" },
-    { id: 2, tag: "必要性評估", text: "我認為這個議題被提出來，是有其必要性與現實考量的" },
-    { id: 3, tag: "影響評估", text: "我認為此議題相關的措施，整體來說利大於弊" },
-    { id: 4, tag: "價值認同", text: "即使這項措施對我個人沒有直接好處，我仍能接受它" },
-    { id: 5, tag: "推動意願", text: "如果有機會，我會支持這類政策／主張持續推動或被討論" }
-  ];
 
   // 處理李克特量表 (Likert Scale) 的點擊事件
   const handleDotClick = (questionId, value) => {
     setSelectedAnswers(prev => ({ ...prev, [questionId]: value }));
   };
 
+  const handleOpenAnswerChange = (questionCode, value) => {
+    setOpenAnswers(prev => ({ ...prev, [questionCode]: value }));
+  };
+
   // 提交前的檢查邏輯
   const handleFinalSubmit = () => {
-    // 檢查是否所有題目皆已填寫 (本問卷固定 5 題)
-    if (Object.keys(selectedAnswers).length === 5) {
-      onSubmit({ answers: selectedAnswers }); // 呼叫父元件傳入的提交處理函式
+    const answeredLikertCount = questions.filter(
+      q => selectedAnswers[q.id] !== undefined,
+    ).length;
+    const answeredOpenCount = openQuestions.filter(
+      q => (openAnswers[q.code] || '').trim().length > 0,
+    ).length;
+
+    if (
+      questions.length > 0 &&
+      answeredLikertCount === questions.length &&
+      answeredOpenCount === openQuestions.length
+    ) {
+      onSubmit({
+        answers: selectedAnswers,
+        openAnswers,
+      });
     } else {
       alert("請填完所有問題再提交！");
     }
@@ -40,37 +67,65 @@ function SurveyModal({ isOpen, onSubmit }) {
         <div className="modal-close-btn" onClick={() => navigate('/')}>✕</div>
         
         <div className="survey-header">
-          <h2>立場檢測問卷</h2>
-          <p>為瞭解您的立場以便於快速幫您尋找配對用戶...</p>
+          <h2>{surveyTitle}</h2>
+          <p>{surveySubtitle}</p>
         </div>
 
         {/* 問卷題目區域 */}
         <div className="survey-grid">
-          {dynamicQuestions.map((q) => (
+          {isLoading && <div className="survey-status">正在載入問卷...</div>}
+          {!isLoading && error && <div className="survey-status survey-error">{error}</div>}
+          {!isLoading && !error && questions.map((q) => (
             <div key={q.id} className="survey-item">
               <h4>題目 {q.id} | {q.tag}</h4>
               <p>{q.text}</p>
-              
-              {/* 五階李克特量表設計 */}
+
+              {/* 李克特量表設計 */}
               <div className="likert-scale">
                 <div className="likert-line"></div>
-                {[1, 2, 3, 4, 5].map(v => (
-                  <div 
-                    key={v} 
-                    className={`likert-dot ${selectedAnswers[q.id] === v ? 'selected' : ''}`} 
-                    onClick={() => handleDotClick(q.id, v)} 
+                {scaleValues.map(v => (
+                  <div
+                    key={v}
+                    className={`likert-dot ${selectedAnswers[q.id] === v ? 'selected' : ''}`}
+                    onClick={() => handleDotClick(q.id, v)}
                   />
                 ))}
               </div>
+              {(minLabel || maxLabel) && (
+                <div className="likert-labels">
+                  <span>{minLabel}</span>
+                  <span>{maxLabel}</span>
+                </div>
+              )}
+            </div>
+          ))}
+
+          {!isLoading && !error && openQuestions.map((q) => (
+            <div key={q.code || q.id} className="survey-item survey-item-open">
+              <h4>題目 {q.id} | {q.tag}</h4>
+              <p>{q.text}</p>
+              <textarea
+                className="survey-open-textarea"
+                placeholder={q.placeholder || '請輸入你的回答'}
+                value={openAnswers[q.code] || ''}
+                onChange={(event) => handleOpenAnswerChange(q.code, event.target.value)}
+                rows={5}
+              />
+              {(q.min_sentences || q.max_sentences) && (
+                <div className="survey-open-hint">
+                  建議作答 {q.min_sentences || '?'}–{q.max_sentences || '?'} 句
+                </div>
+              )}
             </div>
           ))}
         </div>
 
         {/* 提交按鈕區域 */}
         <div className="survey-footer">
-          <button 
-            className="submit-survey-btn ready" 
+          <button
+            className="submit-survey-btn ready"
             onClick={handleFinalSubmit}
+            disabled={isLoading || Boolean(error) || questions.length === 0}
           >
             填寫完畢
           </button>

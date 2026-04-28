@@ -136,7 +136,7 @@ class DialogueSession:
     agent_stance: str = ""
     agent_stance_summary: str = ""
     user_stance_label: str = ""
-    user_stance_score: float = 0.5
+    user_stance_score: float = 4.0
     user_initial_argument: str = ""
     dialogue_phase: DialoguePhase = DialoguePhase.ENGAGEMENT
     history: list[DialogueMessage] = field(default_factory=list)
@@ -164,7 +164,7 @@ class DialogueSession:
             agent_stance=data.get("agent_stance", ""),
             agent_stance_summary=data.get("agent_stance_summary", ""),
             user_stance_label=data.get("user_stance_label", ""),
-            user_stance_score=data.get("user_stance_score", 0.5),
+            user_stance_score=data.get("user_stance_score", 4.0),
             user_initial_argument=data.get("user_initial_argument", ""),
             dialogue_phase=DialoguePhase(
                 data.get("dialogue_phase", DialoguePhase.ENGAGEMENT.value)
@@ -239,7 +239,7 @@ class DialogueAgent:
             agent_stance="支持重啟核電",
             agent_stance_summary="核電是兼顧減碳與穩定供電的務實選擇",
             user_stance_label="反對核電",
-            user_stance_score=0.75,
+            user_stance_score=2.0,
         )
 
         # 建立 agent（可指定不同 prompt 檔案）
@@ -368,7 +368,7 @@ class DialogueAgent:
             agent_stance="對立立場",
             agent_stance_summary="與使用者持相反觀點",
             user_stance_label="使用者立場",
-            user_stance_score=0.5,
+            user_stance_score=4.0,
         )
         session.add_user_message(user_message)
         return self.respond(session)
@@ -423,7 +423,7 @@ if __name__ == "__main__":
             "不應因恐懼而放棄"
         ),
         user_stance_label="反對核電",
-        user_stance_score=0.75,
+        user_stance_score=2.0,
     )
 
     print("輸入 'exit' 或按 Ctrl+C 結束對話\n")

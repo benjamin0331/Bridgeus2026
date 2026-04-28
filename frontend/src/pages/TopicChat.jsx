@@ -17,7 +17,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const { id } = useParams();
 
   const [showSurvey, setShowSurvey] = useState(true);
+  const [survey, setSurvey] = useState(null);
   const [surveyAnswers, setSurveyAnswers] = useState({});
+  const [surveyOpenAnswers, setSurveyOpenAnswers] = useState({});
+  const [isSurveyLoading, setIsSurveyLoading] = useState(true);
+  const [surveyError, setSurveyError] = useState('');
   const [sessionId, setSessionId] = useState(null);
   const [inputValue, setInputValue] = useState('');
   const [messages, setMessages] = useState([]);
@@ -34,6 +38,49 @@ function TopicChat({ user, issues, issuesLoaded }) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isSending]);
 
+  useEffect(() => {
+    if (!currentIssue) {
+      setSurvey(null);
+      setSurveyAnswers({});
+      setSurveyOpenAnswers({});
+      setIsSurveyLoading(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const fetchSurvey = async () => {
+      setIsSurveyLoading(true);
+      setSurveyError('');
+
+      try {
+        const response = await api.get(`/api/dialogue/topics/${id}/survey/`);
+        if (!cancelled) {
+          setSurvey(response.data);
+        }
+      } catch (error) {
+        const detail =
+          error?.response?.data?.detail ||
+          '目前無法載入問卷，請稍後再試。';
+
+        if (!cancelled) {
+          setSurvey(null);
+          setSurveyError(detail);
+        }
+      } finally {
+        if (!cancelled) {
+          setIsSurveyLoading(false);
+        }
+      }
+    };
+
+    fetchSurvey();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentIssue, id]);
+
   const ensureSession = async () => {
     if (sessionId) {
       return sessionId;
@@ -44,15 +91,17 @@ function TopicChat({ user, issues, issuesLoaded }) {
       topic_title: currentIssue?.title || `議題 ${id}`,
       topic_description: currentIssue?.description || '',
       survey_answers: surveyAnswers,
-      user_initial_argument: '',
+      survey_open_answers: surveyOpenAnswers,
+      user_initial_argument: surveyOpenAnswers.Q9 || '',
     });
 
     setSessionId(response.data.session_id);
     return response.data.session_id;
   };
 
-  const handleSurveySubmit = ({ answers }) => {
+  const handleSurveySubmit = ({ answers, openAnswers }) => {
     setSurveyAnswers(answers);
+    setSurveyOpenAnswers(openAnswers);
     setShowSurvey(false);
     setChatError('');
   };
@@ -143,7 +192,13 @@ function TopicChat({ user, issues, issuesLoaded }) {
   return (
     <div className="chat-page-container">
       {showSurvey && (
-        <SurveyModal isOpen={showSurvey} onSubmit={handleSurveySubmit} />
+        <SurveyModal
+          isOpen={showSurvey}
+          survey={survey}
+          isLoading={isSurveyLoading}
+          error={surveyError}
+          onSubmit={handleSurveySubmit}
+        />
       )}
 
       {/* 手機版：右側功能面板展開按鈕 */}

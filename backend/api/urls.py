@@ -5,6 +5,10 @@ urlpatterns = [
     path('conversations/', views.AIConversationListCreate.as_view()),
     path('conversations/<int:pk>/', views.AIConversationDetail.as_view()),
     path('dialogue/topics/', views.DialogueTopicListView.as_view()),
+    path(
+        'dialogue/topics/<int:topic_id>/survey/',
+        views.DialogueSurveyView.as_view(),
+    ),
     path('dialogue/sessions/', views.DialogueSessionCreateView.as_view()),
     path(
         'dialogue/sessions/<str:session_id>/reply/',

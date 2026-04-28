@@ -17,7 +17,7 @@ npm install
 npm run dev
 ```
 
-In development, Vite proxies `/api/*` to `http://127.0.0.1:8000` unless `VITE_PROXY_TARGET` is set.
+In development, Vite proxies `/api/*` to `http://127.0.0.1:8005` unless `VITE_PROXY_TARGET` is set.
 
 ## Docker Test Deployment
 
@@ -30,11 +30,11 @@ This repo includes a lightweight Docker setup intended for testing:
 ### Assumptions
 
 - Your Django project is already running on the host machine.
-- Django is reachable at `host.docker.internal:8000` from Docker.
+- Django is reachable at `host.docker.internal:8005` from Docker.
 - For local testing, the simplest command is usually:
 
 ```bash
-python manage.py runserver 0.0.0.0:8000
+python manage.py runserver 0.0.0.0:8005
 ```
 
 ### Start the frontend container
@@ -54,19 +54,19 @@ http://localhost:8080
 The compose file forwards `/api/*` to these defaults:
 
 - `BACKEND_HOST=host.docker.internal`
-- `BACKEND_PORT=8000`
+- `BACKEND_PORT=8005`
 
 You can override them at startup:
 
 ```bash
-BACKEND_HOST=host.docker.internal BACKEND_PORT=8001 docker compose up --build
+BACKEND_HOST=host.docker.internal BACKEND_PORT=8005 docker compose up --build
 ```
 
 ### Django-side notes
 
 If the frontend opens but API calls fail, check these first:
 
-- Django is actually listening on `0.0.0.0:8000`, not only on an isolated local interface.
+- Django is actually listening on `0.0.0.0:8005`, not only on an isolated local interface.
 - `ALLOWED_HOSTS` includes the host you use in the browser, usually `localhost` and `127.0.0.1`.
 - If you use CSRF protection on API endpoints, make sure your proxy setup and trusted origins match your Django settings.
 
