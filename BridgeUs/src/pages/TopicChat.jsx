@@ -13,7 +13,7 @@ function mapHistoryToMessages(history, userName) {
   }));
 }
 
-function TopicChat({ user, issues }) {
+function TopicChat({ user, issues, issuesLoaded }) {
   const { id } = useParams();
 
   const [showSurvey, setShowSurvey] = useState(true);
@@ -42,7 +42,7 @@ function TopicChat({ user, issues }) {
     const response = await api.post('/api/dialogue/sessions/', {
       topic_id: Number(id),
       topic_title: currentIssue?.title || `議題 ${id}`,
-      topic_description: currentIssue?.title || '',
+      topic_description: currentIssue?.description || '',
       survey_answers: surveyAnswers,
       user_initial_argument: '',
     });
@@ -132,8 +132,12 @@ function TopicChat({ user, issues }) {
     handleSendMessage();
   };
 
-  if (!issues || issues.length === 0) {
+  if (!issuesLoaded) {
     return <div style={{ padding: '50px', textAlign: 'center' }}>正在載入議題數據...</div>;
+  }
+
+  if (!currentIssue) {
+    return <div style={{ padding: '50px', textAlign: 'center' }}>找不到這個議題，請返回首頁重新選擇。</div>;
   }
 
   return (

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Routes, Route, useNavigate, useParams, useLocation } from 'react-router-dom'
 import './App.css'
 
-import { AUTH_LOGOUT_EVENT, clearAuthStorage, getAccessTokenExpiry } from './api/client'
+import api, { AUTH_LOGOUT_EVENT, clearAuthStorage, getAccessTokenExpiry } from './api/client'
 import Navbar from './components/Navbar'
 import Sidebar from './components/Sidebar'
 import HomePage from './pages/HomePage'
@@ -10,10 +10,10 @@ import TopicChat from './pages/TopicChat'
 import KnowledgeBase from './pages/KnowledgeBase'
 import LoginPage from './pages/LoginPage'
 
-function TopicChatRoute({ user, issues }) {
+function TopicChatRoute({ user, issues, issuesLoaded }) {
   const { id } = useParams();
 
-  return <TopicChat key={id} user={user} issues={issues} />;
+  return <TopicChat key={id} user={user} issues={issues} issuesLoaded={issuesLoaded} />;
 }
 
 function App() {
@@ -39,9 +39,12 @@ function App() {
   const [authMessage, setAuthMessage] = useState('');
   // 議題資料列表
   const [issues, setIssues] = useState([]);
+  const [issuesLoaded, setIssuesLoaded] = useState(false);
 
   const handleLogin = useCallback((nextUser) => {
     setAuthMessage('');
+    setIssues([]);
+    setIssuesLoaded(false);
     setUser(nextUser);
   }, []);
 
@@ -49,6 +52,8 @@ function App() {
     clearAuthStorage();
     setAuthMessage(message);
     setUser(null);
+    setIssues([]);
+    setIssuesLoaded(false);
     navigate('/', { replace: true });
   }, [navigate]);
 
@@ -87,27 +92,37 @@ function App() {
     return () => window.clearTimeout(timerId);
   }, [handleLogout, user]);
 
-  // 元件掛載時模擬從後端 API 獲取資料
   useEffect(() => {
+    if (!user) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
     const fetchIssuesFromBackend = async () => {
       try {
-        // 模擬網路延遲 1.5 秒
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        
-        // 模擬後端回傳的議題清單
-        const backendData = [
-          { id: 101, title: "正義與人權的終極辯論", date: "2026/03/21" },
-          { id: 102, title: "邁向淨零碳排的必經之路？", date: "2026/03/22" },
-          { id: 103, title: "租屋市場透明化與房價調控", date: "2026/03/23" },
-          { id: 104, title: "勞動法規如何應對數位自動化", date: "2026/03/24" },
-        ];
-        setIssues(backendData);
+        const response = await api.get('/api/dialogue/topics/');
+        if (!cancelled) {
+          setIssues(Array.isArray(response.data) ? response.data : []);
+        }
       } catch (error) {
         console.error("Data fetching error:", error);
+        if (!cancelled) {
+          setIssues([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setIssuesLoaded(true);
+        }
       }
     };
+
     fetchIssuesFromBackend();
-  }, []);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
 
   // 權限驗證邏輯：若使用者未登入，強制導向並僅顯示登入頁面
   if (!user) {
@@ -131,10 +146,29 @@ function App() {
         <div className="content-area">
           <Routes>
             {/* 系統主要路由配置 */}
-            <Route path="/" element={<HomePage navigate={navigate} userName={user.name} issues={issues} />} />
+            <Route
+              path="/"
+              element={
+                <HomePage
+                  navigate={navigate}
+                  userName={user.name}
+                  issues={issues}
+                  issuesLoaded={issuesLoaded}
+                />
+              }
+            />
             
             {/* 議題對話頁面：根據動態 ID 顯示內容 */}
-            <Route path="/topic/:id" element={<TopicChatRoute user={user} issues={issues} />} />
+            <Route
+              path="/topic/:id"
+              element={
+                <TopicChatRoute
+                  user={user}
+                  issues={issues}
+                  issuesLoaded={issuesLoaded}
+                />
+              }
+            />
             
             {/* 觀點知識庫頁面 */}
             <Route path="/kb" element={<KnowledgeBase />} />
