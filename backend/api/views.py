@@ -447,6 +447,9 @@ class DialogueSessionReplyView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
+        from apps.matching.services.ai_agent import split_into_chunks
+
+        chunks = split_into_chunks(reply)
         session.add_agent_message(reply)
         session_record["session"] = session.to_dict()
         cache.set(cache_key, session_record, timeout=SESSION_TTL_SECONDS)
@@ -454,6 +457,7 @@ class DialogueSessionReplyView(APIView):
         return Response(
             {
                 "reply": reply,
+                "chunks": chunks,
                 "dialogue_phase": session.dialogue_phase.value,
                 "history": session_record["session"]["history"],
             }

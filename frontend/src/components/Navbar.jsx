@@ -1,11 +1,11 @@
-function Navbar({ navigate, userId, onLogout, hideLogout = false }) {
+function Navbar({ navigate, userName, onLogout, hideLogout = false }) {
   return (
     <nav className="top-navigation">
       <div className="brand-logo" onClick={() => navigate('/')} style={{ cursor: 'pointer' }}>
         BridgeUs
       </div>
       <div className="top-navigation-actions">
-        <div className="user-profile-name">{userId}</div>
+        <div className="user-profile-name">{userName}</div>
         {!hideLogout && (
           <button type="button" className="logout-btn" onClick={() => onLogout()}>
             登出

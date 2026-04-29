@@ -142,7 +142,12 @@ function App() {
 
   return (
     <div className="app-container">
-      <Navbar navigate={navigate} userId={user.id} onLogout={handleLogout} hideLogout={isTopicPage} />
+      <Navbar
+        navigate={navigate}
+        userName={user.name || user.username || user.id}
+        onLogout={handleLogout}
+        hideLogout={isTopicPage}
+      />
 
       <div className="main-layout-wrapper">
         <div className="content-area">

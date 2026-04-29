@@ -84,6 +84,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'corsheaders',
+    'channels',
     'rest_framework',
     'rest_framework_simplejwt',
     'api',
@@ -120,6 +121,13 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'BridgeUs_Django.wsgi.application'
+ASGI_APPLICATION = 'BridgeUs_Django.asgi.application'
+
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels.layers.InMemoryChannelLayer',
+    },
+}
 
 
 # Database

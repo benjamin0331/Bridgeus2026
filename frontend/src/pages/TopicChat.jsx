@@ -1,10 +1,63 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+/* eslint-disable react-hooks/set-state-in-effect */
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useParams } from 'react-router-dom';
 import './TopicChat.css';
 import SurveyModal from '../components/SurveyModal';
 import api from '../api/client';
 
 const MATCHING_POLL_INTERVAL_MS = 3000;
+
+function getWebSocketBaseUrl() {
+  const configuredBase = import.meta.env.VITE_WS_BASE_URL;
+  if (configuredBase) {
+    return configuredBase.replace(/\/$/, '');
+  }
+
+  const apiBase = import.meta.env.VITE_API_BASE_URL || '';
+  if (apiBase.startsWith('http://') || apiBase.startsWith('https://')) {
+    return apiBase.replace(/^http/, 'ws').replace(/\/$/, '');
+  }
+
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}${apiBase}`.replace(/\/$/, '');
+}
+
+function buildDialogueWebSocketUrl(sessionId, token) {
+  const query = token ? `?token=${encodeURIComponent(token)}` : '';
+  return `${getWebSocketBaseUrl()}/ws/dialogue/${sessionId}/${query}`;
+}
+
+function waitForSocketOpen(socket) {
+  if (socket.readyState === WebSocket.OPEN) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error('WebSocket 連線逾時'));
+    }, 5000);
+
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      socket.removeEventListener('open', handleOpen);
+      socket.removeEventListener('error', handleError);
+    };
+
+    const handleOpen = () => {
+      cleanup();
+      resolve();
+    };
+
+    const handleError = () => {
+      cleanup();
+      reject(new Error('WebSocket 連線失敗'));
+    };
+
+    socket.addEventListener('open', handleOpen);
+    socket.addEventListener('error', handleError);
+  });
+}
 
 function mapHistoryToMessages(history, userName) {
   return history.map((message, index) => ({
@@ -89,6 +142,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const [inputValue, setInputValue] = useState('');
   const [messages, setMessages] = useState([]);
   const [isSending, setIsSending] = useState(false);
+  const [isAgentStreaming, setIsAgentStreaming] = useState(false);
   const [chatError, setChatError] = useState('');
 
   const [matchingState, setMatchingState] = useState(null);
@@ -105,6 +159,10 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const messagesEndRef = useRef(null);
   const isComposingRef = useRef(false);
   const textareaRef = useRef(null);
+  const wsRef = useRef(null);
+  const wsSessionIdRef = useRef(null);
+  const currentAgentMsgIdRef = useRef(null);
+  const isSendingRef = useRef(false);
   const activeMatchRef = useRef({ roomId: null, status: null, topicId: null });
   const leaveRequestSentRef = useRef(false);
   const currentIssue = issues?.find((item) => item.id === parseInt(id, 10));
@@ -115,6 +173,18 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const isMatchChatReady = Boolean(
     isMatchingMode && matchingState?.status === 'matched' && matchingState?.room_id,
   );
+
+  useEffect(() => {
+    isSendingRef.current = isSending;
+  }, [isSending]);
+
+  useEffect(() => {
+    return () => {
+      wsRef.current?.close();
+      wsRef.current = null;
+      wsSessionIdRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -143,6 +213,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setMessages([]);
     setIsSending(false);
     setChatError('');
+    setIsAgentStreaming(false);
+    currentAgentMsgIdRef.current = null;
+    wsRef.current?.close();
+    wsRef.current = null;
+    wsSessionIdRef.current = null;
     setMatchingState(null);
     setIsMatchingStateLoading(isMatchingMode);
     setIsMatchingActionLoading(false);
@@ -341,7 +416,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     };
   }, [isMatchChatReady, isMatchingMode, matchingState?.room_id]);
 
-  const triggerAutoLeaveMatchRoom = ({ keepalive = false } = {}) => {
+  const triggerAutoLeaveMatchRoom = useCallback(({ keepalive = false } = {}) => {
     if (!isMatchingMode) {
       return;
     }
@@ -368,7 +443,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     }).catch(() => {
       // Best-effort cleanup when user leaves the page.
     });
-  };
+  }, [isMatchingMode]);
 
   useEffect(() => {
     if (!isMatchingMode) {
@@ -385,7 +460,89 @@ function TopicChat({ user, issues, issuesLoaded }) {
       window.removeEventListener('pagehide', handlePageHide);
       triggerAutoLeaveMatchRoom({ keepalive: true });
     };
-  }, [isMatchingMode]);
+  }, [isMatchingMode, triggerAutoLeaveMatchRoom]);
+
+  const connectDialogueWebSocket = (activeSessionId) => {
+    const token = localStorage.getItem('access');
+    if (!token) {
+      throw new Error('登入已過期，請重新登入。');
+    }
+
+    const socket = new WebSocket(buildDialogueWebSocketUrl(activeSessionId, token));
+    wsSessionIdRef.current = activeSessionId;
+
+    socket.onmessage = (event) => {
+      let data = null;
+      try {
+        data = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+
+      if (data.type === 'agent_stream') {
+        setIsAgentStreaming(true);
+        setMessages((prev) => {
+          const messageId = currentAgentMsgIdRef.current;
+          if (messageId && prev.some((message) => message.id === messageId)) {
+            return prev.map((message) =>
+              message.id === messageId
+                ? { ...message, text: message.text + data.content }
+                : message,
+            );
+          }
+
+          const newMessageId = `agent-${Date.now()}`;
+          currentAgentMsgIdRef.current = newMessageId;
+          return [
+            ...prev,
+            {
+              id: newMessageId,
+              type: 'agent',
+              userName: 'BridgeUs',
+              text: data.content,
+            },
+          ];
+        });
+        return;
+      }
+
+      if (data.type === 'agent_stream_end') {
+        currentAgentMsgIdRef.current = null;
+        setIsAgentStreaming(false);
+        setIsSending(false);
+        return;
+      }
+
+      if (data.type === 'error') {
+        currentAgentMsgIdRef.current = null;
+        setIsAgentStreaming(false);
+        setChatError(data.content || 'AI 回應中斷，請重試。');
+        setIsSending(false);
+      }
+    };
+
+    socket.onerror = () => {
+      setIsAgentStreaming(false);
+      setChatError('WebSocket 連線錯誤，請重新整理頁面。');
+      setIsSending(false);
+    };
+
+    socket.onclose = () => {
+      if (wsRef.current === socket) {
+        wsRef.current = null;
+        wsSessionIdRef.current = null;
+      }
+
+      if (isSendingRef.current) {
+        setIsAgentStreaming(false);
+        setChatError('連線中斷，請重新整理頁面。');
+        setIsSending(false);
+      }
+    };
+
+    wsRef.current = socket;
+    return socket;
+  };
 
   const ensureSession = async () => {
     if (sessionId) {
@@ -403,6 +560,15 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
     setSessionId(response.data.session_id);
     return response.data.session_id;
+  };
+
+  const requestRestDialogueReply = async (activeSessionId, text) => {
+    const response = await api.post(
+      `/api/dialogue/sessions/${activeSessionId}/reply/`,
+      { message: text },
+    );
+
+    setMessages(mapHistoryToMessages(response.data.history, displayUserName));
   };
 
   const handleSurveySubmit = async ({ answers, openAnswers }) => {
@@ -498,33 +664,55 @@ function TopicChat({ user, issues, issuesLoaded }) {
     ]);
     setInputValue('');
     setChatError('');
+    setIsAgentStreaming(false);
     setIsSending(true);
 
+    let activeSessionId = null;
+
     try {
-      const activeSessionId = await ensureSession();
-      const response = await api.post(
-        `/api/dialogue/sessions/${activeSessionId}/reply/`,
-        { message: text },
-      );
+      activeSessionId = await ensureSession();
+      const existingSocket = wsRef.current;
+      const needsNewSocket =
+        !existingSocket ||
+        existingSocket.readyState === WebSocket.CLOSED ||
+        existingSocket.readyState === WebSocket.CLOSING ||
+        wsSessionIdRef.current !== activeSessionId;
 
-      setMessages(mapHistoryToMessages(response.data.history, displayUserName));
-    } catch (error) {
-      const detail =
-        error?.response?.data?.detail ||
-        '目前無法取得對話回覆，請稍後再試。';
+      const socket = needsNewSocket
+        ? connectDialogueWebSocket(activeSessionId)
+        : existingSocket;
 
-      setChatError(detail);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `system-error-${Date.now()}`,
-          type: 'agent',
-          userName: '系統',
-          text: detail,
-        },
-      ]);
-    } finally {
-      setIsSending(false);
+      await waitForSocketOpen(socket);
+      currentAgentMsgIdRef.current = null;
+      socket.send(JSON.stringify({ type: 'user_message', content: text }));
+    } catch (socketError) {
+      wsRef.current?.close();
+      wsRef.current = null;
+      wsSessionIdRef.current = null;
+      currentAgentMsgIdRef.current = null;
+      setIsAgentStreaming(false);
+
+      try {
+        await requestRestDialogueReply(activeSessionId, text);
+      } catch (restError) {
+        const detail =
+          restError?.response?.data?.detail ||
+          socketError?.message ||
+          '無法連接對話服務，請稍後再試。';
+
+        setChatError(detail);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `system-error-${Date.now()}`,
+            type: 'agent',
+            userName: '系統',
+            text: detail,
+          },
+        ]);
+      } finally {
+        setIsSending(false);
+      }
     }
   };
 
@@ -901,7 +1089,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
                   <div className="message-bubble">{msg.text}</div>
                 </div>
               ))}
-              {isSending && (
+              {isSending && !isAgentStreaming && (
                 <div className="message-row">
                   <div className="message-user-info">
                     <img src="/icon.jpg" alt="Avatar" className="message-avatar" />

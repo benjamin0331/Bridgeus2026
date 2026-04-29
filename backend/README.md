@@ -125,10 +125,16 @@ Build the bundled knowledge base collection:
 python scripts/build_knowledge_base.py --data-dir data/nuclear_energy --collection nuclear_energy_all
 ```
 
-Run the Django development server on port `8005`:
+Run the HTTP-only Django development server on port `8005`:
 
 ```bash
 python manage.py runserver 0.0.0.0:8005 --noreload
+```
+
+Run the ASGI server when testing AI WebSocket streaming:
+
+```bash
+uv run uvicorn BridgeUs_Django.asgi:application --host 0.0.0.0 --port 8005
 ```
 
 When the virtualenv is already activated, prefer:
@@ -187,7 +193,7 @@ The Django API will be available at `http://localhost:8005`.
 
 ## Docker Notes
 
-- Dialogue session state uses Redis when `REDIS_URL` is set.
+- Dialogue session state uses Redis only when `USE_REDIS_CACHE=true` and `REDIS_URL` is set; use Redis if `UVICORN_WORKERS>1` or if you run multiple backend containers.
 - SQLite, Chroma, and Hugging Face cache data are persisted in the `app_data` Docker volume.
-- The container entrypoint runs `migrate`, `collectstatic`, and then starts `gunicorn`.
+- The container entrypoint runs `migrate`, `collectstatic`, and then starts `uvicorn` with the ASGI app so HTTP and WebSocket routes both work.
 - Admin static files are served by WhiteNoise in the backend container, so `/admin/` should render correctly without a separate nginx sidecar.
