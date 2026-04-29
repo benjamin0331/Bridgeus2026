@@ -34,6 +34,16 @@ export function getAccessTokenExpiry() {
   return typeof payload?.exp === 'number' ? payload.exp * 1000 : null;
 }
 
+export function getAccessTokenPayload() {
+  const token = localStorage.getItem('access');
+
+  if (!token) {
+    return null;
+  }
+
+  return decodeJwtPayload(token);
+}
+
 export function dispatchAuthLogout(message = '') {
   clearAuthStorage();
   window.dispatchEvent(

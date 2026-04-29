@@ -6,7 +6,7 @@ from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
 from api.dialogue_topics import SURVEY_CONFIGS, TOPIC_CONFIGS
-from api.models import DialogueMatch, MatchQueueEntry, UserStanceProfile
+from api.models import DialogueMatch, MatchMessage, MatchQueueEntry, UserStanceProfile
 
 
 class FakeDialogueAgent:
@@ -209,9 +209,42 @@ class MatchingApiTests(APITestCase):
             username="bob",
             password="secret123",
         )
+        self.third_user = get_user_model().objects.create_user(
+            username="carol",
+            password="secret123",
+        )
         self.client.force_authenticate(user=self.user)
         self.other_client = APIClient()
         self.other_client.force_authenticate(user=self.other_user)
+        self.third_client = APIClient()
+        self.third_client.force_authenticate(user=self.third_user)
+
+    def _create_match(self):
+        first_response = self.client.post(
+            "/api/matching/join/",
+            {
+                "topic_id": 102,
+                "survey_answers": build_supporting_answers(),
+            },
+            format="json",
+        )
+        self.assertEqual(
+            first_response.data["status"],
+            MatchQueueEntry.Status.MATCHING,
+        )
+
+        second_response = self.other_client.post(
+            "/api/matching/join/",
+            {
+                "topic_id": 102,
+                "survey_answers": build_opposing_answers(),
+            },
+            format="json",
+        )
+        self.assertEqual(second_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(second_response.data["status"], MatchQueueEntry.Status.MATCHED)
+        match = DialogueMatch.objects.get(id=second_response.data["match_id"])
+        return match, second_response.data["room_id"]
 
     def test_matching_join_creates_profile_and_queue_entry(self):
         response = self.client.post(
@@ -317,6 +350,21 @@ class MatchingApiTests(APITestCase):
         self.assertNotEqual(second_join.data["queue_entry_id"], first_queue_id)
 
     def test_matching_pairs_users_with_opposite_stance_scores(self):
+        match, _ = self._create_match()
+
+        alice_status = self.client.get("/api/matching/status/?topic_id=102")
+        self.assertEqual(alice_status.status_code, status.HTTP_200_OK)
+        self.assertEqual(alice_status.data["status"], MatchQueueEntry.Status.MATCHED)
+        self.assertEqual(alice_status.data["other_user_id"], self.other_user.id)
+        self.assertEqual(alice_status.data["other_user_name"], self.other_user.username)
+
+        self.assertEqual(match.status, DialogueMatch.Status.ACTIVE)
+        self.assertEqual(
+            {match.user_a_id, match.user_b_id},
+            {self.user.id, self.other_user.id},
+        )
+
+    def test_matching_allows_same_stance_pairing_during_testing(self):
         first_response = self.client.post(
             "/api/matching/join/",
             {
@@ -325,35 +373,105 @@ class MatchingApiTests(APITestCase):
             },
             format="json",
         )
-        self.assertEqual(
-            first_response.data["status"],
-            MatchQueueEntry.Status.MATCHING,
-        )
+        self.assertEqual(first_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(first_response.data["status"], MatchQueueEntry.Status.MATCHING)
 
         second_response = self.other_client.post(
             "/api/matching/join/",
             {
                 "topic_id": 102,
-                "survey_answers": build_opposing_answers(),
+                "survey_answers": build_supporting_answers(),
             },
             format="json",
         )
-
         self.assertEqual(second_response.status_code, status.HTTP_200_OK)
         self.assertEqual(second_response.data["status"], MatchQueueEntry.Status.MATCHED)
-        self.assertIsNotNone(second_response.data["match_id"])
+        self.assertEqual(second_response.data["other_user_id"], self.user.id)
 
         alice_status = self.client.get("/api/matching/status/?topic_id=102")
         self.assertEqual(alice_status.status_code, status.HTTP_200_OK)
         self.assertEqual(alice_status.data["status"], MatchQueueEntry.Status.MATCHED)
         self.assertEqual(alice_status.data["other_user_id"], self.other_user.id)
 
-        match = DialogueMatch.objects.get(id=second_response.data["match_id"])
-        self.assertEqual(match.status, DialogueMatch.Status.ACTIVE)
-        self.assertEqual(
-            {match.user_a_id, match.user_b_id},
-            {self.user.id, self.other_user.id},
+    def test_matched_users_can_exchange_room_messages(self):
+        match, room_id = self._create_match()
+
+        post_response = self.client.post(
+            f"/api/matching/rooms/{room_id}/messages/",
+            {"content": "你好，我想先從核安風險談起。"},
+            format="json",
         )
+        self.assertEqual(post_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(post_response.data["room_id"], room_id)
+        self.assertEqual(len(post_response.data["messages"]), 1)
+        self.assertEqual(
+            post_response.data["messages"][0]["sender_id"],
+            self.user.id,
+        )
+        self.assertEqual(
+            post_response.data["messages"][0]["sender_name"],
+            self.user.username,
+        )
+
+        fetch_response = self.other_client.get(
+            f"/api/matching/rooms/{room_id}/messages/"
+        )
+        self.assertEqual(fetch_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(fetch_response.data["match_id"], match.id)
+        self.assertEqual(fetch_response.data["other_user_id"], self.user.id)
+        self.assertEqual(fetch_response.data["other_user_name"], self.user.username)
+        self.assertEqual(len(fetch_response.data["messages"]), 1)
+        self.assertEqual(
+            fetch_response.data["messages"][0]["content"],
+            "你好，我想先從核安風險談起。",
+        )
+        self.assertEqual(MatchMessage.objects.filter(match=match).count(), 1)
+
+    def test_room_messages_reject_blank_content(self):
+        _, room_id = self._create_match()
+
+        response = self.client.post(
+            f"/api/matching/rooms/{room_id}/messages/",
+            {"content": "   "},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("content", response.data)
+
+    def test_room_messages_forbid_non_participants(self):
+        _, room_id = self._create_match()
+
+        response = self.third_client.get(f"/api/matching/rooms/{room_id}/messages/")
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_leaving_room_closes_match_for_both_participants(self):
+        match, room_id = self._create_match()
+
+        response = self.client.post(
+            f"/api/matching/rooms/{room_id}/leave/",
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], "closed")
+        self.assertEqual(response.data["room_id"], room_id)
+
+        match.refresh_from_db()
+        self.assertEqual(match.status, DialogueMatch.Status.CLOSED)
+        self.assertIsNotNone(match.closed_at)
+
+        other_status = self.other_client.get("/api/matching/status/?topic_id=102")
+        self.assertEqual(other_status.status_code, status.HTTP_200_OK)
+        self.assertEqual(other_status.data["status"], "closed")
+
+        send_response = self.other_client.post(
+            f"/api/matching/rooms/{room_id}/messages/",
+            {"content": "這句話不該送出"},
+            format="json",
+        )
+        self.assertEqual(send_response.status_code, status.HTTP_409_CONFLICT)
 
     def test_session_uses_backend_title_for_known_topic(self):
         create_response = self.client.post(

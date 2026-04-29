@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import './LoginPage.css';
-import api from '../api/client';
+import api, { getAccessTokenPayload } from '../api/client';
 
 function LoginPage({ setUser, authMessage = '' }) {
   const navigate = useNavigate();
@@ -24,9 +24,11 @@ function LoginPage({ setUser, authMessage = '' }) {
       localStorage.setItem('access', response.data.access);
       localStorage.setItem('refresh', response.data.refresh);
 
+      const tokenPayload = getAccessTokenPayload();
       const nextUser = {
         name: userId,
-        id: userId
+        username: userId,
+        id: tokenPayload?.user_id ?? userId
       };
 
       localStorage.setItem('bridgeus_user', JSON.stringify(nextUser));

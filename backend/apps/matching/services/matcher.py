@@ -6,7 +6,9 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from api.models import DialogueMatch, MatchQueueEntry, UserStanceProfile
+from api.models import DialogueMatch, MatchMessage, MatchQueueEntry, UserStanceProfile
+
+from .matching_algorithm import candidate_categories_for, choose_best_candidate
 
 
 class MatchingError(Exception):
@@ -48,14 +50,6 @@ def _get_active_match(*, user_id: int, topic_id: int) -> DialogueMatch | None:
     return _active_match_queryset(user_id=user_id, topic_id=topic_id).first()
 
 
-def _target_category_for(category: str) -> str | None:
-    if category == UserStanceProfile.StanceCategory.SUPPORT:
-        return UserStanceProfile.StanceCategory.OPPOSE
-    if category == UserStanceProfile.StanceCategory.OPPOSE:
-        return UserStanceProfile.StanceCategory.SUPPORT
-    return None
-
-
 def _find_best_candidate(
     *,
     topic_id: int,
@@ -63,31 +57,24 @@ def _find_best_candidate(
     stance_score: Decimal,
     stance_category: str,
 ) -> MatchQueueEntry | None:
-    target_category = _target_category_for(stance_category)
-    if not target_category:
+    candidate_categories = candidate_categories_for(stance_category)
+    if not candidate_categories:
         return None
 
-    target_score = 8 - float(stance_score)
     candidates = list(
         MatchQueueEntry.objects.select_for_update()
         .select_related("profile", "user")
         .filter(
             topic_id=topic_id,
             status=MatchQueueEntry.Status.MATCHING,
-            profile__stance_category=target_category,
+            profile__stance_category__in=candidate_categories,
         )
         .exclude(user_id=requester_user_id)
     )
-    if not candidates:
-        return None
-
-    return min(
-        candidates,
-        key=lambda candidate: (
-            abs(float(candidate.stance_score) - target_score),
-            candidate.waiting_started_at,
-            candidate.id,
-        ),
+    return choose_best_candidate(
+        candidates=candidates,
+        requester_score=stance_score,
+        requester_category=stance_category,
     )
 
 
@@ -107,7 +94,7 @@ def enqueue_for_matching(
         active_match = _get_active_match(user_id=user.id, topic_id=topic_id)
         if active_match:
             queue_entry = (
-                MatchQueueEntry.objects.select_related("profile", "match")
+                MatchQueueEntry.objects.select_related("profile")
                 .filter(
                     user=user,
                     topic_id=topic_id,
@@ -137,7 +124,7 @@ def enqueue_for_matching(
 
         queue_entry = (
             MatchQueueEntry.objects.select_for_update()
-            .select_related("profile", "match")
+            .select_related("profile")
             .filter(
                 user=user,
                 topic_id=topic_id,
@@ -222,7 +209,7 @@ def get_matching_state(*, user, topic_id: int) -> MatchingState:
     active_match = _get_active_match(user_id=user.id, topic_id=topic_id)
     if active_match:
         queue_entry = (
-            MatchQueueEntry.objects.select_related("profile", "match")
+            MatchQueueEntry.objects.select_related("profile")
             .filter(
                 user=user,
                 topic_id=topic_id,
@@ -240,7 +227,7 @@ def get_matching_state(*, user, topic_id: int) -> MatchingState:
         )
 
     queue_entry = (
-        MatchQueueEntry.objects.select_related("profile", "match")
+        MatchQueueEntry.objects.select_related("profile")
         .filter(
             user=user,
             topic_id=topic_id,
@@ -263,8 +250,11 @@ def get_matching_state(*, user, topic_id: int) -> MatchingState:
         .first()
     )
     if queue_entry:
+        state_status = queue_entry.status
+        if queue_entry.match and queue_entry.match.status == DialogueMatch.Status.CLOSED:
+            state_status = "closed"
         return MatchingState(
-            status=queue_entry.status,
+            status=state_status,
             profile=queue_entry.profile,
             queue_entry=queue_entry,
             match=queue_entry.match,
@@ -288,7 +278,7 @@ def cancel_matching(*, user, topic_id: int) -> MatchQueueEntry:
 
         queue_entry = (
             MatchQueueEntry.objects.select_for_update()
-            .select_related("profile", "match")
+            .select_related("profile")
             .filter(
                 user=user,
                 topic_id=topic_id,
@@ -304,3 +294,21 @@ def cancel_matching(*, user, topic_id: int) -> MatchQueueEntry:
         queue_entry.cancelled_at = timezone.now()
         queue_entry.save(update_fields=["status", "cancelled_at", "updated_at"])
         return queue_entry
+
+
+def get_room_messages(*, match: DialogueMatch):
+    return MatchMessage.objects.select_related("sender").filter(match=match).order_by(
+        "created_at", "id"
+    )
+
+
+def close_match(*, match: DialogueMatch) -> DialogueMatch:
+    with transaction.atomic():
+        locked_match = DialogueMatch.objects.select_for_update().get(pk=match.pk)
+        if locked_match.status != DialogueMatch.Status.ACTIVE:
+            return locked_match
+
+        locked_match.status = DialogueMatch.Status.CLOSED
+        locked_match.closed_at = timezone.now()
+        locked_match.save(update_fields=["status", "closed_at"])
+        return locked_match

@@ -166,3 +166,29 @@ class MatchQueueEntry(models.Model):
             f"user={self.user_id} topic={self.topic_id} "
             f"status={self.status}"
         )
+
+
+class MatchMessage(models.Model):
+    match = models.ForeignKey(
+        DialogueMatch,
+        on_delete=models.CASCADE,
+        related_name="messages",
+    )
+    sender = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="match_messages",
+    )
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(
+                fields=["match", "created_at", "id"],
+                name="match_message_order_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return f"match={self.match_id} sender={self.sender_id}"

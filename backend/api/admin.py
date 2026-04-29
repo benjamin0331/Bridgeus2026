@@ -1,6 +1,12 @@
 from django.contrib import admin
 
-from .models import AIConversation, DialogueMatch, MatchQueueEntry, UserStanceProfile
+from .models import (
+    AIConversation,
+    DialogueMatch,
+    MatchMessage,
+    MatchQueueEntry,
+    UserStanceProfile,
+)
 
 
 @admin.register(AIConversation)
@@ -52,3 +58,9 @@ class DialogueMatchAdmin(admin.ModelAdmin):
     )
     list_filter = ("topic_id", "status")
     search_fields = ("user_a__username", "user_b__username", "room_id")
+
+
+@admin.register(MatchMessage)
+class MatchMessageAdmin(admin.ModelAdmin):
+    list_display = ("id", "match", "sender", "created_at")
+    search_fields = ("match__room_id", "sender__username", "content")
