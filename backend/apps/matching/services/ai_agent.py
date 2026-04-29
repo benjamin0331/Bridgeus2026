@@ -15,7 +15,10 @@ Owner: 伍晨安 (Backend Developer)
 Skeleton: Benjamin (PM)
 """
 
+import asyncio
 import os
+import random
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -25,6 +28,73 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
 from core.llm_provider import get_embeddings, get_llm
+
+
+# ═══════════════════════════════════════════════════════════
+# Response Chunking & Streaming
+# ═══════════════════════════════════════════════════════════
+
+_SENTENCE_END_RE = re.compile(r'(?<=[。！？…])\s*')
+
+
+def split_into_chunks(text: str, max_chars: int = 30) -> list[str]:
+    """
+    按中文句末標點切分回應，每段不超過 max_chars 字。
+    若單句本身超過 max_chars，整句仍作為一個 chunk 傳出，不強制截斷語意。
+    """
+    sentences = [s for s in _SENTENCE_END_RE.split(text) if s.strip()]
+    chunks: list[str] = []
+    current = ""
+    for sentence in sentences:
+        if not current:
+            current = sentence
+        elif len(current) + len(sentence) <= max_chars:
+            current += sentence
+        else:
+            chunks.append(current)
+            current = sentence
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+async def stream_chunks(
+    chunks: list[str],
+    send_message,
+    send_typing=None,
+    min_delay: float = 2.0,
+    max_delay: float = 3.0,
+) -> None:
+    """
+    逐一傳送回應分段，模擬打字節奏。
+
+    每段流程：觸發打字動畫 → 等待 2-3 秒 → 送出訊息。
+
+    Args:
+        chunks:       split_into_chunks() 的輸出
+        send_message: async (content: str) -> None，傳送一段訊息
+        send_typing:  async () -> None，觸發前端打字動畫（可為 None）
+        min_delay:    打字動畫持續的最短秒數
+        max_delay:    打字動畫持續的最長秒數
+
+    M4 Django Channels consumer 呼叫範例：
+        response = agent.respond(session)
+        chunks = split_into_chunks(response)
+        await stream_chunks(
+            chunks,
+            send_message=lambda c: self.send(json.dumps({
+                "type": "agent_message", "content": c
+            })),
+            send_typing=lambda: self.send(json.dumps({
+                "type": "agent_typing"
+            })),
+        )
+    """
+    for chunk in chunks:
+        if send_typing:
+            await send_typing()
+        await asyncio.sleep(random.uniform(min_delay, max_delay))
+        await send_message(chunk)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -269,6 +339,7 @@ class DialogueAgent:
 
         # Load system prompt from file
         system_prompt_text = load_system_prompt(prompt_file)
+        self._system_prompt_raw = system_prompt_text
         self._prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", system_prompt_text),
@@ -349,6 +420,62 @@ class DialogueAgent:
             raise RuntimeError(
                 f"DialogueAgent LLM 呼叫失敗（輪次 {session.turn_count}）：{exc}"
             ) from exc
+
+    async def astream_respond(self, session: "DialogueSession"):
+        """
+        Async streaming version of respond() for Django Channels consumers.
+
+        Yields text chunks as they arrive from the Anthropic API.
+        Uses prompt caching on the system prompt to reduce cost and latency.
+
+        Usage (in AsyncWebsocketConsumer):
+            async for chunk in agent.astream_respond(session):
+                await self.send(json.dumps({"type": "agent_stream", "content": chunk}))
+        """
+        import anthropic
+        from asgiref.sync import sync_to_async
+
+        user_messages = [m for m in session.history if m.role == "user"]
+        if not user_messages:
+            raise ValueError("Session 中沒有使用者訊息。")
+        latest_msg = user_messages[-1].content
+
+        rag_context = await sync_to_async(self._retrieve_context)(latest_msg)
+
+        replacements = {
+            "topic": session.topic,
+            "topic_description": session.topic_description,
+            "agent_stance": session.agent_stance,
+            "agent_stance_summary": session.agent_stance_summary,
+            "user_stance_label": session.user_stance_label,
+            "user_stance_score": str(session.user_stance_score),
+            "user_initial_argument": session.user_initial_argument,
+            "rag_context": rag_context,
+            "conversation_history": session.format_history(
+                exclude_last=True, max_turns=self._max_history_turns
+            ),
+            "turn_count": str(session.turn_count),
+            "dialogue_phase": session.dialogue_phase.value,
+        }
+        system_text = self._system_prompt_raw
+        for key, value in replacements.items():
+            system_text = system_text.replace("{" + key + "}", value)
+
+        client = anthropic.AsyncAnthropic()
+        async with client.messages.stream(
+            model=os.getenv("CLAUDE_CHAT_MODEL", "claude-sonnet-4-6"),
+            max_tokens=1024,
+            system=[
+                {
+                    "type": "text",
+                    "text": system_text,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[{"role": "user", "content": latest_msg}],
+        ) as stream:
+            async for text in stream.text_stream:
+                yield text
 
     def respond_simple(self, user_message: str) -> str:
         """
