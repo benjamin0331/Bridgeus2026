@@ -1,0 +1,19 @@
+.DS_Store
+.env
+.venv/
+.idea/
+.cache/
+
+__pycache__/
+*.py[cod]
+
+db.sqlite3
+*.sqlite3
+
+chroma_data/
+BridgeUs/.git.local-backup/
+BridgeUs/src/pages/* 2.jsx
+api/* 2.py
+
+media/
+staticfiles/

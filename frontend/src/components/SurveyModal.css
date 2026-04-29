@@ -1,0 +1,258 @@
+/* --- 彈窗遮罩層設定 --- */
+.modal-overlay {
+  position: fixed; /* 確保遮罩層固定於視窗最上層 */
+  top: 0; 
+  left: 0; 
+  right: 0; 
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.4); /* 半透明黑色背景 */
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 9999; /* 設置高權重確保不被其他元件遮擋 */
+  padding: 40px 0;
+}
+
+/* --- 彈窗主體容器 --- */
+.modal-content {
+  background-color: #f7f3f0;
+  width: 580px; 
+  max-height: 85vh; /* 限制最大高度，避免超出螢幕範圍 */
+  padding: 40px;
+  border-radius: 40px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+}
+
+/* 關閉按鈕樣式 */
+.modal-close-btn {
+  position: absolute;
+  top: 30px; 
+  right: 35px;
+  font-size: 28px; 
+  cursor: pointer; 
+  color: #666;
+}
+
+/* 問卷標題區樣式 */
+.survey-header h2 { 
+  font-size: 26px; 
+  margin-bottom: 8px; 
+  font-weight: bold; 
+}
+
+.survey-header p { 
+  color: #888; 
+  font-size: 13px; 
+  margin-bottom: 25px; 
+  line-height: 1.5; 
+}
+
+/* --- 題目清單滾動區域 --- */
+.survey-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  overflow-y: auto; /* 啟用垂直方向滾動 */
+  padding-right: 10px;
+  margin-bottom: 30px;
+}
+
+/* 單個題目區塊樣式 */
+.survey-item {
+  background-color: #eeeeee; 
+  padding: 20px;
+  border-radius: 12px;
+  flex-shrink: 0;
+}
+
+.survey-item h4 { 
+  font-size: 15px; 
+  margin-bottom: 8px; 
+  color: #1a1a1a; 
+}
+
+.survey-item p { 
+  font-size: 13px; 
+  color: #666; 
+  margin-bottom: 18px; 
+  line-height: 1.4; 
+}
+
+.survey-status {
+  background-color: #eeeeee;
+  padding: 20px;
+  border-radius: 12px;
+  color: #555;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.survey-error {
+  color: #b42318;
+}
+
+/* --- 李克特量表 (Likert Scale) 樣式 --- */
+.likert-scale {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: relative;
+  padding: 0 10px;
+}
+
+/* 量表背景橫線 */
+.likert-line {
+  position: absolute;
+  top: 50%; 
+  left: 10px; 
+  right: 10px;
+  height: 2px; 
+  background-color: #ccc;
+  z-index: 1;
+}
+
+/* 量表圓點基礎樣式 */
+.likert-dot {
+  width: 18px; 
+  height: 18px;
+  border: 2px solid #333; 
+  border-radius: 50%;
+  background-color: white;
+  z-index: 2;
+  cursor: pointer;
+}
+
+/* 已選中狀態的圓點樣式 */
+.likert-dot.selected {
+  background-color: #676767; 
+  border: 2px solid #333; 
+}
+
+.likert-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 10px;
+  font-size: 12px;
+  color: #777;
+  gap: 12px;
+}
+
+.survey-item-open {
+  display: flex;
+  flex-direction: column;
+}
+
+.survey-open-textarea {
+  width: 100%;
+  min-height: 120px;
+  padding: 14px 16px;
+  border: 1px solid #d1c9c0;
+  border-radius: 14px;
+  background-color: #fbfaf8;
+  color: #2d2d2d;
+  font-size: 14px;
+  line-height: 1.6;
+  resize: vertical;
+  box-sizing: border-box;
+  font-family: inherit;
+}
+
+.survey-open-textarea:focus {
+  outline: none;
+  border-color: #9c8f81;
+  box-shadow: 0 0 0 3px rgba(156, 143, 129, 0.18);
+}
+
+.survey-open-hint {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #7b726a;
+}
+
+/* --- 底部提交區塊 --- */
+.survey-footer {
+  padding-top: 20px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* 提交按鈕基礎樣式 */
+.submit-survey-btn {
+  background-color: #e8e2d9;
+  color: #888;
+  padding: 14px 45px;
+  border-radius: 30px;
+  border: none;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+/* 填寫完畢後的可用狀態樣式 */
+.submit-survey-btn.ready {
+  background-color: #e0d8cf;
+  color: #333;
+}
+
+.submit-survey-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* 客製化滾動條外觀 */
+.survey-grid::-webkit-scrollbar { 
+  width: 5px; 
+}
+
+/* ============================
+   RWD：手機版 (≤ 768px)
+   ============================ */
+@media (max-width: 768px) {
+  .modal-overlay {
+    padding: 16px;
+    align-items: flex-end;
+  }
+
+  .modal-content {
+    width: 100%;
+    max-width: 100%;
+    padding: 28px 20px 20px 20px;
+    border-radius: 28px 28px 0 0;
+    max-height: 90vh;
+  }
+
+  .modal-close-btn {
+    top: 20px;
+    right: 22px;
+    font-size: 24px;
+  }
+
+  .survey-header h2 {
+    font-size: 20px;
+  }
+
+  .survey-item {
+    padding: 14px;
+  }
+
+  .survey-item h4 {
+    font-size: 14px;
+  }
+
+  .submit-survey-btn {
+    width: 100%;
+    padding: 14px;
+  }
+
+  .survey-open-textarea {
+    min-height: 110px;
+  }
+}
+
+.survey-grid::-webkit-scrollbar-thumb { 
+  background: rgba(0,0,0,0.1); 
+  border-radius: 10px; 
+}

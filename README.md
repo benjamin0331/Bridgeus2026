@@ -14,6 +14,34 @@ BridgeUs 是一個配對不同立場用戶進行結構化去極化對話的平�
 
 ---
 
+## Git Notes
+
+Current workspace note:
+
+- As of April 27, 2026, `/Users/light/code` is not an active git working tree because `.git` is absent.
+- The old git metadata directory currently exists as `/Users/light/code/.git.removed-20260422`.
+- Any future chat that needs git operations should check the workspace state first instead of assuming `/Users/light/code` is still a live repo.
+
+Last known git layout before `.git` was removed:
+
+- Intended main repo root: `/Users/light/code`
+- Main repo remote: `https://github.com/bridgeus2026/Bridgeus2026.git`
+- Main working branch used in previous sessions: `feat/Light`
+- Backend-only mirror repo: `https://github.com/Bridge-US2026/Light_Django_backend.git`
+- The backend-only repo should receive only the contents of `backend/`, not the whole monorepo.
+
+Recommended first checks for future git work:
+
+```bash
+ls -la /Users/light/code
+git -C /Users/light/code status
+```
+
+If `/Users/light/code/.git` is still missing, a future chat should inspect `.git.removed-20260422`
+or re-clone from GitHub before attempting `pull`, `push`, or branch operations.
+
+---
+
 ## 系統模組
 
 | 模組 | 名稱 | 負責人 |
@@ -75,31 +103,20 @@ docker-compose up --build
 
 ## 開發規範
 
-**組員開發前請務必先閱讀 [CONTRIBUTING.md](./CONTRIBUTING.md)**，內含：
-- 分支策略與個人分支使用方式
-- 日常開發流程（sync → 開發 → commit → PR）
-- Commit message 格式規範（Conventional Commits）
-- Pull Request 填寫模板與 merge 規則
-- 注意事項（禁止 commit `.env` 等）
-
----
-
-## 相關文件
-
-| 文件 | 說明 |
-|------|------|
-| [CONTRIBUTING.md](./CONTRIBUTING.md) | **組員必讀** — Git 規範、commit 格式、PR 流程 |
-| [docs/BridgeUs_API_Spec.md](./docs/BridgeUs_API_Spec.md) | 模組間 API 合約 |
-| [CLAUDE.md](./CLAUDE.md) | 系統架構完整說明（AI assistant 用） |
+請參閱 [CLAUDE.md](./CLAUDE.md) 了解：
+- Git branch 策略與命名規範
+- Commit message 格式（Conventional Commits）
+- PR 流程與 checklist
+- API 設計合約
 
 ---
 
 ## 團隊成員
 
-| 成員 | 角色 | 分支 |
-|------|------|------|
-| 賴則名 (Benjamin) | Project Manager | `feat/benjamin` |
-| 伍晨安 | Backend Developer | `feat/polarbear` |
-| 陳彩希 | Frontend Developer | `feat/Light` |
-| 黃筱筑 | QA & Optimization | `feat/hsiao` |
-| 葉錦諦 | Data Engineering | `feat/Ceeeuu` |
+| 成員 | 角色 |
+|------|------|
+| 賴則名 (Benjamin) | Project Manager |
+| 伍晨安 | Backend Developer |
+| 陳彩希 | Frontend Developer |
+| 黃筱筑 | QA & Optimization |
+| 葉錦諦 | Data Engineering |
