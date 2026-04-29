@@ -20,6 +20,9 @@ from .serializers import (
     DialogueSurveySerializer,
     DialogueTopicSerializer,
     DialogueSessionCreateSerializer,
+    MatchingJoinSerializer,
+    MatchingStateSerializer,
+    MatchingTopicSerializer,
 )
 
 SESSION_TTL_SECONDS = 60 * 60 * 12
@@ -115,20 +118,33 @@ def _compute_user_stance_score(
     return round(sum(adjusted_scores) / len(adjusted_scores), 2)
 
 
+def _resolve_stance_category(*, topic_id: int, user_stance_score: float) -> str:
+    scoring_config = _get_survey_scoring_config(topic_id)
+
+    if user_stance_score > scoring_config["support_threshold"]:
+        return "support"
+    if user_stance_score < scoring_config["oppose_threshold"]:
+        return "oppose"
+    return "neutral"
+
+
 def _resolve_stances(
     *,
     topic_id: int,
     user_stance_score: float,
 ) -> tuple[str, str, str]:
-    scoring_config = _get_survey_scoring_config(topic_id)
+    stance_category = _resolve_stance_category(
+        topic_id=topic_id,
+        user_stance_score=user_stance_score,
+    )
 
-    if user_stance_score > scoring_config["support_threshold"]:
+    if stance_category == "support":
         return (
             "較支持核電",
             "較反對核電",
             "認為核電的安全、成本與核廢料風險仍被低估，不應輕率視為能源轉型解方。",
         )
-    if user_stance_score < scoring_config["oppose_threshold"]:
+    if stance_category == "oppose":
         return (
             "較反對核電",
             "較支持核電",
@@ -209,6 +225,37 @@ def _build_topic_config(
         "survey_open_answers": resolved_open_answers,
         "semantic_vector_interface": semantic_vector_interface,
     }
+
+
+def _build_matching_state_payload(*, topic_id: int, state, user_id: int) -> dict:
+    queue_entry = state.queue_entry
+    match = state.match
+    other_user_id = None
+    if match:
+        other_user_id = (
+            match.user_b_id if match.user_a_id == user_id else match.user_a_id
+        )
+
+    payload = {
+        "topic_id": topic_id,
+        "status": state.status,
+        "stance_score": (
+            state.profile.stance_score if state.profile else None
+        ),
+        "stance_category": (
+            state.profile.stance_category if state.profile else None
+        ),
+        "queue_entry_id": queue_entry.id if queue_entry else None,
+        "waiting_started_at": (
+            queue_entry.waiting_started_at if queue_entry else None
+        ),
+        "matched_at": queue_entry.matched_at if queue_entry else None,
+        "cancelled_at": queue_entry.cancelled_at if queue_entry else None,
+        "match_id": match.id if match else None,
+        "room_id": match.room_id if match else None,
+        "other_user_id": other_user_id,
+    }
+    return MatchingStateSerializer(payload).data
 
 
 @lru_cache(maxsize=1)
@@ -373,4 +420,103 @@ class DialogueSessionReplyView(APIView):
                 "dialogue_phase": session.dialogue_phase.value,
                 "history": session_record["session"]["history"],
             }
+        )
+
+
+class MatchingJoinView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from apps.matching.services.matcher import enqueue_for_matching
+
+        serializer = MatchingJoinSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        validated = serializer.validated_data
+
+        stance_score = _compute_user_stance_score(
+            topic_id=validated["topic_id"],
+            survey_answers=validated["survey_answers"],
+        )
+        stance_category = _resolve_stance_category(
+            topic_id=validated["topic_id"],
+            user_stance_score=stance_score,
+        )
+        resolved_open_answers = _resolve_open_answers(
+            topic_id=validated["topic_id"],
+            survey_open_answers=validated.get("survey_open_answers", {}),
+        )
+
+        state = enqueue_for_matching(
+            user=request.user,
+            topic_id=validated["topic_id"],
+            stance_score=stance_score,
+            stance_category=stance_category,
+            survey_answers=validated["survey_answers"],
+            survey_open_answers=resolved_open_answers,
+        )
+
+        return Response(
+            _build_matching_state_payload(
+                topic_id=validated["topic_id"],
+                state=state,
+                user_id=request.user.id,
+            )
+        )
+
+
+class MatchingStatusView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from apps.matching.services.matcher import get_matching_state
+
+        serializer = MatchingTopicSerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        topic_id = serializer.validated_data["topic_id"]
+
+        state = get_matching_state(user=request.user, topic_id=topic_id)
+        return Response(
+            _build_matching_state_payload(
+                topic_id=topic_id,
+                state=state,
+                user_id=request.user.id,
+            )
+        )
+
+
+class MatchingCancelView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from apps.matching.services.matcher import (
+            MatchingAlreadyMatchedError,
+            MatchingNotFoundError,
+            cancel_matching,
+            get_matching_state,
+        )
+
+        serializer = MatchingTopicSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        topic_id = serializer.validated_data["topic_id"]
+
+        try:
+            cancel_matching(user=request.user, topic_id=topic_id)
+        except MatchingAlreadyMatchedError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except MatchingNotFoundError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        state = get_matching_state(user=request.user, topic_id=topic_id)
+        return Response(
+            _build_matching_state_payload(
+                topic_id=topic_id,
+                state=state,
+                user_id=request.user.id,
+            )
         )

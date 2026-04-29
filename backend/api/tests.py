@@ -3,9 +3,10 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from rest_framework import status
-from rest_framework.test import APITestCase
+from rest_framework.test import APIClient, APITestCase
 
 from api.dialogue_topics import SURVEY_CONFIGS, TOPIC_CONFIGS
+from api.models import DialogueMatch, MatchQueueEntry, UserStanceProfile
 
 
 class FakeDialogueAgent:
@@ -16,6 +17,32 @@ class FakeDialogueAgent:
 class FakeExplodingDialogueAgent:
     def respond(self, session):
         raise RuntimeError("anthropic invalid key")
+
+
+def build_supporting_answers():
+    return {
+        "1": 7,
+        "2": 1,
+        "3": 7,
+        "4": 1,
+        "5": 1,
+        "6": 1,
+        "7": 7,
+        "8": 7,
+    }
+
+
+def build_opposing_answers():
+    return {
+        "1": 1,
+        "2": 7,
+        "3": 1,
+        "4": 7,
+        "5": 7,
+        "6": 7,
+        "7": 1,
+        "8": 1,
+    }
 
 
 class DialogueSessionApiTests(APITestCase):
@@ -170,6 +197,163 @@ class DialogueSessionApiTests(APITestCase):
         self.assertEqual(reply_response.data["history"][0]["role"], "user")
         self.assertEqual(reply_response.data["history"][1]["role"], "agent")
         mocked_get_agent.assert_called_once_with("nuclear_energy_all")
+
+
+class MatchingApiTests(APITestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="alice",
+            password="secret123",
+        )
+        self.other_user = get_user_model().objects.create_user(
+            username="bob",
+            password="secret123",
+        )
+        self.client.force_authenticate(user=self.user)
+        self.other_client = APIClient()
+        self.other_client.force_authenticate(user=self.other_user)
+
+    def test_matching_join_creates_profile_and_queue_entry(self):
+        response = self.client.post(
+            "/api/matching/join/",
+            {
+                "topic_id": 102,
+                "survey_answers": build_supporting_answers(),
+                "survey_open_answers": {
+                    "Q9": "我支持核電。",
+                    "Q10": "反方會強調核安風險。",
+                },
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], MatchQueueEntry.Status.MATCHING)
+        self.assertEqual(response.data["stance_category"], "support")
+        self.assertEqual(float(response.data["stance_score"]), 7.0)
+
+        profile = UserStanceProfile.objects.get(user=self.user, topic_id=102)
+        self.assertEqual(profile.stance_category, "support")
+        self.assertEqual(float(profile.stance_score), 7.0)
+
+        queue_entry = MatchQueueEntry.objects.get(
+            user=self.user,
+            topic_id=102,
+            status=MatchQueueEntry.Status.MATCHING,
+        )
+        self.assertEqual(queue_entry.profile, profile)
+
+    def test_matching_status_persists_after_join(self):
+        self.client.post(
+            "/api/matching/join/",
+            {
+                "topic_id": 102,
+                "survey_answers": build_supporting_answers(),
+            },
+            format="json",
+        )
+
+        response = self.client.get("/api/matching/status/?topic_id=102")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], MatchQueueEntry.Status.MATCHING)
+        self.assertIsNotNone(response.data["queue_entry_id"])
+        self.assertIsNone(response.data["match_id"])
+
+    def test_matching_cancel_marks_queue_entry_cancelled(self):
+        self.client.post(
+            "/api/matching/join/",
+            {
+                "topic_id": 102,
+                "survey_answers": build_supporting_answers(),
+            },
+            format="json",
+        )
+
+        response = self.client.post(
+            "/api/matching/cancel/",
+            {"topic_id": 102},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], MatchQueueEntry.Status.CANCELLED)
+
+        queue_entry = MatchQueueEntry.objects.filter(
+            user=self.user,
+            topic_id=102,
+        ).latest("id")
+        self.assertEqual(queue_entry.status, MatchQueueEntry.Status.CANCELLED)
+        self.assertIsNotNone(queue_entry.cancelled_at)
+
+    def test_matching_allows_rejoin_after_cancel(self):
+        first_join = self.client.post(
+            "/api/matching/join/",
+            {
+                "topic_id": 102,
+                "survey_answers": build_supporting_answers(),
+            },
+            format="json",
+        )
+        first_queue_id = first_join.data["queue_entry_id"]
+
+        self.client.post(
+            "/api/matching/cancel/",
+            {"topic_id": 102},
+            format="json",
+        )
+
+        second_join = self.client.post(
+            "/api/matching/join/",
+            {
+                "topic_id": 102,
+                "survey_answers": build_supporting_answers(),
+            },
+            format="json",
+        )
+
+        self.assertEqual(second_join.status_code, status.HTTP_200_OK)
+        self.assertEqual(second_join.data["status"], MatchQueueEntry.Status.MATCHING)
+        self.assertNotEqual(second_join.data["queue_entry_id"], first_queue_id)
+
+    def test_matching_pairs_users_with_opposite_stance_scores(self):
+        first_response = self.client.post(
+            "/api/matching/join/",
+            {
+                "topic_id": 102,
+                "survey_answers": build_supporting_answers(),
+            },
+            format="json",
+        )
+        self.assertEqual(
+            first_response.data["status"],
+            MatchQueueEntry.Status.MATCHING,
+        )
+
+        second_response = self.other_client.post(
+            "/api/matching/join/",
+            {
+                "topic_id": 102,
+                "survey_answers": build_opposing_answers(),
+            },
+            format="json",
+        )
+
+        self.assertEqual(second_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(second_response.data["status"], MatchQueueEntry.Status.MATCHED)
+        self.assertIsNotNone(second_response.data["match_id"])
+
+        alice_status = self.client.get("/api/matching/status/?topic_id=102")
+        self.assertEqual(alice_status.status_code, status.HTTP_200_OK)
+        self.assertEqual(alice_status.data["status"], MatchQueueEntry.Status.MATCHED)
+        self.assertEqual(alice_status.data["other_user_id"], self.other_user.id)
+
+        match = DialogueMatch.objects.get(id=second_response.data["match_id"])
+        self.assertEqual(match.status, DialogueMatch.Status.ACTIVE)
+        self.assertEqual(
+            {match.user_a_id, match.user_b_id},
+            {self.user.id, self.other_user.id},
+        )
 
     def test_session_uses_backend_title_for_known_topic(self):
         create_response = self.client.post(

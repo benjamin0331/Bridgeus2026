@@ -14,4 +14,7 @@ urlpatterns = [
         'dialogue/sessions/<str:session_id>/reply/',
         views.DialogueSessionReplyView.as_view(),
     ),
+    path('matching/join/', views.MatchingJoinView.as_view()),
+    path('matching/status/', views.MatchingStatusView.as_view()),
+    path('matching/cancel/', views.MatchingCancelView.as_view()),
 ]
