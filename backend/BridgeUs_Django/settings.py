@@ -98,6 +98,7 @@ CHANNEL_LAYERS = {
     }
 }
 
+
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
@@ -134,12 +135,29 @@ WSGI_APPLICATION = 'BridgeUs_Django.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': Path(os.getenv("SQLITE_PATH", BASE_DIR / 'db.sqlite3')),
+DB_ENGINE = os.getenv("DB_ENGINE", "sqlite").strip().lower()
+if DB_ENGINE == "sqlite":
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': Path(os.getenv("SQLITE_PATH", BASE_DIR / 'db.sqlite3')),
+        }
     }
-}
+elif DB_ENGINE in {"postgres", "postgresql"}:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.getenv("DB_NAME", "bridgeus"),
+            'USER': os.getenv("DB_USER", "postgres"),
+            'PASSWORD': os.getenv("DB_PASSWORD", ""),
+            'HOST': os.getenv("DB_HOST", "127.0.0.1"),
+            'PORT': os.getenv("DB_PORT", "5432"),
+        }
+    }
+else:
+    raise ImproperlyConfigured(
+        "DB_ENGINE must be one of: sqlite, postgres, postgresql."
+    )
 
 USE_REDIS_CACHE = _env_bool("USE_REDIS_CACHE", False)
 REDIS_URL = os.getenv("REDIS_URL")
