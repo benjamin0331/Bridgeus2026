@@ -301,3 +301,8 @@ bridgeus/
 - **去極化指標**：立場偏移量（向量距離變化）、情緒分數變化、攻擊性詞彙減少、CCND 拓撲結構變化
 - **準即時分析觸發**：每 90 分鐘 或 累積 200 字
 - **關鍵文獻**：Combs et al. (2023) Nature Human Behaviour — DiscussIt platform; Argyle et al. (2023) PNAS — AI chat interventions
+
+## H-H 對話模組
+架構文件：./docs/HH_Architecture.md
+目前進度：尚未開始
+當前任務：建立 NLP Pipeline 基礎模組

@@ -88,15 +88,12 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     'channels',
     'api',
+    'chat',
 ]
 
 ASGI_APPLICATION = 'BridgeUs_Django.asgi.application'
 
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels.layers.InMemoryChannelLayer",
-    }
-}
+USE_REDIS_CHANNEL = _env_bool("USE_REDIS_CHANNEL", False)
 
 
 MIDDLEWARE = [
@@ -177,6 +174,24 @@ else:
         'default': {
             'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
             'LOCATION': 'bridgeus-local-cache',
+        }
+    }
+
+if USE_REDIS_CHANNEL:
+    if not REDIS_URL:
+        raise ImproperlyConfigured(
+            "REDIS_URL must be set when USE_REDIS_CHANNEL is enabled."
+        )
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {"hosts": [REDIS_URL]},
+        }
+    }
+else:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels.layers.InMemoryChannelLayer",
         }
     }
 
