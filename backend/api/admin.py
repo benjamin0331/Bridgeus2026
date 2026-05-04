@@ -11,8 +11,16 @@ from .models import (
 
 @admin.register(AIConversation)
 class AIConversationAdmin(admin.ModelAdmin):
-    list_display = ("id", "user_prompt", "created_at")
-    search_fields = ("user_prompt", "ai_response")
+    list_display = (
+        "id",
+        "user",
+        "topic_id",
+        "session_id",
+        "dialogue_phase",
+        "created_at",
+    )
+    list_filter = ("topic_id", "dialogue_phase")
+    search_fields = ("user__username", "session_id", "user_prompt", "ai_response")
 
 
 @admin.register(UserStanceProfile)

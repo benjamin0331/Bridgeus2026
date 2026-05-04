@@ -4,12 +4,28 @@ from django.db.models import F, Q
 
 
 class AIConversation(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="ai_conversations",
+    )
+    session_id = models.CharField(max_length=64, blank=True, db_index=True)
+    topic_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
     user_prompt = models.TextField(help_text="使用者的提問")
     ai_response = models.TextField(blank=True, null=True, help_text="AI 的回覆")
+    dialogue_phase = models.CharField(max_length=32, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, help_text="建立時間")
 
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "session_id", "created_at"]),
+            models.Index(fields=["topic_id", "created_at"]),
+        ]
+
     def __str__(self):
-        return f"提問: {self.user_prompt[:20]}..."
+        return f"session={self.session_id or '-'} prompt={self.user_prompt[:20]}..."
 
 
 class UserStanceProfile(models.Model):

@@ -27,6 +27,11 @@ function buildDialogueWebSocketUrl(sessionId, token) {
   return `${getWebSocketBaseUrl()}/ws/dialogue/${sessionId}/${query}`;
 }
 
+function buildMatchWebSocketUrl(roomId, token) {
+  const query = token ? `?token=${encodeURIComponent(token)}` : '';
+  return `${getWebSocketBaseUrl()}/ws/matching/rooms/${roomId}/${query}`;
+}
+
 function waitForSocketOpen(socket) {
   if (socket.readyState === WebSocket.OPEN) {
     return Promise.resolve();
@@ -161,10 +166,14 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const textareaRef = useRef(null);
   const wsRef = useRef(null);
   const wsSessionIdRef = useRef(null);
+  const matchWsRef = useRef(null);
+  const matchWsRoomIdRef = useRef(null);
   const currentAgentMsgIdRef = useRef(null);
   const isSendingRef = useRef(false);
   const activeMatchRef = useRef({ roomId: null, status: null, topicId: null });
   const leaveRequestSentRef = useRef(false);
+  const cancelQueueRequestSentRef = useRef(false);
+  const isChatPageMountedRef = useRef(true);
   const currentIssue = issues?.find((item) => item.id === parseInt(id, 10));
   const displayUserName = user?.name || '公民';
   const matchPartnerName =
@@ -174,15 +183,80 @@ function TopicChat({ user, issues, issuesLoaded }) {
     isMatchingMode && matchingState?.status === 'matched' && matchingState?.room_id,
   );
 
+  const appendMatchMessage = useCallback((message) => {
+    if (!message?.id) {
+      return;
+    }
+
+    setMatchMessages((prev) => {
+      const messageId = Number(message.id);
+      if (prev.some((existing) => Number(existing.id) === messageId)) {
+        return prev;
+      }
+
+      return [...prev, message];
+    });
+  }, []);
+
+  const connectMatchWebSocket = useCallback((roomId) => {
+    const token = localStorage.getItem('access');
+    if (!token) {
+      setMatchChatError('登入已過期，請重新登入。');
+      return null;
+    }
+
+    const socket = new WebSocket(buildMatchWebSocketUrl(roomId, token));
+    matchWsRef.current = socket;
+    matchWsRoomIdRef.current = roomId;
+
+    socket.onmessage = (event) => {
+      let data = null;
+      try {
+        data = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+
+      if (data.type === 'match_message') {
+        appendMatchMessage(data.message);
+        setMatchChatError('');
+        return;
+      }
+
+      if (data.type === 'error') {
+        setMatchChatError(data.content || '配對聊天室連線發生錯誤。');
+      }
+    };
+
+    socket.onerror = () => {
+      setMatchChatError('配對聊天室 WebSocket 連線錯誤，會暫時改用 HTTP 備援。');
+    };
+
+    socket.onclose = () => {
+      if (matchWsRef.current === socket) {
+        matchWsRef.current = null;
+        matchWsRoomIdRef.current = null;
+      }
+    };
+
+    return socket;
+  }, [appendMatchMessage]);
+
   useEffect(() => {
     isSendingRef.current = isSending;
   }, [isSending]);
 
   useEffect(() => {
+    isChatPageMountedRef.current = true;
+
     return () => {
+      isChatPageMountedRef.current = false;
       wsRef.current?.close();
       wsRef.current = null;
       wsSessionIdRef.current = null;
+      matchWsRef.current?.close();
+      matchWsRef.current = null;
+      matchWsRoomIdRef.current = null;
     };
   }, []);
 
@@ -199,6 +273,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
     if (matchingState?.status !== 'matched') {
       leaveRequestSentRef.current = false;
+    }
+    if (matchingState?.status !== 'matching') {
+      cancelQueueRequestSentRef.current = false;
     }
   }, [id, matchingState?.room_id, matchingState?.status]);
 
@@ -218,6 +295,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
     wsRef.current?.close();
     wsRef.current = null;
     wsSessionIdRef.current = null;
+    matchWsRef.current?.close();
+    matchWsRef.current = null;
+    matchWsRoomIdRef.current = null;
     setMatchingState(null);
     setIsMatchingStateLoading(isMatchingMode);
     setIsMatchingActionLoading(false);
@@ -228,6 +308,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setMatchChatError('');
     activeMatchRef.current = { roomId: null, status: null, topicId: null };
     leaveRequestSentRef.current = false;
+    cancelQueueRequestSentRef.current = false;
   }, [id, isMatchingMode]);
 
   useEffect(() => {
@@ -313,6 +394,35 @@ function TopicChat({ user, issues, issuesLoaded }) {
       cancelled = true;
     };
   }, [currentIssue, id, isMatchingMode]);
+
+  useEffect(() => {
+    if (!isMatchChatReady || !matchingState?.room_id) {
+      matchWsRef.current?.close();
+      matchWsRef.current = null;
+      matchWsRoomIdRef.current = null;
+      return undefined;
+    }
+
+    if (
+      matchWsRef.current &&
+      matchWsRoomIdRef.current === matchingState.room_id &&
+      matchWsRef.current.readyState !== WebSocket.CLOSED &&
+      matchWsRef.current.readyState !== WebSocket.CLOSING
+    ) {
+      return undefined;
+    }
+
+    matchWsRef.current?.close();
+    const socket = connectMatchWebSocket(matchingState.room_id);
+
+    return () => {
+      if (matchWsRef.current === socket) {
+        matchWsRef.current = null;
+        matchWsRoomIdRef.current = null;
+      }
+      socket?.close();
+    };
+  }, [connectMatchWebSocket, isMatchChatReady, matchingState?.room_id]);
 
   useEffect(() => {
     if (!isMatchingMode || matchingState?.status !== 'matching') {
@@ -416,13 +526,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
     };
   }, [isMatchChatReady, isMatchingMode, matchingState?.room_id]);
 
-  const triggerAutoLeaveMatchRoom = useCallback(({ keepalive = false } = {}) => {
-    if (!isMatchingMode) {
-      return;
-    }
-
-    const { roomId, status } = activeMatchRef.current;
-    if (!roomId || status !== 'matched' || leaveRequestSentRef.current) {
+  const sendCancelMatchingQueueRequest = useCallback((topicId, { keepalive = false } = {}) => {
+    if (!topicId) {
       return;
     }
 
@@ -431,7 +536,31 @@ function TopicChat({ user, issues, issuesLoaded }) {
       return;
     }
 
-    leaveRequestSentRef.current = true;
+    const url = `${window.location.origin}${import.meta.env.VITE_API_BASE_URL || ''}/api/matching/cancel/`;
+
+    fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ topic_id: topicId }),
+      keepalive,
+    }).catch(() => {
+      // Best-effort cleanup when user leaves while still waiting for a match.
+    });
+  }, []);
+
+  const sendLeaveMatchRoomRequest = useCallback((roomId, { keepalive = false } = {}) => {
+    if (!roomId) {
+      return;
+    }
+
+    const token = localStorage.getItem('access');
+    if (!token) {
+      return;
+    }
+
     const url = `${window.location.origin}${import.meta.env.VITE_API_BASE_URL || ''}/api/matching/rooms/${roomId}/leave/`;
 
     fetch(url, {
@@ -443,7 +572,35 @@ function TopicChat({ user, issues, issuesLoaded }) {
     }).catch(() => {
       // Best-effort cleanup when user leaves the page.
     });
-  }, [isMatchingMode]);
+  }, []);
+
+  const triggerAutoCancelMatchingQueue = useCallback(({ keepalive = false } = {}) => {
+    if (!isMatchingMode) {
+      return;
+    }
+
+    const { status, topicId } = activeMatchRef.current;
+    if (status !== 'matching' || !topicId || cancelQueueRequestSentRef.current) {
+      return;
+    }
+
+    cancelQueueRequestSentRef.current = true;
+    sendCancelMatchingQueueRequest(topicId, { keepalive });
+  }, [isMatchingMode, sendCancelMatchingQueueRequest]);
+
+  const triggerAutoLeaveMatchRoom = useCallback(({ keepalive = false } = {}) => {
+    if (!isMatchingMode) {
+      return;
+    }
+
+    const { roomId, status } = activeMatchRef.current;
+    if (!roomId || status !== 'matched' || leaveRequestSentRef.current) {
+      return;
+    }
+
+    leaveRequestSentRef.current = true;
+    sendLeaveMatchRoomRequest(roomId, { keepalive });
+  }, [isMatchingMode, sendLeaveMatchRoomRequest]);
 
   useEffect(() => {
     if (!isMatchingMode) {
@@ -451,6 +608,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     }
 
     const handlePageHide = () => {
+      triggerAutoCancelMatchingQueue({ keepalive: true });
       triggerAutoLeaveMatchRoom({ keepalive: true });
     };
 
@@ -458,9 +616,10 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
     return () => {
       window.removeEventListener('pagehide', handlePageHide);
+      triggerAutoCancelMatchingQueue({ keepalive: true });
       triggerAutoLeaveMatchRoom({ keepalive: true });
     };
-  }, [isMatchingMode, triggerAutoLeaveMatchRoom]);
+  }, [isMatchingMode, triggerAutoCancelMatchingQueue, triggerAutoLeaveMatchRoom]);
 
   const connectDialogueWebSocket = (activeSessionId) => {
     const token = localStorage.getItem('access');
@@ -585,21 +744,37 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setIsMatchingActionLoading(true);
 
     try {
+      const topicId = Number(id);
       const response = await api.post('/api/matching/join/', {
-        topic_id: Number(id),
+        topic_id: topicId,
         survey_answers: answers,
         survey_open_answers: openAnswers,
       });
 
+      if (!isChatPageMountedRef.current) {
+        if (response.data?.status === 'matching') {
+          sendCancelMatchingQueueRequest(topicId, { keepalive: true });
+        } else if (response.data?.status === 'matched' && response.data?.room_id) {
+          sendLeaveMatchRoomRequest(response.data.room_id, { keepalive: true });
+        }
+        return;
+      }
+
       setMatchingState(response.data);
       setShowSurvey(false);
     } catch (error) {
+      if (!isChatPageMountedRef.current) {
+        return;
+      }
+
       setMatchingError(
         error?.response?.data?.detail ||
           '目前無法加入匹配，請稍後再試。',
       );
     } finally {
-      setIsMatchingActionLoading(false);
+      if (isChatPageMountedRef.current) {
+        setIsMatchingActionLoading(false);
+      }
     }
   };
 
@@ -621,6 +796,12 @@ function TopicChat({ user, issues, issuesLoaded }) {
       setIsMatchSending(true);
 
       try {
+        const socket = matchWsRef.current;
+        if (socket?.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: 'match_message', content: text }));
+          return;
+        }
+
         const response = await api.post(
           `/api/matching/rooms/${matchingState.room_id}/messages/`,
           { content: text },
@@ -749,6 +930,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
         topic_id: Number(id),
       });
 
+      cancelQueueRequestSentRef.current = true;
       setMatchingState(response.data);
       setShowSurvey(false);
       setMatchMessages([]);
@@ -1139,7 +1321,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
           )}
           {isMatchingMode && (
             <p className="chat-input-hint">
-              配對演算法現在集中在 backend 的 <code>apps/matching/services/matching_algorithm.py</code>；測試期目前允許同立場也能配對，真人聊天室先用 polling 版 API 跑通，之後再升級成 WebSocket。
+              配對演算法現在集中在 backend 的 <code>apps/matching/services/matching_algorithm.py</code>；測試期目前允許同立場也能配對，真人聊天室會優先使用 WebSocket，HTTP 訊息 API 保留為備援。
             </p>
           )}
         </div>

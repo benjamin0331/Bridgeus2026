@@ -1,4 +1,6 @@
+import os
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -9,6 +11,11 @@ from django.utils import timezone
 from api.models import DialogueMatch, MatchMessage, MatchQueueEntry, UserStanceProfile
 
 from .matching_algorithm import candidate_categories_for, choose_best_candidate
+
+
+MATCHING_QUEUE_HEARTBEAT_TIMEOUT_SECONDS = int(
+    os.getenv("MATCHING_QUEUE_HEARTBEAT_TIMEOUT_SECONDS", "15")
+)
 
 
 class MatchingError(Exception):
@@ -50,6 +57,30 @@ def _get_active_match(*, user_id: int, topic_id: int) -> DialogueMatch | None:
     return _active_match_queryset(user_id=user_id, topic_id=topic_id).first()
 
 
+def _stale_queue_cutoff(now=None):
+    current_time = now or timezone.now()
+    return current_time - timedelta(seconds=MATCHING_QUEUE_HEARTBEAT_TIMEOUT_SECONDS)
+
+
+def expire_stale_matching_entries(*, topic_id: int, now=None) -> int:
+    current_time = now or timezone.now()
+    return MatchQueueEntry.objects.filter(
+        topic_id=topic_id,
+        status=MatchQueueEntry.Status.MATCHING,
+        updated_at__lt=_stale_queue_cutoff(current_time),
+    ).update(
+        status=MatchQueueEntry.Status.CANCELLED,
+        cancelled_at=current_time,
+        updated_at=current_time,
+    )
+
+
+def touch_matching_queue_entry(queue_entry: MatchQueueEntry, *, now=None) -> None:
+    current_time = now or timezone.now()
+    queue_entry.updated_at = current_time
+    queue_entry.save(update_fields=["updated_at"])
+
+
 def _find_best_candidate(
     *,
     topic_id: int,
@@ -61,12 +92,16 @@ def _find_best_candidate(
     if not candidate_categories:
         return None
 
+    now = timezone.now()
+    expire_stale_matching_entries(topic_id=topic_id, now=now)
+
     candidates = list(
         MatchQueueEntry.objects.select_for_update()
         .select_related("profile", "user")
         .filter(
             topic_id=topic_id,
             status=MatchQueueEntry.Status.MATCHING,
+            updated_at__gte=_stale_queue_cutoff(now),
             profile__stance_category__in=candidate_categories,
         )
         .exclude(user_id=requester_user_id)
@@ -237,6 +272,7 @@ def get_matching_state(*, user, topic_id: int) -> MatchingState:
         .first()
     )
     if queue_entry:
+        touch_matching_queue_entry(queue_entry)
         return MatchingState(
             status=MatchQueueEntry.Status.MATCHING,
             profile=queue_entry.profile,

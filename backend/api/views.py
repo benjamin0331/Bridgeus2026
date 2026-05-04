@@ -312,15 +312,24 @@ def get_dialogue_agent(collection_name: str):
 
 
 class AIConversationListCreate(generics.ListCreateAPIView):
-    queryset = AIConversation.objects.all().order_by("-created_at")
     serializer_class = AIConversationSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return AIConversation.objects.filter(user=self.request.user).order_by(
+            "-created_at"
+        )
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
 
 
 class AIConversationDetail(generics.RetrieveUpdateDestroyAPIView):
-    queryset = AIConversation.objects.all()
     serializer_class = AIConversationSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return AIConversation.objects.filter(user=self.request.user)
 
 
 class DialogueTopicListView(APIView):
@@ -381,6 +390,9 @@ class DialogueSessionCreateView(APIView):
             _session_cache_key(session_id),
             {
                 "user_id": request.user.id,
+                "session_id": session_id,
+                "topic_id": validated["topic_id"],
+                "topic_title": topic_config["topic"],
                 "collection_name": topic_config["collection_name"],
                 "survey_context": {
                     "survey_answers": validated.get("survey_answers", {}),
@@ -427,9 +439,17 @@ class DialogueSessionReplyView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        user_message = serializer.validated_data["message"].strip()
         session = DialogueSession.from_dict(session_record["session"])
-        session.add_user_message(serializer.validated_data["message"])
+        session.add_user_message(user_message)
         session.dialogue_phase = DialoguePhase.from_turn_count(session.turn_count)
+        saved_turn = AIConversation.objects.create(
+            user=request.user,
+            session_id=session_id,
+            topic_id=session_record.get("topic_id"),
+            user_prompt=user_message,
+            dialogue_phase=session.dialogue_phase.value,
+        )
 
         try:
             reply = get_dialogue_agent(session_record["collection_name"]).respond(
@@ -454,6 +474,9 @@ class DialogueSessionReplyView(APIView):
         session.add_agent_message(reply)
         session_record["session"] = session.to_dict()
         cache.set(cache_key, session_record, timeout=SESSION_TTL_SECONDS)
+        saved_turn.ai_response = reply
+        saved_turn.dialogue_phase = session.dialogue_phase.value
+        saved_turn.save(update_fields=["ai_response", "dialogue_phase"])
 
         return Response(
             {

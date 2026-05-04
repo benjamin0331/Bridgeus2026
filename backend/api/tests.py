@@ -1,12 +1,14 @@
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
 from api.dialogue_topics import SURVEY_CONFIGS, TOPIC_CONFIGS
-from api.models import DialogueMatch, MatchMessage, MatchQueueEntry, UserStanceProfile
+from api.models import AIConversation, DialogueMatch, MatchMessage, MatchQueueEntry, UserStanceProfile
 
 
 class FakeDialogueAgent:
@@ -196,6 +198,12 @@ class DialogueSessionApiTests(APITestCase):
         self.assertEqual(len(reply_response.data["history"]), 2)
         self.assertEqual(reply_response.data["history"][0]["role"], "user")
         self.assertEqual(reply_response.data["history"][1]["role"], "agent")
+
+        saved_turn = AIConversation.objects.get(session_id=session_id)
+        self.assertEqual(saved_turn.user, self.user)
+        self.assertEqual(saved_turn.topic_id, 102)
+        self.assertEqual(saved_turn.user_prompt, "核能真的比其他方案更穩定嗎？")
+        self.assertEqual(saved_turn.ai_response, "AI reply to: 核能真的比其他方案更穩定嗎？")
         mocked_get_agent.assert_called_once_with("nuclear_energy_all")
 
 
@@ -292,6 +300,62 @@ class MatchingApiTests(APITestCase):
         self.assertEqual(response.data["status"], MatchQueueEntry.Status.MATCHING)
         self.assertIsNotNone(response.data["queue_entry_id"])
         self.assertIsNone(response.data["match_id"])
+
+    def test_matching_status_refreshes_queue_heartbeat(self):
+        self.client.post(
+            "/api/matching/join/",
+            {
+                "topic_id": 102,
+                "survey_answers": build_supporting_answers(),
+            },
+            format="json",
+        )
+        queue_entry = MatchQueueEntry.objects.get(
+            user=self.user,
+            topic_id=102,
+            status=MatchQueueEntry.Status.MATCHING,
+        )
+        old_timestamp = timezone.now() - timedelta(minutes=5)
+        MatchQueueEntry.objects.filter(id=queue_entry.id).update(
+            updated_at=old_timestamp
+        )
+
+        response = self.client.get("/api/matching/status/?topic_id=102")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        queue_entry.refresh_from_db()
+        self.assertGreater(queue_entry.updated_at, old_timestamp)
+
+    def test_matching_ignores_stale_queue_entries(self):
+        self.client.post(
+            "/api/matching/join/",
+            {
+                "topic_id": 102,
+                "survey_answers": build_supporting_answers(),
+            },
+            format="json",
+        )
+        old_timestamp = timezone.now() - timedelta(minutes=5)
+        MatchQueueEntry.objects.filter(
+            user=self.user,
+            topic_id=102,
+            status=MatchQueueEntry.Status.MATCHING,
+        ).update(updated_at=old_timestamp)
+
+        response = self.other_client.post(
+            "/api/matching/join/",
+            {
+                "topic_id": 102,
+                "survey_answers": build_opposing_answers(),
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], MatchQueueEntry.Status.MATCHING)
+        self.assertFalse(DialogueMatch.objects.exists())
+        stale_entry = MatchQueueEntry.objects.get(user=self.user, topic_id=102)
+        self.assertEqual(stale_entry.status, MatchQueueEntry.Status.CANCELLED)
 
     def test_matching_cancel_marks_queue_entry_cancelled(self):
         self.client.post(

@@ -200,20 +200,29 @@ else:
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
 
+PASSWORD_MIN_LENGTH = int(os.getenv("DJANGO_PASSWORD_MIN_LENGTH", "8"))
+ALLOW_COMMON_PASSWORDS = _env_bool("ALLOW_COMMON_PASSWORDS", False)
+ALLOW_NUMERIC_PASSWORDS = _env_bool("ALLOW_NUMERIC_PASSWORDS", False)
+
 AUTH_PASSWORD_VALIDATORS = [
     {
-        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
+        "OPTIONS": {"min_length": PASSWORD_MIN_LENGTH},
     },
 ]
+
+if not ALLOW_COMMON_PASSWORDS:
+    AUTH_PASSWORD_VALIDATORS.append(
+        {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"}
+    )
+
+if not ALLOW_NUMERIC_PASSWORDS:
+    AUTH_PASSWORD_VALIDATORS.append(
+        {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"}
+    )
 
 
 # Internationalization
