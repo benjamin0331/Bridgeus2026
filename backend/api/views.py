@@ -90,6 +90,7 @@ def _get_open_answer(
     ).strip()
 
 
+# 問卷分數邏輯
 def _compute_user_stance_score(
     *,
     topic_id: int,

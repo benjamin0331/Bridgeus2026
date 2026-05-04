@@ -1,12 +1,3 @@
-"""
-ASGI config for BridgeUs_Django project.
-
-It exposes the ASGI callable as a module-level variable named ``application``.
-
-For more information on this file, see
-https://docs.djangoproject.com/en/6.0/howto/deployment/asgi/
-"""
-
 import os
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'BridgeUs_Django.settings')
@@ -17,11 +8,14 @@ django_asgi_app = get_asgi_application()
 
 from channels.routing import ProtocolTypeRouter, URLRouter
 
-from api.routing import websocket_urlpatterns
+from api.routing import websocket_urlpatterns as ai_websocket_urlpatterns
+from chat.routing import websocket_urlpatterns as chat_websocket_urlpatterns
 
 application = ProtocolTypeRouter(
     {
         'http': django_asgi_app,
-        'websocket': URLRouter(websocket_urlpatterns),
+        'websocket': URLRouter(
+            ai_websocket_urlpatterns + chat_websocket_urlpatterns
+        ),
     }
 )
