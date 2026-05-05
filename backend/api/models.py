@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.db import models
 from django.db.models import F, Q
+from pgvector.django import VectorField
 
 
 class AIConversation(models.Model):
@@ -48,6 +49,7 @@ class UserStanceProfile(models.Model):
     )
     survey_answers = models.JSONField(default=dict)
     survey_open_answers = models.JSONField(default=dict)
+    q9_embedding = VectorField(dimensions=384, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -89,6 +91,10 @@ class DialogueMatch(models.Model):
     )
     user_a_score = models.DecimalField(max_digits=4, decimal_places=2)
     user_b_score = models.DecimalField(max_digits=4, decimal_places=2)
+    likert_distance = models.DecimalField(max_digits=6, decimal_places=4, default=0)
+    semantic_distance = models.DecimalField(max_digits=6, decimal_places=4, default=0)
+    match_score = models.DecimalField(max_digits=6, decimal_places=4, default=0)
+    matching_algorithm_version = models.CharField(max_length=64, default="legacy")
     room_id = models.CharField(max_length=64, unique=True)
     status = models.CharField(
         max_length=20,

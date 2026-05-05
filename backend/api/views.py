@@ -36,6 +36,7 @@ DEFAULT_DIALOGUE_COLLECTION = os.getenv(
     "DEFAULT_DIALOGUE_COLLECTION",
     "general_knowledge",
 )
+ANONYMOUS_MATCH_USER_NAME = "匿名對話者"
 
 
 def _session_cache_key(session_id: str) -> str:
@@ -245,7 +246,7 @@ def _build_matching_state_payload(*, topic_id: int, state, user_id: int) -> dict
     if match:
         other_user = _get_other_user(match, user_id=user_id)
         other_user_id = other_user.id
-        other_user_name = other_user.username
+        other_user_name = ANONYMOUS_MATCH_USER_NAME
 
     payload = {
         "topic_id": topic_id,
@@ -271,15 +272,21 @@ def _build_matching_state_payload(*, topic_id: int, state, user_id: int) -> dict
     return MatchingStateSerializer(payload).data
 
 
+def _room_match_state_status(match: DialogueMatch) -> str:
+    if match.status == DialogueMatch.Status.ACTIVE:
+        return "matched"
+    return match.status
+
+
 def _build_room_messages_payload(*, match: DialogueMatch, user_id: int, messages) -> dict:
     other_user = _get_other_user(match, user_id=user_id)
     payload = {
         "room_id": match.room_id,
         "match_id": match.id,
         "topic_id": match.topic_id,
-        "status": match.status,
+        "status": _room_match_state_status(match),
         "other_user_id": other_user.id,
-        "other_user_name": other_user.username,
+        "other_user_name": ANONYMOUS_MATCH_USER_NAME,
         "messages": messages,
     }
     return MatchingRoomMessagesSerializer(payload).data
@@ -518,6 +525,7 @@ class MatchingJoinView(APIView):
             stance_category=stance_category,
             survey_answers=validated["survey_answers"],
             survey_open_answers=resolved_open_answers,
+            restart_existing_match=validated.get("restart_existing_match", False),
         )
 
         return Response(
@@ -591,7 +599,10 @@ class MatchingRoomMessagesView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, room_id: str):
-        from apps.matching.services.matcher import get_room_messages
+        from apps.matching.services.matcher import (
+            close_match_if_idle,
+            get_room_messages,
+        )
 
         match = _get_room_match_for_user(room_id=room_id, user_id=request.user.id)
         if not match:
@@ -600,6 +611,7 @@ class MatchingRoomMessagesView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        match = close_match_if_idle(match=match)
         messages = get_room_messages(match=match)
         return Response(
             _build_room_messages_payload(
@@ -610,7 +622,10 @@ class MatchingRoomMessagesView(APIView):
         )
 
     def post(self, request, room_id: str):
-        from apps.matching.services.matcher import get_room_messages
+        from apps.matching.services.matcher import (
+            close_match_if_idle,
+            get_room_messages,
+        )
         from .models import MatchMessage
 
         match = _get_room_match_for_user(room_id=room_id, user_id=request.user.id)
@@ -619,6 +634,7 @@ class MatchingRoomMessagesView(APIView):
                 {"detail": "找不到這個配對房間。"},
                 status=status.HTTP_404_NOT_FOUND,
             )
+        match = close_match_if_idle(match=match)
         if match.status != DialogueMatch.Status.ACTIVE:
             return Response(
                 {"detail": "這個配對房間目前無法傳送訊息。"},

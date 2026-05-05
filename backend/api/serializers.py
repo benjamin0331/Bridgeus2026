@@ -88,6 +88,10 @@ class MatchingJoinSerializer(serializers.Serializer):
         ),
         required=False,
     )
+    restart_existing_match = serializers.BooleanField(
+        default=False,
+        required=False,
+    )
 
     def validate(self, attrs):
         topic_id = attrs["topic_id"]
@@ -151,7 +155,10 @@ class MatchingStateSerializer(serializers.Serializer):
 
 class MatchMessageSerializer(serializers.ModelSerializer):
     sender_id = serializers.IntegerField(source="sender.id", read_only=True)
-    sender_name = serializers.CharField(source="sender.username", read_only=True)
+    sender_name = serializers.SerializerMethodField()
+
+    def get_sender_name(self, obj):
+        return "匿名使用者"
 
     class Meta:
         model = MatchMessage

@@ -1,11 +1,13 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import './TopicChat.css';
 import SurveyModal from '../components/SurveyModal';
 import api from '../api/client';
 
 const MATCHING_POLL_INTERVAL_MS = 3000;
+const MATCH_SELF_NAME = '我';
+const MATCH_PARTNER_NAME = '匿名對話者';
 
 function getWebSocketBaseUrl() {
   const configuredBase = import.meta.env.VITE_WS_BASE_URL;
@@ -105,21 +107,17 @@ function formatStanceCategory(category) {
   return '尚未建立立場標記';
 }
 
-function mapMatchMessagesToDisplay(messages, userId, selfName, partnerFallbackName) {
+function mapMatchMessagesToDisplay(messages, userId) {
   const currentUserId = Number(userId);
-  const normalizedSelfName = String(selfName || '').trim();
 
   return messages.map((message) => {
     const senderId = Number(message.sender_id);
-    const senderName = String(message.sender_name || '').trim();
-    const isCurrentUser =
-      (Number.isFinite(currentUserId) && senderId === currentUserId) ||
-      (normalizedSelfName !== '' && senderName !== '' && senderName === normalizedSelfName);
+    const isCurrentUser = Number.isFinite(currentUserId) && senderId === currentUserId;
 
     return {
       id: `match-message-${message.id}`,
       type: isCurrentUser ? 'user' : 'agent',
-      userName: isCurrentUser ? selfName : message.sender_name || partnerFallbackName,
+      userName: isCurrentUser ? MATCH_SELF_NAME : MATCH_PARTNER_NAME,
       text: message.content,
       timestamp: message.created_at,
     };
@@ -129,6 +127,7 @@ function mapMatchMessagesToDisplay(messages, userId, selfName, partnerFallbackNa
 function TopicChat({ user, issues, issuesLoaded }) {
   const { id } = useParams();
   const location = useLocation();
+  const navigate = useNavigate();
   const mode = useMemo(() => {
     const params = new URLSearchParams(location.search);
     return params.get('mode') === 'match' ? 'match' : 'ai';
@@ -136,7 +135,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const isMatchingMode = mode === 'match';
   const modeLabel = isMatchingMode ? '配對模式' : 'AI 模式';
 
-  const [showSurvey, setShowSurvey] = useState(true);
+  const [showSurvey, setShowSurvey] = useState(!isMatchingMode);
   const [survey, setSurvey] = useState(null);
   const [surveyAnswers, setSurveyAnswers] = useState({});
   const [surveyOpenAnswers, setSurveyOpenAnswers] = useState({});
@@ -151,7 +150,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const [chatError, setChatError] = useState('');
 
   const [matchingState, setMatchingState] = useState(null);
-  const [isMatchingStateLoading, setIsMatchingStateLoading] = useState(false);
+  const [isMatchingStateLoading, setIsMatchingStateLoading] = useState(isMatchingMode);
   const [isMatchingActionLoading, setIsMatchingActionLoading] = useState(false);
   const [matchingError, setMatchingError] = useState('');
   const [matchMessages, setMatchMessages] = useState([]);
@@ -176,11 +175,12 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const isChatPageMountedRef = useRef(true);
   const currentIssue = issues?.find((item) => item.id === parseInt(id, 10));
   const displayUserName = user?.name || '公民';
-  const matchPartnerName =
-    matchingState?.other_user_name ||
-    (matchingState?.other_user_id ? `使用者 #${matchingState.other_user_id}` : '對話對象');
+  const matchPartnerName = MATCH_PARTNER_NAME;
   const isMatchChatReady = Boolean(
-    isMatchingMode && matchingState?.status === 'matched' && matchingState?.room_id,
+    isMatchingMode &&
+      !showSurvey &&
+      matchingState?.status === 'matched' &&
+      matchingState?.room_id,
   );
 
   const appendMatchMessage = useCallback((message) => {
@@ -196,6 +196,25 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
       return [...prev, message];
     });
+  }, []);
+
+  const closeMatchWebSocket = useCallback((socket = matchWsRef.current) => {
+    if (!socket) {
+      return;
+    }
+
+    socket.onmessage = null;
+    socket.onerror = null;
+    socket.onclose = null;
+
+    if (socket.readyState !== WebSocket.CLOSED) {
+      socket.close();
+    }
+
+    if (matchWsRef.current === socket) {
+      matchWsRef.current = null;
+      matchWsRoomIdRef.current = null;
+    }
   }, []);
 
   const connectMatchWebSocket = useCallback((roomId) => {
@@ -254,11 +273,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
       wsRef.current?.close();
       wsRef.current = null;
       wsSessionIdRef.current = null;
-      matchWsRef.current?.close();
-      matchWsRef.current = null;
-      matchWsRoomIdRef.current = null;
+      closeMatchWebSocket();
     };
-  }, []);
+  }, [closeMatchWebSocket]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -266,8 +283,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
   useEffect(() => {
     activeMatchRef.current = {
-      roomId: matchingState?.room_id || null,
-      status: matchingState?.status || null,
+      roomId: showSurvey ? null : matchingState?.room_id || null,
+      status: showSurvey ? null : matchingState?.status || null,
       topicId: Number(id),
     };
 
@@ -277,14 +294,14 @@ function TopicChat({ user, issues, issuesLoaded }) {
     if (matchingState?.status !== 'matching') {
       cancelQueueRequestSentRef.current = false;
     }
-  }, [id, matchingState?.room_id, matchingState?.status]);
+  }, [id, matchingState?.room_id, matchingState?.status, showSurvey]);
 
   useEffect(() => {
     setSurvey(null);
     setSurveyAnswers({});
     setSurveyOpenAnswers({});
     setSurveyError('');
-    setShowSurvey(true);
+    setShowSurvey(!isMatchingMode);
     setSessionId(null);
     setInputValue('');
     setMessages([]);
@@ -295,9 +312,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     wsRef.current?.close();
     wsRef.current = null;
     wsSessionIdRef.current = null;
-    matchWsRef.current?.close();
-    matchWsRef.current = null;
-    matchWsRoomIdRef.current = null;
+    closeMatchWebSocket();
     setMatchingState(null);
     setIsMatchingStateLoading(isMatchingMode);
     setIsMatchingActionLoading(false);
@@ -309,7 +324,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     activeMatchRef.current = { roomId: null, status: null, topicId: null };
     leaveRequestSentRef.current = false;
     cancelQueueRequestSentRef.current = false;
-  }, [id, isMatchingMode]);
+  }, [closeMatchWebSocket, id, isMatchingMode]);
 
   useEffect(() => {
     if (!currentIssue) {
@@ -397,9 +412,10 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
   useEffect(() => {
     if (!isMatchChatReady || !matchingState?.room_id) {
-      matchWsRef.current?.close();
-      matchWsRef.current = null;
-      matchWsRoomIdRef.current = null;
+      closeMatchWebSocket();
+      if (showSurvey) {
+        setMatchChatError('');
+      }
       return undefined;
     }
 
@@ -412,7 +428,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
       return undefined;
     }
 
-    matchWsRef.current?.close();
+    closeMatchWebSocket();
     const socket = connectMatchWebSocket(matchingState.room_id);
 
     return () => {
@@ -420,9 +436,15 @@ function TopicChat({ user, issues, issuesLoaded }) {
         matchWsRef.current = null;
         matchWsRoomIdRef.current = null;
       }
-      socket?.close();
+      closeMatchWebSocket(socket);
     };
-  }, [connectMatchWebSocket, isMatchChatReady, matchingState?.room_id]);
+  }, [
+    closeMatchWebSocket,
+    connectMatchWebSocket,
+    isMatchChatReady,
+    matchingState?.room_id,
+    showSurvey,
+  ]);
 
   useEffect(() => {
     if (!isMatchingMode || matchingState?.status !== 'matching') {
@@ -476,10 +498,12 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
         return {
           ...prev,
+          status: payload?.status ?? prev.status,
           room_id: payload?.room_id ?? prev.room_id,
           match_id: payload?.match_id ?? prev.match_id,
           other_user_id: payload?.other_user_id ?? prev.other_user_id,
           other_user_name: payload?.other_user_name ?? prev.other_user_name,
+          closed_at: payload?.closed_at ?? prev.closed_at,
         };
       });
     };
@@ -749,6 +773,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
         topic_id: topicId,
         survey_answers: answers,
         survey_open_answers: openAnswers,
+        restart_existing_match: matchingState?.status === 'matched',
       });
 
       if (!isChatPageMountedRef.current) {
@@ -1011,6 +1036,46 @@ function TopicChat({ user, issues, issuesLoaded }) {
       );
     }
 
+    if (matchingStatus === 'ai_recommended') {
+      return (
+        <div className="matching-status-shell">
+          <div className="matching-status-card">
+            <span className="matching-status-badge">建議 AI 對話</span>
+            <h2 className="matching-status-title">你的立場目前較適合先和 AI 代理人討論</h2>
+            <p className="matching-status-copy">
+              真人配對目前優先安排立場差異明確的支持與反對使用者。你可以先進入 AI 模式整理觀點，或重新填寫問卷。
+            </p>
+            <div className="matching-status-meta">
+              <div className="matching-status-row">
+                <span className="matching-status-label">立場類型</span>
+                <span className="matching-status-value">{stanceCategory}</span>
+              </div>
+              <div className="matching-status-row">
+                <span className="matching-status-label">立場分數</span>
+                <span className="matching-status-value">{stanceScore}</span>
+              </div>
+            </div>
+            <div className="matching-status-actions">
+              <button
+                className="matching-status-btn secondary"
+                type="button"
+                onClick={() => navigate(`/topic/${id}?mode=ai`)}
+              >
+                前往 AI 模式
+              </button>
+              <button
+                className="matching-status-btn secondary"
+                type="button"
+                onClick={handleRestartSurvey}
+              >
+                重新填寫問卷
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     if (matchingStatus === 'matching') {
       return (
         <div className="matching-status-shell">
@@ -1055,20 +1120,26 @@ function TopicChat({ user, issues, issuesLoaded }) {
       const matchChatDisplayMessages = mapMatchMessagesToDisplay(
         matchMessages,
         user?.id,
-        displayUserName,
-        matchPartnerName,
       );
 
       return (
         <>
           <div className="match-room-banner">
             <span className="matching-status-badge">配對成功</span>
-            <h2 className="match-room-banner-title">已開始和 {matchPartnerName} 對話</h2>
+            <h2 className="match-room-banner-title">已開始匿名對話</h2>
             <div className="match-room-banner-meta">
               <span>房間：{matchingState?.room_id || '—'}</span>
               <span>匹配完成：{formatTimestamp(matchingState?.matched_at)}</span>
             </div>
             <div className="matching-status-actions">
+              <button
+                className="matching-status-btn secondary"
+                type="button"
+                onClick={handleRestartSurvey}
+                disabled={isMatchingActionLoading}
+              >
+                重新填寫問卷
+              </button>
               <button
                 className="matching-status-btn secondary"
                 type="button"
@@ -1098,7 +1169,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
             <div className="message-row user-message">
               <div className="message-user-info">
                 <img src="/icon.jpg" alt="Avatar" className="message-avatar" />
-                <span className="message-username">{displayUserName}</span>
+                <span className="message-username">{MATCH_SELF_NAME}</span>
               </div>
               <div className="message-bubble">正在送出訊息...</div>
             </div>
@@ -1212,7 +1283,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
     ? !isMatchChatReady || isMatchSending
     : showSurvey || isSending;
 
-  const activeChatError = isMatchingMode ? matchChatError : chatError;
+  const activeChatError = isMatchingMode && showSurvey
+    ? ''
+    : isMatchingMode
+      ? matchChatError
+      : chatError;
 
   return (
     <div className="chat-page-container">
@@ -1317,11 +1392,6 @@ function TopicChat({ user, issues, issuesLoaded }) {
           {activeChatError && (
             <p style={{ color: '#b42318', fontSize: '14px', marginTop: '8px' }}>
               {activeChatError}
-            </p>
-          )}
-          {isMatchingMode && (
-            <p className="chat-input-hint">
-              配對演算法現在集中在 backend 的 <code>apps/matching/services/matching_algorithm.py</code>；測試期目前允許同立場也能配對，真人聊天室會優先使用 WebSocket，HTTP 訊息 API 保留為備援。
             </p>
           )}
         </div>

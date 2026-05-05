@@ -3,6 +3,7 @@ import logging
 from urllib.parse import parse_qs
 
 from asgiref.sync import sync_to_async
+from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -231,8 +232,9 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
         if not content:
             return
 
-        if not await self._match_is_active():
-            await self._send_error("聊天室已結束，無法再傳送訊息。")
+        if not await self._close_current_match_if_idle():
+            await self._send_error("聊天室已超過 10 分鐘沒有對話，已自動結束。")
+            await self.close(code=4000)
             return
 
         message = await self._create_message(content)
@@ -271,13 +273,14 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
             .afirst()
         )
 
-    async def _match_is_active(self) -> bool:
+    async def _close_current_match_if_idle(self) -> bool:
         from api.models import DialogueMatch
+        from apps.matching.services.matcher import close_match_if_idle
 
-        return await DialogueMatch.objects.filter(
-            id=self.match.id,
-            status=DialogueMatch.Status.ACTIVE,
-        ).aexists()
+        self.match = await database_sync_to_async(close_match_if_idle)(
+            match=self.match
+        )
+        return self.match.status == DialogueMatch.Status.ACTIVE
 
     async def _create_message(self, content: str):
         from api.models import MatchMessage
@@ -294,7 +297,7 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
             "match_id": self.match.id,
             "room_id": self.room_id,
             "sender_id": self.user.id,
-            "sender_name": self.user.get_username(),
+            "sender_name": "匿名使用者",
             "content": message.content,
             "created_at": message.created_at.isoformat(),
         }

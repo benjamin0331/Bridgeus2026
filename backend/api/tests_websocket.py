@@ -132,7 +132,7 @@ async def test_match_room_websocket_persists_and_broadcasts_message():
     payload = response_a["message"]
     assert payload["room_id"] == match.room_id
     assert payload["sender_id"] == alice.id
-    assert payload["sender_name"] == alice.username
+    assert payload["sender_name"] == "匿名使用者"
     assert payload["content"] == "我想先談核安。"
 
     saved_message = await MatchMessage.objects.aget(id=payload["id"])

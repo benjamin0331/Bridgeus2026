@@ -31,10 +31,15 @@ class UserStanceProfileAdmin(admin.ModelAdmin):
         "topic_id",
         "stance_score",
         "stance_category",
+        "has_q9_embedding",
         "updated_at",
     )
     list_filter = ("topic_id", "stance_category")
     search_fields = ("user__username",)
+
+    def has_q9_embedding(self, obj):
+        return obj.q9_embedding is not None
+    has_q9_embedding.boolean = True
 
 
 @admin.register(MatchQueueEntry)
@@ -61,6 +66,8 @@ class DialogueMatchAdmin(admin.ModelAdmin):
         "user_a",
         "user_b",
         "status",
+        "match_score",
+        "matching_algorithm_version",
         "room_id",
         "created_at",
     )
