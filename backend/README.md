@@ -1,199 +1,198 @@
-# Light_Django_backend
+# BridgeUs Backend
 
-Backend service for the BridgeUs dialogue application.
+Django backend for BridgeUs. It provides JWT auth, backend-managed topic/survey configuration, AI dialogue sessions, anonymous matching, WebSocket chat, persistence, and the RAG dialogue agent.
 
-This repository contains:
+## Location
 
-- Django REST API endpoints for auth and dialogue sessions
-- The RAG dialogue agent under `apps/matching/services/ai_agent.py`
-- Knowledge-base build scripts and source data under `scripts/` and `data/`
-
-## Git Notes
-
-Current workspace note:
-
-- As of April 22, 2026, `/Users/light/code` is not an active git working tree because `.git` is absent.
-- The old git metadata directory currently exists as `/Users/light/code/.git.removed-20260422`.
-- Any future chat that needs git operations should check the workspace state first instead of assuming `/Users/light/code` is still a live repo.
-
-Last known git layout before `.git` was removed:
-
-- Intended main repo root: `/Users/light/code`
-- Main repo remote: `https://github.com/bridgeus2026/Bridgeus2026.git`
-- Main working branch used in previous sessions: `feat/Light`
-- Backend-only mirror repo: `https://github.com/Bridge-US2026/Light_Django_backend.git`
-- The backend-only repo should receive only the contents of `backend/`, not the whole monorepo.
-
-Recommended first checks for future git work:
-
-```bash
-ls -la /Users/light/code
-git -C /Users/light/code status
+```text
+/Users/light/code/backend
 ```
 
-If `/Users/light/code/.git` is still missing, a future chat should inspect `.git.removed-20260422`
-or re-clone from GitHub before attempting `pull`, `push`, or branch operations.
+This backend currently lives inside the `/Users/light/code` monorepo. The monorepo remote is:
 
-The sibling frontend repo at `../BridgeUs` currently expects:
+```text
+origin https://github.com/bridgeus2026/Bridgeus2026.git
+```
 
-- Vite dev server on `http://localhost:5173`
-- Frontend Docker test deployment on `http://localhost:8080`
-- Django backend on `http://127.0.0.1:8005` or `http://localhost:8005`
-- Deployed backend host `dev.bridgeus.work`
+A backend-only mirror remote may exist as `light-backend`, but do not push the whole monorepo there.
 
-## Prerequisites
+## Requirements
 
 - Python 3.12+
-- [uv](https://docs.astral.sh/uv/) installed
-- Git
+- uv
+- SQLite for quick local smoke tests
+- PostgreSQL + pgvector for server/realistic matching tests
+- Redis only when using multi-worker cache/channel deployment
 
-## Environment
-
-Copy the example environment file:
-
-```bash
-cp .env.example .env
-```
-
-At minimum, review and update these values in `.env` before running the app:
-
-```bash
-DJANGO_SECRET_KEY=replace-with-at-least-32-characters
-JWT_SIGNING_KEY=replace-with-at-least-32-characters
-DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1,0.0.0.0,dev.bridgeus.work
-PORT=8005
-```
-
-For production, set `DJANGO_SECRET_KEY` and `JWT_SIGNING_KEY` to separate values
-with at least 32 characters. Short keys will trigger JWT warnings and are not
-safe for deployment.
-
-If you deploy behind `https://dev.bridgeus.work`, keep that hostname in:
-
-- `DJANGO_ALLOWED_HOSTS`
-- `CORS_ALLOWED_ORIGINS`
-- `CSRF_TRUSTED_ORIGINS`
-
-For local CLI use, keep the path variables on project-relative paths such as:
-
-```bash
-PORT=8005
-SQLITE_PATH=db.sqlite3
-CHROMA_PERSIST_DIR=chroma_data
-HF_HOME=.cache/huggingface
-```
-
-If your `.env` contains Docker-only paths like `/data/chroma`, bare-metal runs
-will fail unless that directory exists and is writable.
-
-## Server Setup From Scratch
-
-Clone the repository on the server:
-
-```bash
-git clone https://github.com/Bridge-US2026/Light_Django_backend.git
-cd Light_Django_backend
-```
-
-Sync the Python environment with `uv`:
+## Setup
 
 ```bash
 uv sync
+cp .env.example .env
+uv run python manage.py migrate
+uv run python manage.py createsuperuser
 ```
 
-Activate the virtual environment:
+Build the current nuclear-energy knowledge base:
 
 ```bash
-source .venv/bin/activate
+uv run python scripts/build_knowledge_base.py --data-dir data/nuclear_energy --collection nuclear_energy_all
 ```
 
-Apply database migrations:
-
-```bash
-python manage.py migrate
-```
-
-Create a Django admin account:
-
-```bash
-python manage.py createsuperuser
-```
-
-Build the bundled knowledge base collection:
-
-```bash
-python scripts/build_knowledge_base.py --data-dir data/nuclear_energy --collection nuclear_energy_all
-```
-
-Run the HTTP-only Django development server on port `8005`:
-
-```bash
-python manage.py runserver 0.0.0.0:8005 --noreload
-```
-
-Run the ASGI server when testing AI WebSocket streaming:
+Run ASGI server on the expected backend port:
 
 ```bash
 uv run uvicorn BridgeUs_Django.asgi:application --host 0.0.0.0 --port 8005
 ```
 
-When the virtualenv is already activated, prefer:
+HTTP-only fallback:
 
 ```bash
-python -m apps.matching.services.ai_agent
+uv run python manage.py runserver 0.0.0.0:8005 --noreload
 ```
 
-instead of `uv run python -m ...`.
+Use uvicorn when testing WebSockets.
 
-## Useful Commands
+## Environment
 
-Check the project configuration:
+Copy `backend/.env.example` to `backend/.env` and review these values:
+
+```env
+DJANGO_SECRET_KEY=replace-with-at-least-32-characters
+JWT_SIGNING_KEY=replace-with-at-least-32-characters
+DJANGO_DEBUG=true
+DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1,0.0.0.0,dev.bridgeus.work
+PORT=8005
+
+DB_ENGINE=sqlite
+DB_CONN_MAX_AGE=0
+
+MATCHING_ALLOW_SAME_STANCE_FALLBACK=false
+MATCH_ROOM_IDLE_TIMEOUT_SECONDS=600
+
+USE_REDIS_CACHE=false
+USE_REDIS_CHANNEL=false
+```
+
+For PostgreSQL:
+
+```env
+DB_ENGINE=postgres
+DB_NAME=bridgeus
+DB_USER=postgres
+DB_PASSWORD=replace-me
+DB_HOST=127.0.0.1
+DB_PORT=5432
+```
+
+Enable pgvector in the database:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+## Main Files
+
+- Settings: `BridgeUs_Django/settings.py`
+- HTTP routes: `api/urls.py`
+- API views and stance scoring: `api/views.py`
+- WebSocket consumers: `api/consumers.py`
+- Persistent models: `api/models.py`
+- Topic/survey config: `api/dialogue_topics.py`
+- Matching lifecycle: `apps/matching/services/matcher.py`
+- Matching score algorithm: `apps/matching/services/matching_algorithm.py`
+- Q9 embedding bridge: `apps/matching/services/semantic.py`
+- AI dialogue agent: `apps/matching/services/ai_agent.py`
+- Knowledge-base builder: `scripts/build_knowledge_base.py`
+
+## API Endpoints
+
+Auth:
+
+- `POST /api/token/`
+- `POST /api/token/refresh/`
+
+Topics/surveys:
+
+- `GET /api/dialogue/topics/`
+- `GET /api/dialogue/topics/<topic_id>/survey/`
+
+AI dialogue:
+
+- `POST /api/dialogue/sessions/`
+- `POST /api/dialogue/sessions/<session_id>/reply/`
+- `WS /ws/dialogue/<session_id>/`
+
+Matching:
+
+- `POST /api/matching/join/`
+- `GET /api/matching/status/?topic_id=102`
+- `POST /api/matching/cancel/`
+- `GET /api/matching/rooms/<room_id>/messages/`
+- `POST /api/matching/rooms/<room_id>/messages/`
+- `POST /api/matching/rooms/<room_id>/leave/`
+- `WS /ws/matching/rooms/<room_id>/`
+
+## Matching Details
+
+- Current topic: `102`, `台灣核能議題討論`.
+- Likert reverse items: Q2, Q4, Q5, Q6.
+- `S > 4.5`: support.
+- `S < 3.5`: oppose.
+- `3.5 <= S <= 4.5`: neutral.
+- Default matching only pairs support with oppose.
+- Neutral users return `ai_recommended` and are not queued for human matching unless fallback is enabled.
+- `MATCHING_ALLOW_SAME_STANCE_FALLBACK=true` is for testing only.
+- Q9 embedding is stored in `UserStanceProfile.q9_embedding` using pgvector when available.
+- `DialogueMatch` stores likert distance, semantic distance, weighted match score, and algorithm version.
+- Matching rooms auto-close after `MATCH_ROOM_IDLE_TIMEOUT_SECONDS` without conversation activity.
+
+## Admin
+
+Create an admin user:
 
 ```bash
-python manage.py check
+uv run python manage.py createsuperuser
 ```
 
-Run the backend test suite:
-
-```bash
-python manage.py test api
-```
-
-Collect static files:
-
-```bash
-python manage.py collectstatic --noinput
-```
-
-## Django Admin
-
-After creating a superuser, the admin UI is available at:
+Then open:
 
 ```text
 http://localhost:8005/admin/
 ```
 
-If deployed behind your public domain, use:
+Password policy can be loosened for local/admin testing through env flags:
 
-```text
-https://dev.bridgeus.work/admin/
+```env
+DJANGO_PASSWORD_MIN_LENGTH=1
+ALLOW_COMMON_PASSWORDS=true
+ALLOW_NUMERIC_PASSWORDS=true
 ```
 
-## Docker Run
+Do not use permissive password settings in production.
 
-1. Copy `.env.example` to `.env`
-2. Fill in at least `DJANGO_SECRET_KEY`, `JWT_SIGNING_KEY`, and `ANTHROPIC_API_KEY`
-3. Start the stack:
+## Verification
+
+```bash
+uv run python manage.py check
+DB_ENGINE=sqlite uv run python manage.py test api --keepdb --noinput
+DB_ENGINE=sqlite uv run pytest api/tests_websocket.py chat/tests.py chat/tests_filter.py
+```
+
+The API test suite intentionally logs one fake AI-provider exception to verify stable 503 handling.
+
+## Docker Notes
+
+Run from this `backend/` directory:
 
 ```bash
 docker compose up --build
 ```
 
-The Django API will be available at `http://localhost:8005`.
+Notes:
 
-## Docker Notes
-
-- Dialogue session state uses Redis only when `USE_REDIS_CACHE=true` and `REDIS_URL` is set; use Redis if `UVICORN_WORKERS>1` or if you run multiple backend containers.
-- SQLite, Chroma, and Hugging Face cache data are persisted in the `app_data` Docker volume.
-- The container entrypoint runs `migrate`, `collectstatic`, and then starts `uvicorn` with the ASGI app so HTTP and WebSocket routes both work.
-- Admin static files are served by WhiteNoise in the backend container, so `/admin/` should render correctly without a separate nginx sidecar.
+- Backend port is `8005`.
+- `backend/docker-compose.yml` starts Redis and persists SQLite/Chroma/Hugging Face data in the `app_data` volume.
+- The container entrypoint runs migrations and collectstatic before starting ASGI.
+- Use Redis cache if running more than one worker/container and dialogue session state must persist across workers.
+- Use Redis channel layer if WebSocket traffic spans multiple backend processes.
