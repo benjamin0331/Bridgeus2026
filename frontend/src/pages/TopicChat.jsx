@@ -6,6 +6,7 @@ import SurveyModal from '../components/SurveyModal';
 import api from '../api/client';
 
 const MATCHING_POLL_INTERVAL_MS = 3000;
+const MATCH_SCROLL_BOTTOM_THRESHOLD_PX = 96;
 const MATCH_SELF_NAME = '我';
 const MATCH_PARTNER_NAME = '匿名對話者';
 
@@ -64,6 +65,16 @@ function waitForSocketOpen(socket) {
     socket.addEventListener('open', handleOpen);
     socket.addEventListener('error', handleError);
   });
+}
+
+function isElementNearBottom(element) {
+  if (!element) {
+    return true;
+  }
+
+  const distanceFromBottom =
+    element.scrollHeight - element.scrollTop - element.clientHeight;
+  return distanceFromBottom <= MATCH_SCROLL_BOTTOM_THRESHOLD_PX;
 }
 
 function mapHistoryToMessages(history, userName) {
@@ -157,9 +168,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const [isMatchMessagesLoading, setIsMatchMessagesLoading] = useState(false);
   const [isMatchSending, setIsMatchSending] = useState(false);
   const [matchChatError, setMatchChatError] = useState('');
+  const [showScrollToBottomButton, setShowScrollToBottomButton] = useState(false);
 
   const [isRightPanelOpen, setIsRightPanelOpen] = useState(false);
 
+  const messagesContainerRef = useRef(null);
   const messagesEndRef = useRef(null);
   const isComposingRef = useRef(false);
   const textareaRef = useRef(null);
@@ -173,6 +186,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const leaveRequestSentRef = useRef(false);
   const cancelQueueRequestSentRef = useRef(false);
   const isChatPageMountedRef = useRef(true);
+  const shouldAutoScrollMatchRef = useRef(true);
   const currentIssue = issues?.find((item) => item.id === parseInt(id, 10));
   const displayUserName = user?.name || '公民';
   const matchPartnerName = MATCH_PARTNER_NAME;
@@ -182,6 +196,18 @@ function TopicChat({ user, issues, issuesLoaded }) {
       matchingState?.status === 'matched' &&
       matchingState?.room_id,
   );
+
+  const scrollMessagesToBottom = useCallback((behavior = 'smooth') => {
+    window.requestAnimationFrame(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
+    });
+  }, []);
+
+  const focusChatInput = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus({ preventScroll: true });
+    });
+  }, []);
 
   const appendMatchMessage = useCallback((message) => {
     if (!message?.id) {
@@ -197,6 +223,23 @@ function TopicChat({ user, issues, issuesLoaded }) {
       return [...prev, message];
     });
   }, []);
+
+  const handleMessagesScroll = useCallback((event) => {
+    if (!isMatchingMode) {
+      return;
+    }
+
+    const isNearBottom = isElementNearBottom(event.currentTarget);
+    shouldAutoScrollMatchRef.current = isNearBottom;
+    setShowScrollToBottomButton(isMatchChatReady && !isNearBottom);
+  }, [isMatchChatReady, isMatchingMode]);
+
+  const handleScrollToBottom = useCallback(() => {
+    shouldAutoScrollMatchRef.current = true;
+    setShowScrollToBottomButton(false);
+    scrollMessagesToBottom('smooth');
+    focusChatInput();
+  }, [focusChatInput, scrollMessagesToBottom]);
 
   const closeMatchWebSocket = useCallback((socket = matchWsRef.current) => {
     if (!socket) {
@@ -278,8 +321,38 @@ function TopicChat({ user, issues, issuesLoaded }) {
   }, [closeMatchWebSocket]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, matchMessages, isSending, isMatchSending, isMatchingMode]);
+    if (isMatchingMode) {
+      return;
+    }
+
+    scrollMessagesToBottom('smooth');
+  }, [isAgentStreaming, isMatchingMode, isSending, messages, scrollMessagesToBottom]);
+
+  useEffect(() => {
+    if (!isMatchingMode) {
+      setShowScrollToBottomButton(false);
+      return;
+    }
+
+    if (!isMatchChatReady) {
+      shouldAutoScrollMatchRef.current = true;
+      setShowScrollToBottomButton(false);
+      return;
+    }
+
+    if (shouldAutoScrollMatchRef.current) {
+      scrollMessagesToBottom('smooth');
+      setShowScrollToBottomButton(false);
+    } else {
+      setShowScrollToBottomButton(true);
+    }
+  }, [
+    isMatchChatReady,
+    isMatchSending,
+    isMatchingMode,
+    matchMessages,
+    scrollMessagesToBottom,
+  ]);
 
   useEffect(() => {
     activeMatchRef.current = {
@@ -324,6 +397,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
     activeMatchRef.current = { roomId: null, status: null, topicId: null };
     leaveRequestSentRef.current = false;
     cancelQueueRequestSentRef.current = false;
+    shouldAutoScrollMatchRef.current = true;
+    setShowScrollToBottomButton(false);
   }, [closeMatchWebSocket, id, isMatchingMode]);
 
   useEffect(() => {
@@ -819,6 +894,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
       setInputValue('');
       setMatchChatError('');
       setIsMatchSending(true);
+      shouldAutoScrollMatchRef.current = true;
+      setShowScrollToBottomButton(false);
 
       try {
         const socket = matchWsRef.current;
@@ -850,6 +927,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
         );
       } finally {
         setIsMatchSending(false);
+        focusChatInput();
       }
 
       return;
@@ -1327,7 +1405,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
           </div>
         </div>
 
-        <div className="chat-messages-display">
+        <div
+          ref={messagesContainerRef}
+          className="chat-messages-display"
+          onScroll={handleMessagesScroll}
+        >
           {isMatchingMode ? (
             <>
               {renderMatchingCard()}
@@ -1360,6 +1442,19 @@ function TopicChat({ user, issues, issuesLoaded }) {
           <div ref={messagesEndRef} />
         </div>
 
+        {isMatchingMode && isMatchChatReady && showScrollToBottomButton && (
+          <button
+            className="scroll-to-bottom-btn"
+            type="button"
+            onClick={handleScrollToBottom}
+            onMouseDown={(event) => {
+              event.preventDefault();
+            }}
+          >
+            回到底部
+          </button>
+        )}
+
         <div className="chat-input-area">
           <div className={`chat-input-wrapper ${isMatchingMode && !isMatchChatReady ? 'is-disabled' : ''}`}>
             <textarea
@@ -1380,6 +1475,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
             />
             <button
               className="chat-send-btn"
+              onMouseDown={(event) => {
+                event.preventDefault();
+              }}
               onClick={() => {
                 void handleSendMessage();
               }}

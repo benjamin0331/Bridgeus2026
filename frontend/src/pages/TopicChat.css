@@ -10,6 +10,7 @@
 }
 
 .chat-left-interaction-area {
+  position: relative;
   flex: 2;
   display: flex;
   flex-direction: column;
@@ -71,6 +72,29 @@
   padding-bottom: 18px;
   scroll-padding-bottom: 140px;
   margin-bottom: 15px;
+}
+
+.scroll-to-bottom-btn {
+  position: absolute;
+  right: 22px;
+  bottom: 86px;
+  z-index: 110;
+  min-height: 38px;
+  border: 1px solid rgba(110, 88, 70, 0.16);
+  border-radius: 999px;
+  padding: 0 16px;
+  background: rgba(47, 39, 34, 0.9);
+  color: #fffaf4;
+  font-size: 14px;
+  font-weight: 700;
+  box-shadow: 0 10px 24px rgba(47, 39, 34, 0.18);
+  cursor: pointer;
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
+}
+
+.scroll-to-bottom-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 14px 28px rgba(47, 39, 34, 0.22);
 }
 
 .message-row {
@@ -445,6 +469,17 @@
 
   .matching-status-btn {
     width: 100%;
+  }
+
+
+  .scroll-to-bottom-btn {
+    position: fixed;
+    right: 18px;
+    bottom: calc(98px + env(safe-area-inset-bottom));
+    z-index: 210;
+    min-height: 36px;
+    padding: 0 14px;
+    font-size: 13px;
   }
 
   .chat-input-area {
