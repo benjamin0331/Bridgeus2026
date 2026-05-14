@@ -1,6 +1,6 @@
 # CONTEXT.md — BridgeUs 開發狀態
 
-> 最後更新：2026-05-03（H-H NLP Pipeline：Embedding + 情緒偵測 + 攻擊性過濾）
+> 最後更新：2026-05-14（H-H Phase 8：AI 輔助介入模組完成）
 
 ## 專案目標
 
@@ -139,12 +139,180 @@ BridgeUs（橋得攏）— AI 驅動的去極化對話平台
   - `chat/services/_blacklist.py`：35 詞 frozenset（人身攻擊 21、威脅 4、歧視 4、粗口 5）
   - Stage 2 候選：`thu-coai/roberta-base-cold`，暫不引入
 
-**尚未完成：**
-- Consumer 整合 NLP pipeline（攻擊性過濾同步攔截、情緒偵測非同步）
-- 離題偵測（embedding vs 議題錨點向量）
-- 準即時分析：立場漂移追蹤（每 200 字 / 15 分鐘）
-- 僵局偵測（連續 N 輪語義距離無變化）
-- CCND WebSocket 推送
+**已完成（H-H Phase 3 — Consumer NLP 整合）：**
+- `chat/consumers.py`：`HumanHumanConsumer` 整合 NLP pipeline
+  - 模組頂層 import `aget_embedding` / `aget_analyze_emotion`（避免 coroutine 首次 import 阻塞 event loop）
+  - `check_content_sync()` 同步攔截：命中黑名單 → 推送 `{"type":"system_prompt","category":"content_blocked"}` 給發言者，中止轉發
+  - `CONTENT_BLOCKED_MESSAGES`（3 條）/ `EMOTION_WARNING_MESSAGES`（4 條）隨機選取
+  - `group_send()` 即時轉發，不等後續分析
+  - `asyncio.create_task(_run_nlp_analysis(message_id, content))`：fire-and-forget
+    - `aget_embedding()` → `Message.embedding` DB update
+    - `aget_analyze_emotion()` → `Message.emotion_score` DB update
+    - 若 `is_over_threshold` → 推送 `{"type":"system_prompt","category":"emotion_warning"}` 給發言者
+    - 所有步驟各自 try/except，失敗只 log，不中斷轉發
+- `chat/tests_consumer.py`：4 項 NLP 整合測試
+  - **注意：Phase 8 大幅改寫 consumer receive() 流程後，此項整合邏輯已調整（見 Phase 8）**
+
+**已完成（H-H Phase 4 — 離題偵測）：**
+- `chat/services/topic.py`：離題偵測 service
+  - `get_topic_anchor_embedding(topic_description)` → `list[float]`（384 維）
+  - `check_topic_relevance(conversation_id, user_id, anchor_embedding, window=5)` → `{"relevance_score": float, "is_off_topic": bool}`
+    - **Phase 8 改為 window-based**：從 DB 取該用戶最近 window 則有 embedding 的訊息，平均後與錨點比較
+    - 無訊息（含 embedding）時 fail-open（視為在議題內）；只算發言者本人訊息
+  - `TOPIC_RELEVANCE_THRESHOLD = 0.25`（預定 0.3，實測「日本福島事件讓很多人改變想法」得 0.2938 故調降）
+  - async wrapper：`aget_topic_anchor_embedding` / `acheck_topic_relevance`
+- `chat/models.py`：`Conversation` 新增 `topic_anchor_embedding`（VectorField 384 維，nullable）
+- `chat/migrations/0003_conversation_topic_anchor_embedding.py`
+- `chat/consumers.py`：`connect()` 快取 `self.topic_anchor`；`_run_nlp_analysis()` 呼叫 `acheck_topic_relevance(conv_id, user_id, anchor)`
+  - 離題推送 `{"type":"system_prompt","category":"off_topic"}` 給發言者；anchor=None 時略過
+  - `OFF_TOPIC_MESSAGES`（3 條）
+- `chat/tests_topic.py`：**Phase 8 完整改寫**，共 15 項測試
+
+**已完成（H-H Phase 5 — 僵局偵測 + 關鍵詞抽取）：**
+- `chat/services/stalemate.py`
+  - `detect_stalemate(conversation_id, window_size=5)` → `{"is_stalemate": bool, "distance_trend": list[float], "std_dev": float}`
+    - 各 user 最近 window_size 則 embedding 訊息按 recency 成對，算 cosine_distance
+    - `std_dev < STALEMATE_THRESHOLD=0.05` AND `n_pairs >= window_size` → 僵局
+    - 實測：穩定立場（unit_vec noise σ=0.002）std_dev=0.004；漸移立場 std_dev=0.707
+  - `extract_opponent_keywords(conversation_id, user_id, n_messages=5, top_n=2)` → `list[str]`
+    - 對方最近 n_messages 則發言 → jieba 分詞 → KeyBERT 抽候選詞（MMR diversity=0.6）
+    - 按 cosine_distance 到「當前用戶最近發言」排序降冪，返回 top_n（最少被回應的論點）
+    - 實測：核能議題文本抽出如「能力」「台灣」「能源」等詞；函式回傳 list[str]，len ≤ top_n
+  - `build_stalemate_prompt(keywords)` → str（4 個模板隨機選取）
+  - async wrapper：`adetect_stalemate` / `aextract_opponent_keywords`
+- 安裝：`keybert==0.9.0`、`jieba==0.42.1`（已加入 pyproject.toml 依賴）
+- `chat/tests_stalemate.py`：16 項測試
+
+**已完成（H-H Phase 6 — 立場漂移追蹤 + 累積觸發整合）：**
+
+**新增 Models（migration 0004）：**
+- `Conversation.user_a_initial_embedding` / `user_b_initial_embedding`（VectorField 384 維，nullable）
+  - 問卷開放式回答 embedding，配對時填入；現在先加欄位，填值邏輯後面做
+- `StanceDrift`：conversation (FK)、user (FK)、drift_value (FloatField)、measured_at (auto)
+
+**`chat/services/drift.py`：**
+- `calculate_drift(conversation_id, user_id)` → `{"drift_value": float, "direction": str}`
+  - `drift_value = cosine_distance(mean_interval_embedding, initial_embedding)`
+  - direction：diff > DIRECTION_THRESHOLD=0.02 → "approaching"；< -0.02 → "diverging"；else "stable"
+  - 第一次測量無比較基準 → "stable"；initial_embedding=None 或無訊息 → 提前返回 `{0.0, "stable"}`
+  - 儲存 StanceDrift 記錄
+  - 實測：round1（近 initial）drift=0.0015；round2（遠 initial）drift=1.0018，direction="approaching"
+- async wrapper：`acalculate_drift`
+
+**`chat/consumers.py` 累積觸發邏輯：**
+- `connect()` 初始化 `self.char_count = 0`、`self.last_analysis_time`
+- `receive()` 每則訊息後：`char_count += len(content)`；若 `≥ 200 chars` 或 `≥ 900 秒` → 重置計數器 + `create_task(_run_periodic_analysis())`
+- `_run_periodic_analysis()`：
+  1. `acalculate_drift()` → 存入 StanceDrift（初始 embedding 為 None 時 fail-open）
+  2. `adetect_stalemate()` → 若僵局：`aextract_opponent_keywords()` + `build_stalemate_prompt()` → 推送 `{"type":"system_prompt","category":"stalemate_hint"}`
+
+**`chat/tests_drift.py`：12 項測試**（含 200-char consumer trigger 整合測試）
+
+---
+
+**已完成（H-H Phase 7 — 對話結束處理）：**
+
+**新增 Models（migration 0005）：**
+- `Conversation.summary`（TextField nullable）：LLM 生成的對話摘要
+- `Conversation.stats`（JSONField nullable）：session 統計數據快照
+
+**`chat/services/session.py`：**
+- `end_session(conversation_id, *, blocked_count=0, system_prompts_triggered=0)` → `dict`
+  - 標記 `Conversation.status = COMPLETED`，設 `ended_at = now()`
+  - 收集統計：`duration_minutes`、`total_messages`、`messages_per_user`、`avg_emotion_score_per_user`、`blocked_count`、`system_prompts_triggered`、`stance_drift_final`（各 user 最後一筆 StanceDrift）
+  - 儲存至 `Conversation.stats`
+- `generate_summary(conversation_id)` → `str`
+  - 撈全部 Messages 組成 transcript，呼叫 Claude API（`claude-sonnet-4-6`）
+  - `ANTHROPIC_API_KEY` 未設定 → 返回 `""`（記 warning log，不拋例外）
+  - API 失敗 → 返回 `""`（記 error log）
+  - 儲存至 `Conversation.summary`
+  - 注意：這是 H-H 模組唯一的 LLM 呼叫
+- async wrappers：`aend_session` / `agenerate_summary`
+
+**`chat/consumers.py` 對話結束邏輯：**
+- `connect()` 新增：`self._session_ended = False`、`self.blocked_count`、`self.system_prompts_triggered`
+  - 啟動 background task：`_session_timer()`
+  - **注意：Phase 8 移除 `_silence_watcher()`，只保留 explicit + 60 min timer 兩種結束條件**
+- `receive()` 新增：
+  - `{"type":"end_session"}` → `_end_conversation("explicit")`
+  - `blocked_count` / `system_prompts_triggered` 計數器累加
+- `disconnect()` 取消 timer task
+- `_session_timer()`：`sleep(3600)` → `_end_conversation("timeout")`
+- `_end_conversation(reason)`：
+  1. 冪等保護（`_session_ended`）
+  2. 取消 background tasks
+  3. `aend_session()` 收集 stats
+  4. `channel_layer.group_send("session.ended", ...)` 廣播雙方
+  5. `create_task(_generate_summary_bg())`（非阻塞）
+- `session_ended(event)` channel handler：send `{"type":"session_ended","reason":...,"stats":...}` → `close()`
+  - 注意：close 在 handler 內（不在 `_end_conversation`），讓 event loop 先 dispatch channel layer message 再關閉 WebSocket
+
+**`chat/tests_session.py`：19 項測試**
+- `end_session`：status、ended_at、duration、messages、emotion scores、blocked passthrough、drift、DB save、empty conv
+- `generate_summary`：no API key、no messages、mock LLM 成功、API error fallback
+- Consumer：explicit end trigger、stats 欄位完整性
+
+---
+
+**已完成（H-H Phase 8 — AI 輔助介入）：**
+
+**新增 Model（migration 0006）：**
+- `AISuggestion`：記錄每次 AI 介入的完整資料
+  - `conversation` (FK)、`user` (FK)、`category`（rephrase / direction / redirect）
+  - `original_content`（使用者原文）、`suggested_content`（AI 改寫版）
+  - `user_action`（accept / modify / ignore，nullable＝尚未回應）
+  - `modified_content`（使用者修改版，僅 modify 時填入）
+  - `created_at`（auto）
+
+**`chat/services/ai_assist.py`（新模組）：**
+- `rephrase_message(original_text, topic)` → `str`：呼叫 Claude API，將情緒化發言重述為理性語氣，保留立場
+- `suggest_direction(conversation_id, topic)` → `str`：取最近 6 則對話，要求 Claude 提供新討論角度（冷場用，未接入 consumer）
+- `redirect_to_topic(conversation_id, topic)` → `str`：取最近 6 則對話，要求 Claude 溫和引導回主題（未接入 consumer，目前仍用固定模板）
+- 全部均有 fallback 到預寫中文模板（API 未設定或呼叫失敗）
+- async wrappers：`arephrase_message` / `asuggest_direction` / `aredirect_to_topic`
+
+**`chat/consumers.py` 重大改寫：**
+
+`receive()` 新流程（情緒**攔截**，不再只是警告）：
+1. `end_session` / suggestion response → 分流處理
+2. Stage 1（同步）：`check_content_sync()` → 攔截黑名單
+3. Stage 2（**await**）：`aget_analyze_emotion()` → **情緒超標則攔截，不轉發給對方**
+4. 正常路徑：`_relay_and_persist(content, emotion_score)`
+
+`_handle_emotion_overflow(content)`（情緒超標時觸發）：
+- `await arephrase_message()` → Claude 改寫（或 fallback 模板）
+- `AISuggestion.acreate()` 存入 DB（`user_action=None`）
+- 儲存 `self._pending_suggestion = {"original_content": ..., "suggestion_id": ...}`
+- 只傳給發言者：`{"type":"ai_suggestion","category":"rephrase","original_content":...,"suggested_content":...,"actions":["accept","modify","ignore"]}`
+- **Bob 這端什麼都收不到**
+
+`_handle_suggestion_response(data)` （使用者回應時觸發）：
+- `accept_suggestion` → 轉發 AI 改寫版給對方；DB update `user_action="accept"`
+- `modify_suggestion` → 轉發使用者修改版；DB update `user_action="modify"` + `modified_content`
+- `ignore_suggestion` → 轉發原始版；DB update `user_action="ignore"`
+
+`_relay_and_persist(content, emotion_score=None)`（正常路徑 + suggestion 回應共用）：
+- `group_send` → 廣播雙方
+- `Message.acreate()` 存入 DB
+- `create_task(_run_nlp_analysis)` → embedding + topic check（背景）
+- 字數累積觸發 `_run_periodic_analysis` → drift + stalemate（背景）
+
+**已移除（Phase 8）：**
+- `_silence_watcher()` 及所有沉默偵測邏輯（`SILENCE_WARNING_MESSAGE`、`_SILENCE_WARN_SECONDS`、`_SILENCE_END_SECONDS`）
+- consumer 結束條件：原 3 種（explicit / timer / silence）→ 現 2 種（explicit / 60 min timer）
+
+**`chat/tests_ai_assist.py`（新，14 項測試）：**
+- `rephrase_message`：mock LLM 成功、no API key fallback、API error fallback、輸出情緒分數低於原文
+- `suggest_direction` / `redirect_to_topic`：mock LLM、no API key fallback
+- Consumer emotion overflow：高情緒訊息不轉發給 Bob、建立 AISuggestion 記錄
+- Consumer suggestion response：accept / modify / ignore 正確轉發 + DB 更新
+- Consumer 正常訊息：低情緒直接轉發，無 AISuggestion
+
+**`chat/tests_topic.py`：完整改寫（15 項測試），配合 window-based API**
+- 新增：no messages fail-open、no embedding fail-open、window 行為、只算發言者訊息、async wrapper 一致性
+- 移除：舊 per-message API 測試
+
+**`chat/tests_consumer.py`：移除過時的高情緒測試，現 3 項**（正常轉發、NLP DB 寫入、黑名單攔截）
 
 ---
 
@@ -163,12 +331,18 @@ BridgeUs（橋得攏）— AI 驅動的去極化對話平台
 | `chat/tests_embedding.py` | 11 | 維度驗證、中文語意相似度、async wrapper |
 | `chat/tests_emotion.py` | 10 | 平和 vs 攻擊語句分數、閾值一致性、async wrapper |
 | `chat/tests_filter.py` | 21 | 黑名單命中（頭/中/尾）、強烈但合法語句不攔截、sync/async 一致 |
-| **合計** | **47** | |
+| `chat/tests_consumer.py` | 3 | NLP 整合：正常轉發、DB 寫入、黑名單攔截 |
+| `chat/tests_topic.py` | 15 | Window-based 離題偵測：no-msg fail-open、on/off-topic、window 行為、async |
+| `chat/tests_stalemate.py` | 16 | 僵局偵測（穩定/漸移）、關鍵詞抽取、提示模板 |
+| `chat/tests_drift.py` | 12 | 漂移計算、direction 邏輯、DB 記錄、200-char consumer 觸發 |
+| `chat/tests_session.py` | 19 | end_session 統計、generate_summary mock LLM、consumer 結束觸發 |
+| `chat/tests_ai_assist.py` | 14 | rephrase mock/fallback/calmer、overflow 攔截不轉發、accept/modify/ignore |
+| **合計** | **126** | 全部通過（2026-05-14 驗證） |
 
 執行：
 ```bash
 cd backend
-uv run pytest chat/tests.py chat/tests_embedding.py chat/tests_emotion.py chat/tests_filter.py -v
+uv run pytest chat/tests.py chat/tests_embedding.py chat/tests_emotion.py chat/tests_filter.py chat/tests_consumer.py chat/tests_topic.py chat/tests_stalemate.py chat/tests_drift.py chat/tests_session.py chat/tests_ai_assist.py -v
 ```
 
 ---
@@ -217,14 +391,27 @@ P_BridgeUS/
 │   │   ├── tests_embedding.py         ← Embedding service 測試（11）
 │   │   ├── tests_emotion.py           ← 情緒偵測測試（10）
 │   │   ├── tests_filter.py            ← 攻擊性過濾測試（21）
+│   │   ├── tests_consumer.py          ← Consumer NLP 整合測試（3）
+│   │   ├── tests_topic.py             ← 離題偵測測試（15，window-based）
+│   │   ├── tests_session.py           ← 對話結束測試（19）
+│   │   ├── tests_ai_assist.py         ← AI 輔助介入測試（14）
 │   │   ├── services/
 │   │   │   ├── _blacklist.py          ← 攻擊性詞彙黑名單（35 詞，frozenset）
 │   │   │   ├── embedding.py           ← get_embedding / cosine_similarity 等
 │   │   │   ├── emotion.py             ← analyze_emotion / EMOTION_THRESHOLD
-│   │   │   └── filter.py              ← check_content_sync / check_content / acheck_content
+│   │   │   ├── filter.py              ← check_content_sync / check_content / acheck_content
+│   │   │   ├── topic.py               ← check_topic_relevance(conv_id, user_id, anchor, window=5)
+│   │   │   ├── stalemate.py           ← detect_stalemate / extract_opponent_keywords / build_stalemate_prompt
+│   │   │   ├── drift.py               ← calculate_drift / DIRECTION_THRESHOLD=0.02
+│   │   │   ├── session.py             ← end_session / generate_summary
+│   │   │   └── ai_assist.py           ← rephrase_message / suggest_direction / redirect_to_topic（Claude API + fallback）
 │   │   └── migrations/
 │   │       ├── 0001_initial.py
-│   │       └── 0002_alter_message_embedding_dim.py
+│   │       ├── 0002_alter_message_embedding_dim.py
+│   │       ├── 0003_conversation_topic_anchor_embedding.py
+│   │       ├── 0004_drift_model_and_initial_embeddings.py
+│   │       ├── 0005_conversation_summary_stats.py
+│   │       └── 0006_aisuggestion.py
 │   ├── apps/
 │   │   └── matching/
 │   │       └── services/
@@ -276,10 +463,20 @@ npm run dev   # Vite dev server，port 5173
 - [x] `chat/services/embedding.py`：Embedding service（384 維）
 - [x] `chat/services/emotion.py`：情緒強度偵測（lxyuan distilbert）
 - [x] `chat/services/filter.py`：攻擊性詞彙過濾（Stage 1 黑名單）
-- [ ] `chat/services/topic_deviation.py`：離題偵測（embedding vs 議題錨點）
-- [ ] Consumer 整合 NLP pipeline（攻擊性過濾同步攔截、情緒偵測非同步）
-- [ ] 準即時分析：立場漂移追蹤（每 200 字 / 15 分鐘觸發）
-- [ ] 僵局偵測（連續 N 輪語義距離無變化）
+- [x] Consumer 整合 NLP pipeline（攻擊性過濾同步攔截、情緒偵測非同步 fire-and-forget）
+- [x] `chat/services/topic.py`：離題偵測（embedding vs 議題錨點，threshold=0.25）
+- [x] `chat/services/stalemate.py`：僵局偵測 + 關鍵詞抽取 + 提示模板
+- [x] `chat/services/drift.py`：立場漂移追蹤（每 200 字 / 15 分鐘觸發）
+- [x] `chat/services/session.py`：對話結束處理（統計收集 + LLM 摘要）
+- [x] Consumer 兩種結束條件：explicit message、60 分鐘 timer（沉默偵測已移除）
+- [x] `chat/services/ai_assist.py`：AI 輔助介入（rephrase / suggest_direction / redirect_to_topic）
+- [x] `AISuggestion` model：記錄 AI 介入歷程（migration 0006）
+- [x] Consumer receive() 改寫：情緒超標攔截 + ai_suggestion + accept/modify/ignore 回應流程
+- [x] `chat/services/topic.py` 改寫：window-based API（DB 查詢最近 N 則訊息）
+- [ ] `redirect_to_topic` 接入 consumer 離題偵測（目前仍用固定模板）
+- [ ] `suggest_direction` 接入 consumer（冷場觸發條件待定）
+- [ ] 問卷初始立場 embedding 填入（M2/M3 整合）
+- [ ] CCND WebSocket 推送（前端介面待確認）
 - [ ] API Spec 更新（`docs/BridgeUs_API_Spec.md`）
 
 ### 近期（基礎設施）

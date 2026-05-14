@@ -113,8 +113,6 @@ async def test_message_persisted_to_db():
 
     msg = await Message.objects.aget(conversation=conv, sender=alice)
     assert msg.content == "persisted message"
-    assert msg.emotion_score is None
-    assert msg.embedding is None
 
     await comm_a.disconnect()
 
