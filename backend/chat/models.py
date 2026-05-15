@@ -132,6 +132,11 @@ class AISuggestion(models.Model):
     )
     modified_content = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    # Research fields — populated on suggestion creation and response
+    response_time_ms = models.IntegerField(null=True, blank=True)
+    trigger_score = models.FloatField(null=True, blank=True)
+    final_content = models.TextField(null=True, blank=True)
+    context_message_ids = models.JSONField(null=True, blank=True)
 
     class Meta:
         ordering = ["created_at"]

@@ -8,7 +8,7 @@ from urllib.parse import parse_qs
 from channels.generic.websocket import AsyncWebsocketConsumer
 from django.contrib.auth import get_user_model
 
-from chat.services.ai_assist import arephrase_message
+from chat.services.ai_assist import aredirect_to_topic, arephrase_message, asuggest_direction
 from chat.services.drift import acalculate_drift
 from chat.services.embedding import aget_embedding
 from chat.services.emotion import aget_analyze_emotion
@@ -43,10 +43,35 @@ OFF_TOPIC_MESSAGES = [
     "回到主題聊聊吧，對方在等你對議題的看法。",
 ]
 
-_SESSION_TIMEOUT_SECONDS = 3600  # 60 min hard cap
+DIRECTION_FALLBACK_MESSAGES = [
+    "可以試著從經濟面切入討論",
+    "對方之前提到的觀點，你有什麼想法？",
+    "試著換個角度思考這個議題",
+]
+
+# When LLM is unavailable for rephrase, send this fallback with reduced actions.
+_REPHRASE_FALLBACK_TEMPLATE = "你的發言可能帶有較強烈的情緒，建議修改後再發送。"
+_REPHRASE_MAX_INTERCEPTS = 3  # max times a single message chain can be intercepted
+
+_SESSION_TIMEOUT_SECONDS = 3600   # 60-min hard cap
+_INACTIVITY_SECONDS = 120         # 2-min mutual silence → suggest direction
+_INACTIVITY_CHECK_INTERVAL = 30   # watcher poll interval (seconds)
+_INACTIVITY_MAX_TRIGGERS = 3      # max direction suggestions per conversation
+_INACTIVITY_MIN_INTERVAL_SECONDS = 300  # min gap between consecutive triggers
+_INACTIVITY_GRACE_SECONDS = 180   # no trigger in first 3 minutes
+
+# Shared per-conversation state (single-process only).
+_conversation_last_active: dict[int, datetime] = {}
+_conversation_connected_at: dict[int, datetime] = {}
+_conversation_disconnected: set[int] = set()
 
 
 class HumanHumanConsumer(AsyncWebsocketConsumer):
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
     async def connect(self):
         conv_id_str = self.scope["url_route"]["kwargs"]["conversation_id"]
         query = parse_qs(self.scope["query_string"].decode())
@@ -87,6 +112,7 @@ class HumanHumanConsumer(AsyncWebsocketConsumer):
         # Session-end state
         self._session_ended = False
         self._pending_suggestion: dict | None = None
+        self._rephrase_retry_count = 0
         self.blocked_count = 0
         self.system_prompts_triggered = 0
 
@@ -94,13 +120,28 @@ class HumanHumanConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.accept()
 
+        now = datetime.now(timezone.utc)
+        _conversation_last_active[self.conversation_id] = now
+        _conversation_connected_at[self.conversation_id] = now
+
         self._timer_task = asyncio.create_task(self._session_timer())
+        self._inactivity_task: asyncio.Task | None = None
+        if self.user.id == self.conversation.user_a_id:
+            self._inactivity_task = asyncio.create_task(self._inactivity_watcher())
 
     async def disconnect(self, close_code):
         if hasattr(self, "_timer_task") and not self._timer_task.done():
             self._timer_task.cancel()
+        if hasattr(self, "_inactivity_task") and self._inactivity_task and not self._inactivity_task.done():
+            self._inactivity_task.cancel()
+        if hasattr(self, "conversation_id"):
+            _conversation_disconnected.add(self.conversation_id)
         if hasattr(self, "room_group_name"):
             await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
+
+    # ------------------------------------------------------------------
+    # Receive
+    # ------------------------------------------------------------------
 
     async def receive(self, text_data):
         try:
@@ -110,12 +151,10 @@ class HumanHumanConsumer(AsyncWebsocketConsumer):
 
         msg_type = data.get("type")
 
-        # Session control
         if msg_type == "end_session":
             await self._end_conversation("explicit")
             return
 
-        # AI suggestion responses
         if msg_type in ("accept_suggestion", "modify_suggestion", "ignore_suggestion"):
             await self._handle_suggestion_response(data)
             return
@@ -142,7 +181,10 @@ class HumanHumanConsumer(AsyncWebsocketConsumer):
             )
             return
 
-        # Stage 2: emotion check — await result before deciding to relay
+        # Each new content message resets the rephrase intercept counter.
+        self._rephrase_retry_count = 0
+
+        # Stage 2: emotion check
         try:
             emotion = await aget_analyze_emotion(content)
         except Exception as exc:
@@ -150,23 +192,29 @@ class HumanHumanConsumer(AsyncWebsocketConsumer):
             emotion = {"score": 0.0, "label": "neutral", "is_over_threshold": False}
 
         if emotion["is_over_threshold"]:
-            await self._handle_emotion_overflow(content)
+            await self._handle_emotion_overflow(content, trigger_score=emotion["score"])
             return
 
-        # Normal path: relay immediately, NLP in background
         await self._relay_and_persist(content, emotion_score=emotion["score"])
 
     # ------------------------------------------------------------------
     # Emotion overflow: rephrase + suggestion
     # ------------------------------------------------------------------
 
-    async def _handle_emotion_overflow(self, content: str) -> None:
+    async def _handle_emotion_overflow(self, content: str, trigger_score: float | None = None) -> None:
+        self._rephrase_retry_count += 1
         topic = f"議題{self.conversation.topic_id}"
+        is_llm_generated = True
         try:
             suggested = await arephrase_message(content, topic)
         except Exception as exc:
             logger.error("Rephrase failed conv=%s: %s", self.conversation_id, exc)
-            suggested = random.choice(EMOTION_WARNING_MESSAGES)
+            suggested = _REPHRASE_FALLBACK_TEMPLATE
+            is_llm_generated = False
+
+        actions = ["accept", "modify", "ignore"] if is_llm_generated else ["modify", "ignore"]
+        context_ids = await self._get_recent_message_ids()
+        sent_at = datetime.now(timezone.utc)
 
         from chat.models import AISuggestion
 
@@ -178,11 +226,15 @@ class HumanHumanConsumer(AsyncWebsocketConsumer):
                 category=AISuggestion.Category.REPHRASE,
                 original_content=content,
                 suggested_content=suggested,
+                trigger_score=trigger_score,
+                context_message_ids=context_ids,
             )
             suggestion_id = suggestion.id
             self._pending_suggestion = {
+                "category": "rephrase",
                 "original_content": content,
                 "suggestion_id": suggestion_id,
+                "sent_at": sent_at,
             }
         except Exception as exc:
             logger.error("AISuggestion save failed conv=%s: %s", self.conversation_id, exc)
@@ -194,7 +246,7 @@ class HumanHumanConsumer(AsyncWebsocketConsumer):
                 "category": "rephrase",
                 "original_content": content,
                 "suggested_content": suggested,
-                "actions": ["accept", "modify", "ignore"],
+                "actions": actions,
             })
         )
 
@@ -212,37 +264,104 @@ class HumanHumanConsumer(AsyncWebsocketConsumer):
         action_type = data.get("type")
         pending = self._pending_suggestion
         self._pending_suggestion = None
+        category = pending.get("category", "rephrase")
+        suggestion_id = pending.get("suggestion_id")
+
+        now = datetime.now(timezone.utc)
+        sent_at = pending.get("sent_at")
+        response_time_ms: int | None = None
+        if sent_at is not None:
+            response_time_ms = int((now - sent_at).total_seconds() * 1000)
 
         if action_type == "accept_suggestion":
-            relay_content = (data.get("content") or "").strip() or pending["original_content"]
             user_action = "accept"
             modified_content = None
         elif action_type == "modify_suggestion":
-            relay_content = (data.get("content") or "").strip() or pending["original_content"]
             user_action = "modify"
-            modified_content = relay_content
+            modified_content = (data.get("content") or "").strip() or None
         else:  # ignore_suggestion
-            relay_content = pending["original_content"]
             user_action = "ignore"
             modified_content = None
 
         from chat.models import AISuggestion
 
-        try:
-            await AISuggestion.objects.filter(id=pending["suggestion_id"]).aupdate(
-                user_action=user_action,
-                modified_content=modified_content,
-            )
-        except Exception as exc:
-            logger.error("AISuggestion update failed conv=%s: %s", self.conversation_id, exc)
+        # Rephrase + modify: update DB, then run second emotion check before deciding to relay.
+        if category == "rephrase" and action_type == "modify_suggestion":
+            if suggestion_id is not None:
+                try:
+                    await AISuggestion.objects.filter(id=suggestion_id).aupdate(
+                        user_action=user_action,
+                        modified_content=modified_content,
+                        response_time_ms=response_time_ms,
+                    )
+                except Exception as exc:
+                    logger.error("AISuggestion update failed conv=%s: %s", self.conversation_id, exc)
+            await self._handle_modify_emotion_check(modified_content or "", suggestion_id)
+            return
 
-        await self._relay_and_persist(relay_content)
+        # All other cases: determine final_content and update DB.
+        if category == "rephrase":
+            if action_type == "accept_suggestion":
+                relay_content = (data.get("content") or "").strip() or pending["original_content"]
+                final_content = relay_content
+            else:  # ignore
+                relay_content = pending["original_content"]
+                final_content = relay_content
+        else:
+            # redirect / direction: no content relay
+            relay_content = None
+            final_content = None
+
+        if suggestion_id is not None:
+            try:
+                await AISuggestion.objects.filter(id=suggestion_id).aupdate(
+                    user_action=user_action,
+                    modified_content=modified_content,
+                    response_time_ms=response_time_ms,
+                    final_content=final_content,
+                )
+            except Exception as exc:
+                logger.error("AISuggestion update failed conv=%s: %s", self.conversation_id, exc)
+
+        if category == "rephrase" and relay_content:
+            await self._relay_and_persist(relay_content)
+
+    # ------------------------------------------------------------------
+    # Second emotion check after user edits (Patch 3)
+    # ------------------------------------------------------------------
+
+    async def _handle_modify_emotion_check(
+        self, content: str, prev_suggestion_id: int | None = None
+    ) -> None:
+        try:
+            emotion = await aget_analyze_emotion(content)
+        except Exception as exc:
+            logger.error("Emotion re-check failed conv=%s: %s", self.conversation_id, exc)
+            emotion = {"score": 0.0, "label": "neutral", "is_over_threshold": False}
+
+        if emotion["is_over_threshold"] and self._rephrase_retry_count < _REPHRASE_MAX_INTERCEPTS:
+            await self._handle_emotion_overflow(content, trigger_score=emotion["score"])
+        else:
+            # Force relay; update previous record with final_content.
+            if prev_suggestion_id is not None:
+                from chat.models import AISuggestion
+                try:
+                    await AISuggestion.objects.filter(id=prev_suggestion_id).aupdate(
+                        final_content=content,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "AISuggestion final_content update failed conv=%s: %s",
+                        self.conversation_id, exc,
+                    )
+            await self._relay_and_persist(content, emotion_score=emotion["score"])
 
     # ------------------------------------------------------------------
     # Relay + persist (shared by normal path and suggestion responses)
     # ------------------------------------------------------------------
 
     async def _relay_and_persist(self, content: str, emotion_score: float | None = None) -> None:
+        _conversation_last_active[self.conversation_id] = datetime.now(timezone.utc)
         now = datetime.now(timezone.utc)
         await self.channel_layer.group_send(
             self.room_group_name,
@@ -304,13 +423,8 @@ class HumanHumanConsumer(AsyncWebsocketConsumer):
                     self.conversation_id, self.user.id, self.topic_anchor
                 )
                 if topic["is_off_topic"]:
-                    self.system_prompts_triggered += 1
-                    await self.send(
-                        json.dumps({
-                            "type": "system_prompt",
-                            "category": "off_topic",
-                            "message": random.choice(OFF_TOPIC_MESSAGES),
-                        })
+                    await self._handle_off_topic(
+                        message_id, trigger_score=topic.get("relevance_score")
                     )
             except Exception as exc:
                 logger.error("Topic check failed msg=%s: %s", message_id, exc)
@@ -339,11 +453,132 @@ class HumanHumanConsumer(AsyncWebsocketConsumer):
             logger.error("Stalemate check failed conv=%s: %s", self.conversation_id, exc)
 
     # ------------------------------------------------------------------
+    # Off-topic: LLM redirect
+    # ------------------------------------------------------------------
+
+    async def _handle_off_topic(
+        self, message_id: int, trigger_score: float | None = None
+    ) -> None:
+        topic_label = f"議題{self.conversation.topic_id}"
+        try:
+            redirect_text = await aredirect_to_topic(self.conversation_id, topic_label)
+        except Exception as exc:
+            logger.error("redirect_to_topic failed msg=%s: %s", message_id, exc)
+            redirect_text = random.choice(OFF_TOPIC_MESSAGES)
+
+        context_ids = await self._get_recent_message_ids()
+        sent_at = datetime.now(timezone.utc)
+
+        from chat.models import AISuggestion
+
+        suggestion_id = None
+        try:
+            suggestion = await AISuggestion.objects.acreate(
+                conversation_id=self.conversation_id,
+                user=self.user,
+                category=AISuggestion.Category.REDIRECT,
+                original_content=None,
+                suggested_content=redirect_text,
+                trigger_score=trigger_score,
+                context_message_ids=context_ids,
+            )
+            suggestion_id = suggestion.id
+            self._pending_suggestion = {
+                "category": "redirect",
+                "original_content": None,
+                "suggestion_id": suggestion_id,
+                "sent_at": sent_at,
+            }
+        except Exception as exc:
+            logger.error("AISuggestion save failed conv=%s: %s", self.conversation_id, exc)
+
+        self.system_prompts_triggered += 1
+        await self.send(
+            json.dumps({
+                "type": "ai_suggestion",
+                "category": "redirect",
+                "suggested_content": redirect_text,
+                "actions": ["accept", "ignore"],
+            })
+        )
+
+    # ------------------------------------------------------------------
+    # Inactivity watcher: suggest_direction after mutual silence
+    # ------------------------------------------------------------------
+
+    async def _inactivity_watcher(self) -> None:
+        trigger_count = 0
+        last_trigger_at: datetime | None = None
+        in_inactivity_window = False
+
+        while True:
+            await asyncio.sleep(_INACTIVITY_CHECK_INTERVAL)
+
+            if self.conversation_id in _conversation_disconnected:
+                return
+
+            if trigger_count >= _INACTIVITY_MAX_TRIGGERS:
+                return
+
+            now = datetime.now(timezone.utc)
+
+            # Grace period: suppress triggers in the first N seconds of the conversation.
+            connected_at = _conversation_connected_at.get(self.conversation_id)
+            if connected_at is not None:
+                if (now - connected_at).total_seconds() < _INACTIVITY_GRACE_SECONDS:
+                    continue
+
+            # Min interval: don't re-trigger within N seconds of the last trigger.
+            if last_trigger_at is not None:
+                since_last = (now - last_trigger_at).total_seconds()
+                if since_last < _INACTIVITY_MIN_INTERVAL_SECONDS:
+                    # If there was activity since the last trigger, reset the inactivity window.
+                    last_active = _conversation_last_active.get(self.conversation_id)
+                    if last_active and last_active > last_trigger_at:
+                        in_inactivity_window = False
+                    continue
+
+            last_active = _conversation_last_active.get(self.conversation_id)
+            if last_active is None:
+                continue
+
+            elapsed = (now - last_active).total_seconds()
+            if elapsed >= _INACTIVITY_SECONDS:
+                if not in_inactivity_window:
+                    in_inactivity_window = True
+                    trigger_count += 1
+                    last_trigger_at = now
+                    asyncio.create_task(self._suggest_direction_bg())
+            else:
+                in_inactivity_window = False
+
+    async def _suggest_direction_bg(self) -> None:
+        topic_label = f"議題{self.conversation.topic_id}"
+        try:
+            direction_text = await asuggest_direction(self.conversation_id, topic_label)
+        except Exception as exc:
+            logger.error("suggest_direction failed conv=%s: %s", self.conversation_id, exc)
+            direction_text = random.choice(DIRECTION_FALLBACK_MESSAGES)
+
+        try:
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    "type": "session.ai_suggestion",
+                    "category": "direction",
+                    "suggested_content": direction_text,
+                },
+            )
+        except Exception as exc:
+            logger.error(
+                "group_send direction failed conv=%s: %s", self.conversation_id, exc
+            )
+
+    # ------------------------------------------------------------------
     # Session lifecycle
     # ------------------------------------------------------------------
 
     async def _session_timer(self) -> None:
-        """Hard 60-minute session cap."""
         await asyncio.sleep(_SESSION_TIMEOUT_SECONDS)
         await self._end_conversation("timeout")
 
@@ -354,6 +589,8 @@ class HumanHumanConsumer(AsyncWebsocketConsumer):
 
         if hasattr(self, "_timer_task") and not self._timer_task.done():
             self._timer_task.cancel()
+        if hasattr(self, "_inactivity_task") and self._inactivity_task and not self._inactivity_task.done():
+            self._inactivity_task.cancel()
 
         stats: dict = {}
         try:
@@ -388,6 +625,24 @@ class HumanHumanConsumer(AsyncWebsocketConsumer):
             logger.error("Summary generation failed conv=%s: %s", self.conversation_id, exc)
 
     # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    async def _get_recent_message_ids(self, n: int = 5) -> list[int]:
+        from chat.models import Message
+        try:
+            ids = []
+            async for msg_id in (
+                Message.objects.filter(conversation_id=self.conversation_id)
+                .order_by("-timestamp")
+                .values_list("id", flat=True)[:n]
+            ):
+                ids.append(msg_id)
+            return list(reversed(ids))
+        except Exception:
+            return []
+
+    # ------------------------------------------------------------------
     # Channel layer handlers
     # ------------------------------------------------------------------
 
@@ -414,5 +669,46 @@ class HumanHumanConsumer(AsyncWebsocketConsumer):
             pass
         try:
             await self.close()
+        except Exception:
+            pass
+
+    async def session_ai_suggestion(self, event):
+        """Handle direction suggestions broadcast to both users."""
+        from chat.models import AISuggestion
+
+        context_ids = await self._get_recent_message_ids()
+        sent_at = datetime.now(timezone.utc)
+        suggestion_id = None
+        try:
+            suggestion = await AISuggestion.objects.acreate(
+                conversation_id=self.conversation_id,
+                user=self.user,
+                category=AISuggestion.Category.DIRECTION,
+                original_content=None,
+                suggested_content=event["suggested_content"],
+                context_message_ids=context_ids,
+            )
+            suggestion_id = suggestion.id
+            self._pending_suggestion = {
+                "category": "direction",
+                "original_content": None,
+                "suggestion_id": suggestion_id,
+                "sent_at": sent_at,
+            }
+        except Exception as exc:
+            logger.error(
+                "AISuggestion direction save failed conv=%s user=%s: %s",
+                self.conversation_id, self.user.id, exc,
+            )
+
+        try:
+            await self.send(
+                json.dumps({
+                    "type": "ai_suggestion",
+                    "category": event["category"],
+                    "suggested_content": event["suggested_content"],
+                    "actions": ["accept", "ignore"],
+                })
+            )
         except Exception:
             pass

@@ -74,22 +74,20 @@ def test_rephrase_with_mock_llm(monkeypatch):
 
 
 @pytest.mark.django_db
-def test_rephrase_no_api_key_returns_fallback(monkeypatch):
+def test_rephrase_no_api_key_raises_runtime_error(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    result = rephrase_message("你根本是個廢物！", "核能議題")
-    assert isinstance(result, str)
-    assert len(result) > 0
+    with pytest.raises(RuntimeError):
+        rephrase_message("你根本是個廢物！", "核能議題")
 
 
 @pytest.mark.django_db
-def test_rephrase_api_error_returns_fallback(monkeypatch):
+def test_rephrase_api_error_raises_runtime_error(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     mock_client = MagicMock()
     mock_client.messages.create.side_effect = RuntimeError("API down")
     with patch("anthropic.Anthropic", return_value=mock_client):
-        result = rephrase_message("你這個人完全沒道理！", "核能議題")
-    assert isinstance(result, str)
-    assert len(result) > 0
+        with pytest.raises(RuntimeError):
+            rephrase_message("你這個人完全沒道理！", "核能議題")
 
 
 @pytest.mark.django_db
@@ -205,11 +203,12 @@ async def test_emotion_overflow_not_relayed_to_bob(settings, monkeypatch):
         await comm_a.send_json_to({"content": "你這個人真的很討厭！"})
         alice_msg = await comm_a.receive_json_from(timeout=5)
 
-    # Alice gets ai_suggestion
+    # Alice gets ai_suggestion; no API key → LLM unavailable → only modify/ignore
     assert alice_msg["type"] == "ai_suggestion"
     assert alice_msg["category"] == "rephrase"
     assert "suggested_content" in alice_msg
-    assert alice_msg["actions"] == ["accept", "modify", "ignore"]
+    assert "modify" in alice_msg["actions"]
+    assert "ignore" in alice_msg["actions"]
 
     # Bob gets nothing (no relay)
     assert await comm_b.receive_nothing(timeout=1)

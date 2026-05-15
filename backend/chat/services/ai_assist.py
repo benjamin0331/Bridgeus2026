@@ -16,12 +16,6 @@ from asgiref.sync import sync_to_async
 
 logger = logging.getLogger(__name__)
 
-_REPHRASE_FALLBACKS = [
-    "或許可以試著用更平和的方式表達這個觀點，對方更容易接受你的論點。",
-    "你的立場很清楚，試著聚焦在論據而非情緒，會更有說服力。",
-    "深呼吸一下，重新整理思路，你的觀點值得被認真對待。",
-]
-
 _DIRECTION_FALLBACKS = [
     "可以試著從對方的角度思考：他們最核心的顧慮是什麼？",
     "換個切入點：這個議題對不同世代的人來說意義是否相同？",
@@ -58,6 +52,8 @@ def rephrase_message(original_text: str, topic: str) -> str:
     """
     Rephrase an emotionally charged message into a calmer version
     while preserving the original stance.
+
+    Raises RuntimeError if the LLM is unavailable; callers must handle the fallback.
     """
     prompt = (
         f"用戶在討論「{topic}」時說了以下內容，"
@@ -67,7 +63,9 @@ def rephrase_message(original_text: str, topic: str) -> str:
         f"原文：{original_text}"
     )
     result = _call_claude(prompt)
-    return result if result else random.choice(_REPHRASE_FALLBACKS)
+    if result:
+        return result
+    raise RuntimeError("rephrase_message: LLM unavailable or returned empty response")
 
 
 def suggest_direction(conversation_id: int, topic: str) -> str:

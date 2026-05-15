@@ -1,6 +1,6 @@
 # CONTEXT.md — BridgeUs 開發狀態
 
-> 最後更新：2026-05-14（H-H Phase 8：AI 輔助介入模組完成）
+> 最後更新：2026-05-15（H-H Phase 10：edge cases 修補 — inactivity limits、rephrase fallback、modify retry、AISuggestion 研究欄位）
 
 ## 專案目標
 
@@ -266,8 +266,8 @@ BridgeUs（橋得攏）— AI 驅動的去極化對話平台
 
 **`chat/services/ai_assist.py`（新模組）：**
 - `rephrase_message(original_text, topic)` → `str`：呼叫 Claude API，將情緒化發言重述為理性語氣，保留立場
-- `suggest_direction(conversation_id, topic)` → `str`：取最近 6 則對話，要求 Claude 提供新討論角度（冷場用，未接入 consumer）
-- `redirect_to_topic(conversation_id, topic)` → `str`：取最近 6 則對話，要求 Claude 溫和引導回主題（未接入 consumer，目前仍用固定模板）
+- `suggest_direction(conversation_id, topic)` → `str`：取最近 6 則對話，要求 Claude 提供新討論角度（已接入 consumer `_inactivity_watcher`）
+- `redirect_to_topic(conversation_id, topic)` → `str`：取最近 6 則對話，要求 Claude 溫和引導回主題（已接入 consumer 離題偵測，取代固定模板）
 - 全部均有 fallback 到預寫中文模板（API 未設定或呼叫失敗）
 - async wrappers：`arephrase_message` / `asuggest_direction` / `aredirect_to_topic`
 
@@ -282,16 +282,17 @@ BridgeUs（橋得攏）— AI 驅動的去極化對話平台
 `_handle_emotion_overflow(content)`（情緒超標時觸發）：
 - `await arephrase_message()` → Claude 改寫（或 fallback 模板）
 - `AISuggestion.acreate()` 存入 DB（`user_action=None`）
-- 儲存 `self._pending_suggestion = {"original_content": ..., "suggestion_id": ...}`
+- 儲存 `self._pending_suggestion = {"category":"rephrase", "original_content": ..., "suggestion_id": ...}`
 - 只傳給發言者：`{"type":"ai_suggestion","category":"rephrase","original_content":...,"suggested_content":...,"actions":["accept","modify","ignore"]}`
 - **Bob 這端什麼都收不到**
 
-`_handle_suggestion_response(data)` （使用者回應時觸發）：
-- `accept_suggestion` → 轉發 AI 改寫版給對方；DB update `user_action="accept"`
-- `modify_suggestion` → 轉發使用者修改版；DB update `user_action="modify"` + `modified_content`
-- `ignore_suggestion` → 轉發原始版；DB update `user_action="ignore"`
+`_handle_suggestion_response(data)` （使用者回應時觸發，Phase 9 擴充）：
+- 讀取 `pending["category"]`（預設 `"rephrase"`）決定是否 relay
+- `rephrase`：accept / modify / ignore → 轉發對應內容給對方 + DB update
+- `redirect` / `direction`：accept / ignore → **只更新 DB，不 relay 任何內容**
 
 `_relay_and_persist(content, emotion_score=None)`（正常路徑 + suggestion 回應共用）：
+- 更新 `_conversation_last_active[conv_id]`（Phase 9 新增，供 inactivity watcher 讀取）
 - `group_send` → 廣播雙方
 - `Message.acreate()` 存入 DB
 - `create_task(_run_nlp_analysis)` → embedding + topic check（背景）
@@ -301,10 +302,59 @@ BridgeUs（橋得攏）— AI 驅動的去極化對話平台
 - `_silence_watcher()` 及所有沉默偵測邏輯（`SILENCE_WARNING_MESSAGE`、`_SILENCE_WARN_SECONDS`、`_SILENCE_END_SECONDS`）
 - consumer 結束條件：原 3 種（explicit / timer / silence）→ 現 2 種（explicit / 60 min timer）
 
-**`chat/tests_ai_assist.py`（新，14 項測試）：**
-- `rephrase_message`：mock LLM 成功、no API key fallback、API error fallback、輸出情緒分數低於原文
+---
+
+**已完成（H-H Phase 9 — redirect_to_topic + inactivity_watcher 接入 consumer）：**
+
+**`chat/consumers.py` 新增 / 修改：**
+
+模組層級新增：
+- `DIRECTION_FALLBACK_MESSAGES`（3 條冷場備用模板）
+- `_INACTIVITY_SECONDS = 120`（2 分鐘）、`_INACTIVITY_CHECK_INTERVAL = 30`（秒）
+- `_conversation_last_active: dict[int, datetime] = {}`：module-level 共享字典，單 process 架構下兩個 consumer 共用，記錄各 conversation 最後活躍時間
+
+`connect()` 新增：
+- 初始化 `_conversation_last_active[conv_id]`
+- 啟動 `_inactivity_task`（**僅 user_a** 的 consumer 執行，防止雙重觸發）
+
+`disconnect()` / `_end_conversation()` 新增：
+- 取消 `_inactivity_task`
+
+**`_handle_off_topic(message_id)`（新方法，取代 off_topic 固定模板）：**
+- `await aredirect_to_topic()` → LLM 生成引導提示（失敗 fallback `OFF_TOPIC_MESSAGES`）
+- `AISuggestion.acreate()` 存入 DB（`original_content=None`、`category=REDIRECT`）
+- 設定 `self._pending_suggestion = {"category":"redirect", "original_content":None, "suggestion_id":...}`
+- 推送給**發言者**：`{"type":"ai_suggestion","category":"redirect","suggested_content":...,"actions":["accept","ignore"]}`
+- accept / ignore 只更新 DB，不 relay（無內容可 relay）
+
+**`_inactivity_watcher()`（新 background task，僅 user_a 跑）：**
+- 每 30s 輪詢 `_conversation_last_active[conv_id]`
+- elapsed ≥ 120s 且尚未觸發 → `triggered=True`，`create_task(_suggest_direction_bg())`
+- 任一方發言後（`_conversation_last_active` 更新）→ `triggered=False` 重置，下次靜默可再觸發
+
+**`_suggest_direction_bg()`（新方法）：**
+- `await asuggest_direction()` → LLM 生成討論方向（失敗 fallback `DIRECTION_FALLBACK_MESSAGES`）
+- `channel_layer.group_send("session.ai_suggestion", ...)` → 廣播雙方
+
+**`session_ai_suggestion(event)`（新 channel layer handler）：**
+- 每個 consumer 各自：`AISuggestion.acreate(category=DIRECTION, original_content=None)`
+- 設定 `self._pending_suggestion = {"category":"direction", ...}`
+- 傳送 WebSocket：`{"type":"ai_suggestion","category":"direction","suggested_content":...,"actions":["accept","ignore"]}`
+
+**Consumer 目前所有 async task：**
+| Task | 建立時機 | 說明 |
+|------|---------|------|
+| `_session_timer` | `connect()` | 60 min hard cap |
+| `_inactivity_task` | `connect()`（僅 user_a） | 2 分鐘靜默觸發方向建議 |
+| `_run_nlp_analysis` | `_relay_and_persist()` 每則 | embedding、emotion_score、離題偵測 |
+| `_run_periodic_analysis` | `_relay_and_persist()` 累積觸發 | 漂移計算、僵局偵測 |
+| `_suggest_direction_bg` | `_inactivity_watcher` 觸發時 | LLM → group_send direction suggestion |
+| `_generate_summary_bg` | `_end_conversation()` | 對話摘要生成 |
+
+**`chat/tests_ai_assist.py`（14 項測試，Phase 10 更新 2 項）：**
+- `rephrase_message`：mock LLM 成功、**no API key 現在預期 RuntimeError（已更新）**、**API error 現在預期 RuntimeError（已更新）**、輸出情緒分數低於原文
 - `suggest_direction` / `redirect_to_topic`：mock LLM、no API key fallback
-- Consumer emotion overflow：高情緒訊息不轉發給 Bob、建立 AISuggestion 記錄
+- Consumer emotion overflow：高情緒訊息不轉發給 Bob、建立 AISuggestion 記錄（actions 含 modify/ignore）
 - Consumer suggestion response：accept / modify / ignore 正確轉發 + DB 更新
 - Consumer 正常訊息：低情緒直接轉發，無 AISuggestion
 
@@ -312,7 +362,76 @@ BridgeUs（橋得攏）— AI 驅動的去極化對話平台
 - 新增：no messages fail-open、no embedding fail-open、window 行為、只算發言者訊息、async wrapper 一致性
 - 移除：舊 per-message API 測試
 
-**`chat/tests_consumer.py`：移除過時的高情緒測試，現 3 項**（正常轉發、NLP DB 寫入、黑名單攔截）
+**`chat/tests_consumer.py`：Phase 9+10 新增，現共 23 項**
+- 原有 3 項：正常轉發、NLP DB 寫入、黑名單攔截
+- redirect 系列（5 項）：LLM 路徑、LLM 失敗 fallback、AISuggestion 記錄、accept/ignore 不 relay
+- direction 系列（7 項）：雙方收到、只觸發一次、活動後重置計時器、LLM 失敗 fallback、DB 兩筆記錄、accept/ignore 不 relay
+- **Phase 10 新增 8 項：**
+  - inactivity max 3 triggers、grace period 抑制觸發、min interval 防止快速再觸發、disconnect 退出 watcher
+  - rephrase LLM 失敗 → 只有 modify/ignore actions
+  - modify 二次情緒檢查再攔截、達到最大攔截次數強制 relay
+  - AISuggestion 研究欄位驗證（trigger_score、response_time_ms、final_content、context_message_ids）
+
+---
+
+**已完成（H-H Phase 10 — Edge Cases 修補）：**
+
+**`chat/services/ai_assist.py` 修改：**
+- `rephrase_message()` 改為在 LLM 不可用時 **raise RuntimeError**（不再回傳 fallback 字串）
+- 移除 `_REPHRASE_FALLBACKS` list（改由 consumer 控制 fallback）
+
+**`chat/models.py` + `migration 0007`：**
+- `AISuggestion` 新增 4 個研究欄位（均 nullable）：
+  - `response_time_ms`（IntegerField）：建議推送到用戶回應的時間差（毫秒）
+  - `trigger_score`（FloatField）：觸發時的具體分數（情緒 or 離題餘弦距離）
+  - `final_content`（TextField）：最終實際送出給對方的內容
+  - `context_message_ids`（JSONField）：觸發時前 5 則訊息的 ID list
+
+**`chat/consumers.py` 全面重寫（Phase 10 修補）：**
+
+模組層級新增常數：
+- `_REPHRASE_FALLBACK_TEMPLATE = "你的發言可能帶有較強烈的情緒，建議修改後再發送。"`
+- `_REPHRASE_MAX_INTERCEPTS = 3`
+- `_INACTIVITY_MAX_TRIGGERS = 3`、`_INACTIVITY_MIN_INTERVAL_SECONDS = 300`、`_INACTIVITY_GRACE_SECONDS = 180`
+- `_conversation_connected_at: dict[int, datetime]`、`_conversation_disconnected: set[int]`
+
+`connect()` 新增：
+- `self._rephrase_retry_count = 0`
+- `_conversation_connected_at[conv_id] = now()`
+
+`disconnect()` 新增：
+- `_conversation_disconnected.add(conv_id)`
+
+`receive()` 新增：
+- 每則新 content 訊息重置 `self._rephrase_retry_count = 0`
+- 傳遞 `trigger_score=emotion["score"]` 給 `_handle_emotion_overflow()`
+
+`_handle_emotion_overflow(content, trigger_score=None)`（重大修改）：
+- 每次攔截 `self._rephrase_retry_count += 1`
+- LLM 成功 → `actions=["accept","modify","ignore"]`；失敗 catch → `suggested=_REPHRASE_FALLBACK_TEMPLATE`，`actions=["modify","ignore"]`
+- 儲存 `trigger_score`、`context_message_ids`（前 5 則訊息 ID）、`sent_at` 至 pending
+
+`_handle_suggestion_response(data)`（修改）：
+- 計算 `response_time_ms` 從 `pending["sent_at"]`
+- **rephrase + modify** 路徑：DB 更新後呼叫 `_handle_modify_emotion_check(content, suggestion_id)`，不直接 relay
+- accept / ignore：計算 `final_content` 後更新 DB，然後 relay
+
+`_handle_modify_emotion_check(content, prev_suggestion_id)`（**新方法**）：
+- 重新執行 `aget_analyze_emotion(content)`
+- 若仍超標且 `retry_count < MAX` → 再次呼叫 `_handle_emotion_overflow(content)`（循環攔截）
+- 否則（低情緒 or 達到最大次數）→ 更新 prev AISuggestion `final_content=content`，force relay
+
+`_inactivity_watcher()`（重大重寫，加入 4 個限制）：
+1. **Max 3 triggers**：`trigger_count >= 3` → `return`
+2. **Grace period 180s**：連線後 3 分鐘內不觸發（`_conversation_connected_at` 比較）
+3. **Min interval 300s**：上次觸發後 5 分鐘內不重複觸發
+4. **Disconnect exit**：`conv_id in _conversation_disconnected` → `return`
+
+`_handle_off_topic(message_id, trigger_score=None)` / `session_ai_suggestion(event)`（修改）：
+- 儲存 `trigger_score`、`context_message_ids`、`sent_at` 至 AISuggestion + pending
+
+`_get_recent_message_ids(n=5)`（**新 helper**）：
+- async 取前 n 則訊息 ID（降序後 reverse），回傳 `list[int]`
 
 ---
 
@@ -331,18 +450,20 @@ BridgeUs（橋得攏）— AI 驅動的去極化對話平台
 | `chat/tests_embedding.py` | 11 | 維度驗證、中文語意相似度、async wrapper |
 | `chat/tests_emotion.py` | 10 | 平和 vs 攻擊語句分數、閾值一致性、async wrapper |
 | `chat/tests_filter.py` | 21 | 黑名單命中（頭/中/尾）、強烈但合法語句不攔截、sync/async 一致 |
-| `chat/tests_consumer.py` | 3 | NLP 整合：正常轉發、DB 寫入、黑名單攔截 |
+| `chat/tests_consumer.py` | 23 | NLP 整合（3）+ redirect LLM（5）+ direction inactivity（7）+ Phase 10 edge cases（8） |
 | `chat/tests_topic.py` | 15 | Window-based 離題偵測：no-msg fail-open、on/off-topic、window 行為、async |
 | `chat/tests_stalemate.py` | 16 | 僵局偵測（穩定/漸移）、關鍵詞抽取、提示模板 |
 | `chat/tests_drift.py` | 12 | 漂移計算、direction 邏輯、DB 記錄、200-char consumer 觸發 |
 | `chat/tests_session.py` | 19 | end_session 統計、generate_summary mock LLM、consumer 結束觸發 |
 | `chat/tests_ai_assist.py` | 14 | rephrase mock/fallback/calmer、overflow 攔截不轉發、accept/modify/ignore |
-| **合計** | **126** | 全部通過（2026-05-14 驗證） |
+| **合計** | **146** | 全部通過（2026-05-15 驗證） |
 
 執行：
 ```bash
 cd backend
 uv run pytest chat/tests.py chat/tests_embedding.py chat/tests_emotion.py chat/tests_filter.py chat/tests_consumer.py chat/tests_topic.py chat/tests_stalemate.py chat/tests_drift.py chat/tests_session.py chat/tests_ai_assist.py -v
+# 或精簡執行 consumer 相關：
+uv run pytest chat/tests_consumer.py chat/tests_ai_assist.py -v
 ```
 
 ---
@@ -473,8 +594,8 @@ npm run dev   # Vite dev server，port 5173
 - [x] `AISuggestion` model：記錄 AI 介入歷程（migration 0006）
 - [x] Consumer receive() 改寫：情緒超標攔截 + ai_suggestion + accept/modify/ignore 回應流程
 - [x] `chat/services/topic.py` 改寫：window-based API（DB 查詢最近 N 則訊息）
-- [ ] `redirect_to_topic` 接入 consumer 離題偵測（目前仍用固定模板）
-- [ ] `suggest_direction` 接入 consumer（冷場觸發條件待定）
+- [x] `redirect_to_topic` 接入 consumer 離題偵測（LLM 生成 + fallback，推送 ai_suggestion/redirect）
+- [x] `suggest_direction` 接入 consumer（`_inactivity_watcher`：雙方靜默 2 分鐘觸發，推送 ai_suggestion/direction）
 - [ ] 問卷初始立場 embedding 填入（M2/M3 整合）
 - [ ] CCND WebSocket 推送（前端介面待確認）
 - [ ] API Spec 更新（`docs/BridgeUs_API_Spec.md`）
