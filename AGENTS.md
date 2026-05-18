@@ -35,6 +35,8 @@
   - `MATCHING_ALLOW_SAME_STANCE_FALLBACK=false` for production heterogeneous matching; set `true` only for test convenience.
   - `MATCH_ROOM_IDLE_TIMEOUT_SECONDS=600` closes inactive matching rooms after 10 minutes.
   - `H_H_AI_ASSIST_ENABLED=false` keeps H-H AI intervention disabled by default; set `true` only when testing content prompts / rephrase suggestions.
+  - `H_H_AI_ASSIST_TIMEOUT_SECONDS=2` prevents slow emotion inference or first-time model downloads from blocking matching chat delivery.
+  - `PRELOAD_NLP_MODELS=false`; set `true` in Docker or run `uv run python manage.py warm_nlp_models` before uvicorn to download/warm NLP models ahead of traffic.
   - `USE_REDIS_CACHE=true` is required if dialogue session cache must survive multiple workers/containers.
   - `USE_REDIS_CHANNEL=true` enables Redis channel layer for multi-process WebSocket deployment.
 

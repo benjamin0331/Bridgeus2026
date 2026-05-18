@@ -42,6 +42,7 @@ uv run python scripts/build_knowledge_base.py --data-dir data/nuclear_energy --c
 Run ASGI server on the expected backend port:
 
 ```bash
+uv run python manage.py warm_nlp_models
 uv run uvicorn BridgeUs_Django.asgi:application --host 0.0.0.0 --port 8005
 ```
 
@@ -70,6 +71,8 @@ DB_CONN_MAX_AGE=0
 MATCHING_ALLOW_SAME_STANCE_FALLBACK=false
 MATCH_ROOM_IDLE_TIMEOUT_SECONDS=600
 H_H_AI_ASSIST_ENABLED=false
+H_H_AI_ASSIST_TIMEOUT_SECONDS=2
+PRELOAD_NLP_MODELS=false
 
 USE_REDIS_CACHE=false
 USE_REDIS_CHANNEL=false
@@ -148,7 +151,7 @@ Matching:
 - Q9 embedding is stored in `UserStanceProfile.q9_embedding` using pgvector when available.
 - `DialogueMatch` stores likert distance, semantic distance, weighted match score, and algorithm version.
 - Matching rooms auto-close after `MATCH_ROOM_IDLE_TIMEOUT_SECONDS` without conversation activity.
-- H-H AI assistance is off by default. Set `H_H_AI_ASSIST_ENABLED=true` to enable content-block prompts, emotion rephrase suggestions, topic redirects, and research suggestion records for WebSocket matching rooms.
+- H-H AI assistance is off by default. Set `H_H_AI_ASSIST_ENABLED=true` to enable content-block prompts, emotion rephrase suggestions, topic redirects, and research suggestion records for WebSocket matching rooms. `H_H_AI_ASSIST_TIMEOUT_SECONDS` defaults to `2` so slow NLP inference fails open and chat messages still relay. Run `uv run python manage.py warm_nlp_models` before starting uvicorn, or set `PRELOAD_NLP_MODELS=true` in Docker, to preload models before users enter chat.
 
 ## Admin
 

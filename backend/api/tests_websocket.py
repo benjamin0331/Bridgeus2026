@@ -1,3 +1,4 @@
+import asyncio
 from uuid import uuid4
 from unittest.mock import AsyncMock, patch
 
@@ -18,6 +19,11 @@ TEST_CHANNEL_LAYERS = {
 }
 
 create_user = sync_to_async(User.objects.create_user, thread_sensitive=True)
+
+
+@pytest.fixture(autouse=True)
+def disable_hh_ai_assist_env(monkeypatch):
+    monkeypatch.setenv("H_H_AI_ASSIST_ENABLED", "false")
 
 
 class FakeStreamingDialogueAgent:
@@ -324,6 +330,44 @@ async def test_match_room_ai_assist_modifies_suggestion_after_second_emotion_che
     await comm_a.disconnect()
     await comm_b.disconnect()
 
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_match_room_ai_assist_relays_when_emotion_analysis_times_out():
+    from BridgeUs_Django.asgi import application
+
+    alice = await create_user(username="assist_timeout_alice", password="secret123")
+    bob = await create_user(username="assist_timeout_bob", password="secret123")
+    match = await _make_active_match(alice, bob)
+
+    alice_token = await _access_token_for(alice)
+    bob_token = await _access_token_for(bob)
+    comm_a = WebsocketCommunicator(application, f"/ws/matching/rooms/{match.room_id}/?token={alice_token}")
+    comm_b = WebsocketCommunicator(application, f"/ws/matching/rooms/{match.room_id}/?token={bob_token}")
+    assert (await comm_a.connect())[0]
+    assert (await comm_b.connect())[0]
+
+    async def slow_emotion(_content):
+        await asyncio.sleep(1)
+        return {"score": 0.99, "label": "negative", "is_over_threshold": True}
+
+    with patch("api.consumers.hh_ai_assist_enabled", return_value=True), \
+         patch("api.consumers.ai_assist_timeout_seconds", return_value=0.01), \
+         patch("api.consumers.aget_analyze_emotion", new=AsyncMock(side_effect=slow_emotion)), \
+         patch("api.consumers.aget_embedding", new=AsyncMock(return_value=[0.0] * 384)):
+        await comm_a.send_json_to({"type": "match_message", "content": "我想先談核能穩定供電。"})
+        response_a = await comm_a.receive_json_from(timeout=0.5)
+        response_b = await comm_b.receive_json_from(timeout=0.5)
+
+    assert response_a == response_b
+    assert response_a["type"] == "match_message"
+    assert response_a["message"]["content"] == "我想先談核能穩定供電。"
+    saved_message = await MatchMessage.objects.aget(id=response_a["message"]["id"])
+    assert saved_message.emotion_score is None
+
+    await comm_a.disconnect()
+    await comm_b.disconnect()
 
 @pytest.mark.asyncio
 @pytest.mark.django_db(transaction=True)

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 from urllib.parse import parse_qs
 
 from asgiref.sync import sync_to_async
@@ -32,7 +33,19 @@ from chat.services.filter import check_content_sync
 
 User = get_user_model()
 SESSION_TTL_SECONDS = 60 * 60 * 12
+DEFAULT_AI_ASSIST_TIMEOUT_SECONDS = 2.0
 logger = logging.getLogger(__name__)
+
+
+def ai_assist_timeout_seconds() -> float:
+    raw_value = os.getenv("H_H_AI_ASSIST_TIMEOUT_SECONDS")
+    if raw_value is None:
+        return DEFAULT_AI_ASSIST_TIMEOUT_SECONDS
+    try:
+        timeout = float(raw_value)
+    except (TypeError, ValueError):
+        return DEFAULT_AI_ASSIST_TIMEOUT_SECONDS
+    return max(0.0, timeout)
 
 
 def _session_cache_key(session_id: str) -> str:
@@ -364,8 +377,19 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
         await self._relay_and_persist(modified_content, emotion_score=emotion.get("score"))
 
     async def _safe_analyze_emotion(self, content: str) -> dict:
+        timeout = ai_assist_timeout_seconds()
         try:
-            return await aget_analyze_emotion(content)
+            if timeout <= 0:
+                return await aget_analyze_emotion(content)
+            return await asyncio.wait_for(aget_analyze_emotion(content), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Emotion analysis timed out after %.2fs for match room %s; "
+                "relaying message without intervention.",
+                timeout,
+                self.room_id,
+            )
+            return {"score": None, "label": "timeout", "is_over_threshold": False}
         except Exception:
             logger.exception("Emotion analysis failed for match room %s.", self.room_id)
             return {"score": 0.0, "label": "neutral", "is_over_threshold": False}
