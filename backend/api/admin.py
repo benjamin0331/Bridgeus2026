@@ -3,8 +3,10 @@ from django.contrib import admin
 from .models import (
     AIConversation,
     DialogueMatch,
+    MatchAISuggestion,
     MatchMessage,
     MatchQueueEntry,
+    MatchStanceDrift,
     UserStanceProfile,
 )
 
@@ -77,5 +79,33 @@ class DialogueMatchAdmin(admin.ModelAdmin):
 
 @admin.register(MatchMessage)
 class MatchMessageAdmin(admin.ModelAdmin):
-    list_display = ("id", "match", "sender", "created_at")
+    list_display = ("id", "match", "sender", "emotion_score", "dialogue_phase", "created_at")
+    list_filter = ("dialogue_phase",)
     search_fields = ("match__room_id", "sender__username", "content")
+
+
+@admin.register(MatchAISuggestion)
+class MatchAISuggestionAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "match",
+        "user",
+        "category",
+        "user_action",
+        "trigger_score",
+        "created_at",
+    )
+    list_filter = ("category", "user_action")
+    search_fields = (
+        "match__room_id",
+        "user__username",
+        "original_content",
+        "suggested_content",
+        "final_content",
+    )
+
+
+@admin.register(MatchStanceDrift)
+class MatchStanceDriftAdmin(admin.ModelAdmin):
+    list_display = ("id", "match", "user", "drift_value", "measured_at")
+    search_fields = ("match__room_id", "user__username")

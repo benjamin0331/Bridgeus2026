@@ -34,6 +34,7 @@
   - `DB_CONN_MAX_AGE=0` to avoid exhausting small Postgres deployments during local/server mixed testing.
   - `MATCHING_ALLOW_SAME_STANCE_FALLBACK=false` for production heterogeneous matching; set `true` only for test convenience.
   - `MATCH_ROOM_IDLE_TIMEOUT_SECONDS=600` closes inactive matching rooms after 10 minutes.
+  - `H_H_AI_ASSIST_ENABLED=false` keeps H-H AI intervention disabled by default; set `true` only when testing content prompts / rephrase suggestions.
   - `USE_REDIS_CACHE=true` is required if dialogue session cache must survive multiple workers/containers.
   - `USE_REDIS_CHANNEL=true` enables Redis channel layer for multi-process WebSocket deployment.
 
@@ -43,6 +44,7 @@
 - Matching queue, restart, cancellation, stale queue cleanup, and idle room cleanup: `backend/apps/matching/services/matcher.py`.
 - Heterogeneous matching weights and candidate ranking: `backend/apps/matching/services/matching_algorithm.py`.
 - Q9 semantic embedding bridge: `backend/apps/matching/services/semantic.py`.
+- H-H AI assist services: `backend/apps/matching/services/hh_ai.py` and `backend/apps/matching/services/hh_analysis.py`.
 - WebSocket consumers for AI dialogue and matching room chat: `backend/api/consumers.py`.
 - Persistent models for stance profiles, queue entries, matches, AI turns, and match messages: `backend/api/models.py`.
 
@@ -76,6 +78,7 @@
 - Matching rooms are anonymous in the UI and API payloads.
 - Matching room messages and AI dialogue turns are persisted in the database.
 - Matching rooms auto-close after `MATCH_ROOM_IDLE_TIMEOUT_SECONDS` without conversation activity.
+- H-H AI assist is selectively ported from `feat/benjamin`; do not directly merge `feat/benjamin` over the current `feat/Light` architecture.
 
 ## Working Rules
 - Prefer targeted edits and preserve user changes in dirty worktrees.

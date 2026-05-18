@@ -97,6 +97,7 @@ DB_CONN_MAX_AGE=0
 
 MATCHING_ALLOW_SAME_STANCE_FALLBACK=false
 MATCH_ROOM_IDLE_TIMEOUT_SECONDS=600
+H_H_AI_ASSIST_ENABLED=false
 USE_REDIS_CACHE=false
 USE_REDIS_CHANNEL=false
 ```
@@ -159,6 +160,7 @@ Human matching:
 - Test-only fallback can be enabled with `MATCHING_ALLOW_SAME_STANCE_FALLBACK=true`.
 - Q9 is embedded for semantic matching; Q10 is stored but not scored yet.
 - Matching rooms are anonymous and auto-close after 10 minutes of no conversation activity by default.
+- Human-human AI assistance is feature-flagged with `H_H_AI_ASSIST_ENABLED=true`; when enabled, WebSocket matching rooms can show content-block prompts and AI rephrase/direction/redirect suggestions.
 
 ## Verification
 
@@ -208,6 +210,8 @@ Current defaults:
 BridgeUs is an NSTC undergraduate research project for structured depolarization dialogue. The research period is planned for 2026/07 - 2027/02. Advisor: 張昭憲（淡江大學資管系副教授）.
 
 Current engineering priority: make the survey, matching, AI dialogue, and anonymous chat lifecycle stable before adding long-running post-dialogue analysis and CCND visualization.
+
+Merge note: `feat/Light` is the source of truth for matching-room architecture. Do not directly merge `feat/benjamin`; selectively port compatible H-H AI-assist services into the current `DialogueMatch` / `MatchMessage` stack.
 
 ## System Modules
 

@@ -79,6 +79,7 @@ Human matching:
 - Matching chat is anonymous; the current user is displayed on the right side.
 - Room messages are persisted by the backend.
 - The UI polls matching status/messages and also uses WebSocket for live messages.
+- When backend `H_H_AI_ASSIST_ENABLED=true`, matching WebSocket may emit `match_system_prompt` and `match_ai_suggestion`; `TopicChat.jsx` renders these as prompt/suggestion cards with accept, modify, or ignore actions.
 - Closing or leaving pages sends best-effort cancel/leave requests to avoid ghost queue entries.
 
 ## Verification

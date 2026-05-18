@@ -1,5 +1,5 @@
 from uuid import uuid4
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from asgiref.sync import sync_to_async
@@ -27,6 +27,18 @@ class FakeStreamingDialogueAgent:
 
 async def _access_token_for(user):
     return await sync_to_async(lambda: str(AccessToken.for_user(user)))()
+
+
+async def _make_active_match(alice, bob):
+    return await DialogueMatch.objects.acreate(
+        topic_id=102,
+        user_a=alice,
+        user_b=bob,
+        user_a_score=6.5,
+        user_b_score=2.0,
+        room_id=uuid4().hex,
+        status=DialogueMatch.Status.ACTIVE,
+    )
 
 
 @pytest.mark.asyncio
@@ -142,3 +154,199 @@ async def test_match_room_websocket_persists_and_broadcasts_message():
 
     await comm_a.disconnect()
     await comm_b.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_match_room_ai_assist_blocks_blacklisted_message():
+    from BridgeUs_Django.asgi import application
+
+    alice = await create_user(username="assist_block_alice", password="secret123")
+    bob = await create_user(username="assist_block_bob", password="secret123")
+    match = await _make_active_match(alice, bob)
+
+    alice_token = await _access_token_for(alice)
+    bob_token = await _access_token_for(bob)
+    comm_a = WebsocketCommunicator(
+        application,
+        f"/ws/matching/rooms/{match.room_id}/?token={alice_token}",
+    )
+    comm_b = WebsocketCommunicator(
+        application,
+        f"/ws/matching/rooms/{match.room_id}/?token={bob_token}",
+    )
+    assert (await comm_a.connect())[0]
+    assert (await comm_b.connect())[0]
+
+    with patch("api.consumers.hh_ai_assist_enabled", return_value=True):
+        await comm_a.send_json_to({"type": "match_message", "content": "你這個白痴"})
+        prompt = await comm_a.receive_json_from(timeout=3)
+
+    assert prompt["type"] == "match_system_prompt"
+    assert prompt["category"] == "content_blocked"
+    assert "message" in prompt
+    assert await comm_b.receive_nothing(timeout=1)
+    assert await MatchMessage.objects.filter(match=match).acount() == 0
+
+    await comm_a.disconnect()
+    await comm_b.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_match_room_ai_assist_sends_rephrase_suggestion_without_relay():
+    from BridgeUs_Django.asgi import application
+    from api.models import MatchAISuggestion
+
+    alice = await create_user(username="assist_rephrase_alice", password="secret123")
+    bob = await create_user(username="assist_rephrase_bob", password="secret123")
+    match = await _make_active_match(alice, bob)
+
+    alice_token = await _access_token_for(alice)
+    bob_token = await _access_token_for(bob)
+    comm_a = WebsocketCommunicator(
+        application,
+        f"/ws/matching/rooms/{match.room_id}/?token={alice_token}",
+    )
+    comm_b = WebsocketCommunicator(
+        application,
+        f"/ws/matching/rooms/{match.room_id}/?token={bob_token}",
+    )
+    assert (await comm_a.connect())[0]
+    assert (await comm_b.connect())[0]
+
+    high_emotion = {"score": 0.91, "label": "negative", "is_over_threshold": True}
+    with patch("api.consumers.hh_ai_assist_enabled", return_value=True), \
+         patch("api.consumers.aget_analyze_emotion", new=AsyncMock(return_value=high_emotion)), \
+         patch("api.consumers.arephrase_match_message", new=AsyncMock(return_value=("請用更平和的語氣表達。", True))):
+        await comm_a.send_json_to({"type": "match_message", "content": "你完全不懂核電"})
+        suggestion = await comm_a.receive_json_from(timeout=3)
+
+    assert suggestion["type"] == "match_ai_suggestion"
+    assert suggestion["category"] == "rephrase"
+    assert suggestion["original_content"] == "你完全不懂核電"
+    assert suggestion["suggested_content"] == "請用更平和的語氣表達。"
+    assert suggestion["actions"] == ["accept", "modify", "ignore"]
+    assert await comm_b.receive_nothing(timeout=1)
+    assert await MatchMessage.objects.filter(match=match).acount() == 0
+    saved = await MatchAISuggestion.objects.aget(id=suggestion["suggestion_id"])
+    assert saved.trigger_score == 0.91
+    assert saved.user_action is None
+
+    await comm_a.disconnect()
+    await comm_b.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_match_room_ai_assist_accepts_suggestion_and_relays_suggested_content():
+    from BridgeUs_Django.asgi import application
+    from api.models import MatchAISuggestion
+
+    alice = await create_user(username="assist_accept_alice", password="secret123")
+    bob = await create_user(username="assist_accept_bob", password="secret123")
+    match = await _make_active_match(alice, bob)
+
+    alice_token = await _access_token_for(alice)
+    bob_token = await _access_token_for(bob)
+    comm_a = WebsocketCommunicator(application, f"/ws/matching/rooms/{match.room_id}/?token={alice_token}")
+    comm_b = WebsocketCommunicator(application, f"/ws/matching/rooms/{match.room_id}/?token={bob_token}")
+    assert (await comm_a.connect())[0]
+    assert (await comm_b.connect())[0]
+
+    high_emotion = {"score": 0.95, "label": "negative", "is_over_threshold": True}
+    with patch("api.consumers.hh_ai_assist_enabled", return_value=True), \
+         patch("api.consumers.aget_analyze_emotion", new=AsyncMock(return_value=high_emotion)), \
+         patch("api.consumers.arephrase_match_message", new=AsyncMock(return_value=("我不同意你的核電看法，但想理解你的理由。", True))):
+        await comm_a.send_json_to({"type": "match_message", "content": "你完全不懂"})
+        suggestion = await comm_a.receive_json_from(timeout=3)
+        await comm_a.send_json_to({
+            "type": "accept_suggestion",
+            "suggestion_id": suggestion["suggestion_id"],
+        })
+        response_a = await comm_a.receive_json_from(timeout=3)
+        response_b = await comm_b.receive_json_from(timeout=3)
+
+    assert response_a == response_b
+    assert response_a["type"] == "match_message"
+    assert response_a["message"]["content"] == "我不同意你的核電看法，但想理解你的理由。"
+    saved = await MatchAISuggestion.objects.aget(id=suggestion["suggestion_id"])
+    assert saved.user_action == MatchAISuggestion.Action.ACCEPT
+    assert saved.final_content == "我不同意你的核電看法，但想理解你的理由。"
+
+    await comm_a.disconnect()
+    await comm_b.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_match_room_ai_assist_modifies_suggestion_after_second_emotion_check():
+    from BridgeUs_Django.asgi import application
+    from api.models import MatchAISuggestion
+
+    alice = await create_user(username="assist_modify_alice", password="secret123")
+    bob = await create_user(username="assist_modify_bob", password="secret123")
+    match = await _make_active_match(alice, bob)
+
+    alice_token = await _access_token_for(alice)
+    bob_token = await _access_token_for(bob)
+    comm_a = WebsocketCommunicator(application, f"/ws/matching/rooms/{match.room_id}/?token={alice_token}")
+    comm_b = WebsocketCommunicator(application, f"/ws/matching/rooms/{match.room_id}/?token={bob_token}")
+    assert (await comm_a.connect())[0]
+    assert (await comm_b.connect())[0]
+
+    high_emotion = {"score": 0.95, "label": "negative", "is_over_threshold": True}
+    low_emotion = {"score": 0.10, "label": "neutral", "is_over_threshold": False}
+    with patch("api.consumers.hh_ai_assist_enabled", return_value=True), \
+         patch("api.consumers.aget_analyze_emotion", new=AsyncMock(side_effect=[high_emotion, low_emotion])), \
+         patch("api.consumers.arephrase_match_message", new=AsyncMock(return_value=("請改成比較平和的說法。", True))):
+        await comm_a.send_json_to({"type": "match_message", "content": "你完全不懂"})
+        suggestion = await comm_a.receive_json_from(timeout=3)
+        await comm_a.send_json_to({
+            "type": "modify_suggestion",
+            "suggestion_id": suggestion["suggestion_id"],
+            "content": "我不同意，但想聽聽你的理由。",
+        })
+        response_a = await comm_a.receive_json_from(timeout=3)
+        response_b = await comm_b.receive_json_from(timeout=3)
+
+    assert response_a == response_b
+    assert response_a["message"]["content"] == "我不同意，但想聽聽你的理由。"
+    saved = await MatchAISuggestion.objects.aget(id=suggestion["suggestion_id"])
+    assert saved.user_action == MatchAISuggestion.Action.MODIFY
+    assert saved.modified_content == "我不同意，但想聽聽你的理由。"
+    assert saved.final_content == "我不同意，但想聽聽你的理由。"
+
+    await comm_a.disconnect()
+    await comm_b.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_match_room_ai_assist_rephrase_fallback_disallows_accept():
+    from BridgeUs_Django.asgi import application
+
+    alice = await create_user(username="assist_fallback_alice", password="secret123")
+    bob = await create_user(username="assist_fallback_bob", password="secret123")
+    match = await _make_active_match(alice, bob)
+
+    alice_token = await _access_token_for(alice)
+    comm_a = WebsocketCommunicator(application, f"/ws/matching/rooms/{match.room_id}/?token={alice_token}")
+    assert (await comm_a.connect())[0]
+
+    high_emotion = {"score": 0.95, "label": "negative", "is_over_threshold": True}
+    with patch("api.consumers.hh_ai_assist_enabled", return_value=True), \
+         patch("api.consumers.aget_analyze_emotion", new=AsyncMock(return_value=high_emotion)), \
+         patch("api.consumers.arephrase_match_message", new=AsyncMock(return_value=("你的發言可能帶有較強烈的情緒，建議修改後再發送。", False))):
+        await comm_a.send_json_to({"type": "match_message", "content": "你完全不懂"})
+        suggestion = await comm_a.receive_json_from(timeout=3)
+
+    assert suggestion["type"] == "match_ai_suggestion"
+    assert suggestion["actions"] == ["modify", "ignore"]
+
+    await comm_a.disconnect()

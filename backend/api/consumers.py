@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from urllib.parse import parse_qs
@@ -8,6 +9,26 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.db.models import Q
+from django.utils import timezone
+
+from api.dialogue_topics import TOPIC_CONFIGS
+from apps.matching.services.hh_ai import (
+    aredirect_match_to_topic,
+    arephrase_match_message,
+    asuggest_match_direction,
+    hh_ai_assist_enabled,
+)
+from apps.matching.services.hh_analysis import (
+    acalculate_match_stance_drift,
+    acheck_match_topic_relevance,
+    adetect_match_stalemate,
+    aextract_match_opponent_keywords,
+    aget_topic_anchor_embedding,
+    build_stalemate_prompt,
+)
+from chat.services.embedding import aget_embedding
+from chat.services.emotion import aget_analyze_emotion
+from chat.services.filter import check_content_sync
 
 User = get_user_model()
 SESSION_TTL_SECONDS = 60 * 60 * 12
@@ -205,6 +226,8 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
             return
 
         self.room_group_name = f"match_room_{self.room_id}"
+        self.blocked_count = 0
+        self.system_prompts_triggered = 0
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.accept()
 
@@ -225,6 +248,14 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
             return
 
         message_type = data.get("type")
+        if message_type in {
+            "accept_suggestion",
+            "modify_suggestion",
+            "ignore_suggestion",
+        }:
+            await self._handle_suggestion_response(data)
+            return
+
         if message_type not in {None, "match_message", "user_message"}:
             return
 
@@ -237,7 +268,215 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
             await self.close(code=4000)
             return
 
-        message = await self._create_message(content)
+        if hh_ai_assist_enabled():
+            await self._handle_ai_assisted_message(content)
+            return
+
+        await self._relay_and_persist(content)
+
+    async def _handle_ai_assisted_message(self, content: str):
+        try:
+            filter_result = check_content_sync(content)
+        except Exception:
+            logger.exception("Content filter failed for match room %s.", self.room_id)
+            filter_result = {"is_blocked": False}
+
+        if filter_result.get("is_blocked"):
+            self.blocked_count += 1
+            await self._send_system_prompt(
+                category="content_blocked",
+                message="這則訊息包含可能冒犯對方的用語，請修改後重新發送。",
+            )
+            return
+
+        emotion = await self._safe_analyze_emotion(content)
+        if emotion.get("is_over_threshold"):
+            await self._send_rephrase_suggestion(
+                content,
+                trigger_score=emotion.get("score"),
+            )
+            return
+
+        await self._relay_and_persist(content, emotion_score=emotion.get("score"))
+
+    async def _handle_suggestion_response(self, data: dict):
+        suggestion = await self._get_user_suggestion(data.get("suggestion_id"))
+        if suggestion is None:
+            await self._send_error("找不到這則 AI 建議，請重新發送訊息。")
+            return
+
+        action_type = data.get("type")
+        response_time_ms = self._suggestion_response_time_ms(suggestion)
+
+        if suggestion.category != suggestion.Category.REPHRASE:
+            suggestion.user_action = self._action_value(action_type)
+            suggestion.response_time_ms = response_time_ms
+            await suggestion.asave(update_fields=["user_action", "response_time_ms"])
+            return
+
+        if action_type == "accept_suggestion":
+            final_content = suggestion.suggested_content.strip()
+            suggestion.user_action = suggestion.Action.ACCEPT
+            suggestion.final_content = final_content
+            suggestion.response_time_ms = response_time_ms
+            await suggestion.asave(
+                update_fields=["user_action", "final_content", "response_time_ms"]
+            )
+            await self._relay_and_persist(final_content)
+            return
+
+        if action_type == "ignore_suggestion":
+            final_content = (suggestion.original_content or "").strip()
+            if not final_content:
+                await self._send_error("找不到原始訊息，請重新輸入。")
+                return
+            suggestion.user_action = suggestion.Action.IGNORE
+            suggestion.final_content = final_content
+            suggestion.response_time_ms = response_time_ms
+            await suggestion.asave(
+                update_fields=["user_action", "final_content", "response_time_ms"]
+            )
+            await self._relay_and_persist(final_content)
+            return
+
+        modified_content = (data.get("content") or "").strip()
+        if not modified_content:
+            await self._send_error("修改後的訊息不可為空白。")
+            return
+
+        suggestion.user_action = suggestion.Action.MODIFY
+        suggestion.modified_content = modified_content
+        suggestion.response_time_ms = response_time_ms
+        await suggestion.asave(
+            update_fields=["user_action", "modified_content", "response_time_ms"]
+        )
+
+        emotion = await self._safe_analyze_emotion(modified_content)
+        if emotion.get("is_over_threshold"):
+            await self._send_rephrase_suggestion(
+                modified_content,
+                trigger_score=emotion.get("score"),
+            )
+            return
+
+        suggestion.final_content = modified_content
+        await suggestion.asave(update_fields=["final_content"])
+        await self._relay_and_persist(modified_content, emotion_score=emotion.get("score"))
+
+    async def _safe_analyze_emotion(self, content: str) -> dict:
+        try:
+            return await aget_analyze_emotion(content)
+        except Exception:
+            logger.exception("Emotion analysis failed for match room %s.", self.room_id)
+            return {"score": 0.0, "label": "neutral", "is_over_threshold": False}
+
+    async def _send_rephrase_suggestion(self, content: str, *, trigger_score=None):
+        from api.models import MatchAISuggestion
+
+        try:
+            suggested_content, is_llm_generated = await arephrase_match_message(
+                content,
+                self._topic_label(),
+            )
+        except Exception:
+            logger.exception("Rephrase suggestion failed for match room %s.", self.room_id)
+            suggested_content = "你的發言可能帶有較強烈的情緒，建議修改後再發送。"
+            is_llm_generated = False
+
+        actions = ["accept", "modify", "ignore"] if is_llm_generated else ["modify", "ignore"]
+        context_ids = await self._recent_message_ids()
+        suggestion = await MatchAISuggestion.objects.acreate(
+            match_id=self.match.id,
+            user=self.user,
+            category=MatchAISuggestion.Category.REPHRASE,
+            original_content=content,
+            suggested_content=suggested_content,
+            trigger_score=trigger_score,
+            context_message_ids=context_ids,
+        )
+        self.system_prompts_triggered += 1
+        await self.send(
+            json.dumps(
+                {
+                    "type": "match_ai_suggestion",
+                    "suggestion_id": suggestion.id,
+                    "category": suggestion.category,
+                    "original_content": content,
+                    "suggested_content": suggested_content,
+                    "actions": actions,
+                }
+            )
+        )
+
+    async def _send_redirect_suggestion(self, *, trigger_score=None):
+        try:
+            suggested_content = await aredirect_match_to_topic(
+                self.match.id,
+                self._topic_label(),
+            )
+        except Exception:
+            logger.exception("Redirect suggestion failed for match room %s.", self.room_id)
+            suggested_content = "目前的討論似乎偏離了主題，可以試著回到核心議題的討論。"
+
+        await self._send_context_suggestion(
+            category="redirect",
+            suggested_content=suggested_content,
+            trigger_score=trigger_score,
+        )
+
+    async def _send_direction_suggestion(self, *, suggested_content: str | None = None):
+        if suggested_content is None:
+            try:
+                suggested_content = await asuggest_match_direction(
+                    self.match.id,
+                    self._topic_label(),
+                )
+            except Exception:
+                logger.exception("Direction suggestion failed for match room %s.", self.room_id)
+                suggested_content = "可以試著換個角度思考這個議題。"
+
+        await self._send_context_suggestion(
+            category="direction",
+            suggested_content=suggested_content,
+        )
+
+    async def _send_context_suggestion(
+        self,
+        *,
+        category: str,
+        suggested_content: str,
+        trigger_score=None,
+    ):
+        from api.models import MatchAISuggestion
+
+        category_value = (
+            MatchAISuggestion.Category.REDIRECT
+            if category == "redirect"
+            else MatchAISuggestion.Category.DIRECTION
+        )
+        suggestion = await MatchAISuggestion.objects.acreate(
+            match_id=self.match.id,
+            user=self.user,
+            category=category_value,
+            suggested_content=suggested_content,
+            trigger_score=trigger_score,
+            context_message_ids=await self._recent_message_ids(),
+        )
+        self.system_prompts_triggered += 1
+        await self.send(
+            json.dumps(
+                {
+                    "type": "match_ai_suggestion",
+                    "suggestion_id": suggestion.id,
+                    "category": suggestion.category,
+                    "suggested_content": suggested_content,
+                    "actions": ["accept"],
+                }
+            )
+        )
+
+    async def _relay_and_persist(self, content: str, *, emotion_score=None):
+        message = await self._create_message(content, emotion_score=emotion_score)
         payload = self._message_payload(message)
         await self.channel_layer.group_send(
             self.room_group_name,
@@ -246,6 +485,90 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
                 "message": payload,
             },
         )
+        if hh_ai_assist_enabled():
+            asyncio.create_task(
+                self._run_message_analysis(message.id, content, emotion_score=emotion_score)
+            )
+
+    async def _run_message_analysis(self, message_id: int, content: str, *, emotion_score=None):
+        from api.models import MatchMessage
+
+        embedding = None
+        try:
+            embedding = await aget_embedding(content)
+            await MatchMessage.objects.filter(id=message_id).aupdate(embedding=embedding)
+        except Exception:
+            logger.exception("Embedding failed for match message %s.", message_id)
+
+        if emotion_score is not None:
+            try:
+                await MatchMessage.objects.filter(id=message_id).aupdate(
+                    emotion_score=emotion_score
+                )
+            except Exception:
+                logger.exception("Emotion score save failed for match message %s.", message_id)
+
+        if embedding is None:
+            return
+
+        await self._run_topic_check()
+        await self._run_drift_and_stalemate_checks()
+
+    async def _run_topic_check(self):
+        anchor = await self._ensure_topic_anchor_embedding()
+        if anchor is None:
+            return
+        try:
+            result = await acheck_match_topic_relevance(
+                match_id=self.match.id,
+                user_id=self.user.id,
+                topic_anchor_embedding=anchor,
+            )
+        except Exception:
+            logger.exception("Topic relevance failed for match %s.", self.match.id)
+            return
+        if result.get("is_off_topic"):
+            await self._send_redirect_suggestion(trigger_score=result.get("relevance_score"))
+
+    async def _run_drift_and_stalemate_checks(self):
+        try:
+            await acalculate_match_stance_drift(match_id=self.match.id, user_id=self.user.id)
+        except Exception:
+            logger.exception("Stance drift failed for match %s.", self.match.id)
+
+        try:
+            stalemate = await adetect_match_stalemate(match_id=self.match.id)
+            if stalemate.get("is_stalemate"):
+                keywords = await aextract_match_opponent_keywords(
+                    match_id=self.match.id,
+                    user_id=self.user.id,
+                )
+                await self._send_direction_suggestion(
+                    suggested_content=build_stalemate_prompt(keywords)
+                )
+        except Exception:
+            logger.exception("Stalemate detection failed for match %s.", self.match.id)
+
+    async def _ensure_topic_anchor_embedding(self):
+        if self.match.topic_anchor_embedding is not None:
+            return self.match.topic_anchor_embedding
+
+        topic_description = TOPIC_CONFIGS.get(self.match.topic_id, {}).get(
+            "topic_description",
+            self._topic_label(),
+        )
+        try:
+            anchor = await aget_topic_anchor_embedding(topic_description)
+        except Exception:
+            logger.exception("Topic anchor embedding failed for match %s.", self.match.id)
+            return None
+
+        self.match.topic_anchor_embedding = anchor
+        try:
+            await self.match.asave(update_fields=["topic_anchor_embedding"])
+        except Exception:
+            logger.exception("Topic anchor save failed for match %s.", self.match.id)
+        return anchor
 
     async def match_message(self, event):
         await self.send(
@@ -259,6 +582,18 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
 
     async def _send_error(self, message: str):
         await self.send(json.dumps({"type": "error", "content": message}))
+
+    async def _send_system_prompt(self, category: str, message: str):
+        self.system_prompts_triggered += 1
+        await self.send(
+            json.dumps(
+                {
+                    "type": "match_system_prompt",
+                    "category": category,
+                    "message": message,
+                }
+            )
+        )
 
     async def _get_active_match_for_user(self):
         from api.models import DialogueMatch
@@ -282,14 +617,62 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
         )
         return self.match.status == DialogueMatch.Status.ACTIVE
 
-    async def _create_message(self, content: str):
+    async def _create_message(self, content: str, *, emotion_score=None):
         from api.models import MatchMessage
 
         return await MatchMessage.objects.acreate(
             match_id=self.match.id,
             sender=self.user,
             content=content,
+            emotion_score=emotion_score,
         )
+
+    async def _get_user_suggestion(self, suggestion_id):
+        from api.models import MatchAISuggestion
+
+        if not suggestion_id:
+            return None
+        try:
+            return await MatchAISuggestion.objects.aget(
+                id=suggestion_id,
+                match_id=self.match.id,
+                user_id=self.user.id,
+            )
+        except MatchAISuggestion.DoesNotExist:
+            return None
+
+    async def _recent_message_ids(self, limit: int = 5) -> list[int]:
+        from api.models import MatchMessage
+
+        def _load_ids():
+            return list(
+                MatchMessage.objects.filter(match_id=self.match.id)
+                .order_by("-created_at", "-id")
+                .values_list("id", flat=True)[:limit]
+            )
+
+        ids = await database_sync_to_async(_load_ids)()
+        return list(reversed(ids))
+
+    def _topic_label(self) -> str:
+        return TOPIC_CONFIGS.get(self.match.topic_id, {}).get(
+            "title",
+            f"議題 {self.match.topic_id}",
+        )
+
+    @staticmethod
+    def _action_value(action_type: str) -> str | None:
+        if action_type == "accept_suggestion":
+            return "accept"
+        if action_type == "modify_suggestion":
+            return "modify"
+        if action_type == "ignore_suggestion":
+            return "ignore"
+        return None
+
+    @staticmethod
+    def _suggestion_response_time_ms(suggestion) -> int:
+        return int((timezone.now() - suggestion.created_at).total_seconds() * 1000)
 
     def _message_payload(self, message) -> dict:
         return {

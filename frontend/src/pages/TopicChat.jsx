@@ -118,6 +118,22 @@ function formatStanceCategory(category) {
   return '尚未建立立場標記';
 }
 
+function formatSuggestionCategory(category) {
+  if (category === 'rephrase') {
+    return 'AI 改寫建議';
+  }
+
+  if (category === 'redirect') {
+    return '回到主題提醒';
+  }
+
+  if (category === 'direction') {
+    return '討論方向建議';
+  }
+
+  return 'AI 對話提示';
+}
+
 function mapMatchMessagesToDisplay(messages, userId) {
   const currentUserId = Number(userId);
 
@@ -168,6 +184,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const [isMatchMessagesLoading, setIsMatchMessagesLoading] = useState(false);
   const [isMatchSending, setIsMatchSending] = useState(false);
   const [matchChatError, setMatchChatError] = useState('');
+  const [matchAssistNotice, setMatchAssistNotice] = useState(null);
+  const [pendingMatchSuggestion, setPendingMatchSuggestion] = useState(null);
+  const [matchSuggestionDraft, setMatchSuggestionDraft] = useState(null);
   const [showScrollToBottomButton, setShowScrollToBottomButton] = useState(false);
 
   const [isRightPanelOpen, setIsRightPanelOpen] = useState(false);
@@ -285,6 +304,24 @@ function TopicChat({ user, issues, issuesLoaded }) {
         return;
       }
 
+      if (data.type === 'match_system_prompt') {
+        setMatchAssistNotice({
+          id: `match-system-${Date.now()}`,
+          category: data.category || 'system',
+          message: data.message || '系統提醒',
+        });
+        setMatchChatError('');
+        return;
+      }
+
+      if (data.type === 'match_ai_suggestion') {
+        setPendingMatchSuggestion(data);
+        setMatchSuggestionDraft(null);
+        setMatchAssistNotice(null);
+        setMatchChatError('');
+        return;
+      }
+
       if (data.type === 'error') {
         setMatchChatError(data.content || '配對聊天室連線發生錯誤。');
       }
@@ -394,6 +431,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setIsMatchMessagesLoading(false);
     setIsMatchSending(false);
     setMatchChatError('');
+    setMatchAssistNotice(null);
+    setPendingMatchSuggestion(null);
+    setMatchSuggestionDraft(null);
     activeMatchRef.current = { roomId: null, status: null, topicId: null };
     leaveRequestSentRef.current = false;
     cancelQueueRequestSentRef.current = false;
@@ -829,6 +869,70 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setMessages(mapHistoryToMessages(response.data.history, displayUserName));
   };
 
+
+  const sendMatchSuggestionAction = useCallback((type, payload = {}) => {
+    const socket = matchWsRef.current;
+    if (socket?.readyState !== WebSocket.OPEN) {
+      setMatchChatError('配對聊天室連線尚未恢復，請稍後再試。');
+      return false;
+    }
+
+    socket.send(JSON.stringify({ type, ...payload }));
+    return true;
+  }, []);
+
+  const handleAcceptMatchSuggestion = useCallback(() => {
+    if (!pendingMatchSuggestion?.suggestion_id) {
+      return;
+    }
+
+    const sent = sendMatchSuggestionAction('accept_suggestion', {
+      suggestion_id: pendingMatchSuggestion.suggestion_id,
+    });
+    if (sent) {
+      setPendingMatchSuggestion(null);
+      setMatchSuggestionDraft(null);
+    }
+  }, [pendingMatchSuggestion, sendMatchSuggestionAction]);
+
+  const handleIgnoreMatchSuggestion = useCallback(() => {
+    if (!pendingMatchSuggestion?.suggestion_id) {
+      return;
+    }
+
+    const sent = sendMatchSuggestionAction('ignore_suggestion', {
+      suggestion_id: pendingMatchSuggestion.suggestion_id,
+    });
+    if (sent) {
+      setPendingMatchSuggestion(null);
+      setMatchSuggestionDraft(null);
+    }
+  }, [pendingMatchSuggestion, sendMatchSuggestionAction]);
+
+  const handleEditMatchSuggestion = useCallback(() => {
+    if (!pendingMatchSuggestion?.suggestion_id) {
+      return;
+    }
+
+    const suggestedText = pendingMatchSuggestion.suggested_content || '';
+    setInputValue(suggestedText);
+    setMatchSuggestionDraft(pendingMatchSuggestion);
+    setPendingMatchSuggestion(null);
+    focusChatInput();
+    window.requestAnimationFrame(() => {
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto';
+        textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
+      }
+    });
+  }, [focusChatInput, pendingMatchSuggestion]);
+
+  const handleCancelSuggestionDraft = useCallback(() => {
+    setMatchSuggestionDraft(null);
+    setInputValue('');
+    focusChatInput();
+  }, [focusChatInput]);
+
   const handleSurveySubmit = async ({ answers, openAnswers }) => {
     setSurveyAnswers(answers);
     setSurveyOpenAnswers(openAnswers);
@@ -891,6 +995,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
         return;
       }
 
+      const suggestionDraft = matchSuggestionDraft;
       setInputValue('');
       setMatchChatError('');
       setIsMatchSending(true);
@@ -899,6 +1004,22 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
       try {
         const socket = matchWsRef.current;
+        if (suggestionDraft?.suggestion_id) {
+          if (socket?.readyState !== WebSocket.OPEN) {
+            setInputValue(text);
+            setMatchChatError('配對聊天室連線尚未恢復，請稍後再試。');
+            return;
+          }
+
+          socket.send(JSON.stringify({
+            type: 'modify_suggestion',
+            suggestion_id: suggestionDraft.suggestion_id,
+            content: text,
+          }));
+          setMatchSuggestionDraft(null);
+          return;
+        }
+
         if (socket?.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ type: 'match_message', content: text }));
           return;
@@ -1038,6 +1159,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
       setShowSurvey(false);
       setMatchMessages([]);
       setMatchChatError('');
+      setMatchAssistNotice(null);
+      setPendingMatchSuggestion(null);
+      setMatchSuggestionDraft(null);
     } catch (error) {
       setMatchingError(
         error?.response?.data?.detail ||
@@ -1063,6 +1187,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
       );
       setMatchingState(response.data);
       setMatchMessages([]);
+      setMatchAssistNotice(null);
+      setPendingMatchSuggestion(null);
+      setMatchSuggestionDraft(null);
     } catch (error) {
       leaveRequestSentRef.current = false;
       setMatchChatError(
@@ -1078,6 +1205,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setMatchingError('');
     setMatchChatError('');
     setMatchMessages([]);
+    setMatchAssistNotice(null);
+    setPendingMatchSuggestion(null);
+    setMatchSuggestionDraft(null);
     setShowSurvey(true);
   };
 
@@ -1233,6 +1363,84 @@ function TopicChat({ user, issues, issuesLoaded }) {
           )}
           {!isMatchMessagesLoading && matchMessages.length === 0 && (
             <div className="match-message-empty">配對成功了，現在可以先說第一句。</div>
+          )}
+          {matchAssistNotice && (
+            <div className="match-assist-card system">
+              <div>
+                <span className="match-assist-label">系統提醒</span>
+                <p className="match-assist-copy">{matchAssistNotice.message}</p>
+              </div>
+              <button
+                className="match-assist-btn secondary"
+                type="button"
+                onClick={() => setMatchAssistNotice(null)}
+              >
+                知道了
+              </button>
+            </div>
+          )}
+          {pendingMatchSuggestion && (
+            <div className="match-assist-card">
+              <div className="match-assist-content">
+                <span className="match-assist-label">
+                  {formatSuggestionCategory(pendingMatchSuggestion.category)}
+                </span>
+                {pendingMatchSuggestion.original_content && (
+                  <p className="match-assist-original">
+                    原文：{pendingMatchSuggestion.original_content}
+                  </p>
+                )}
+                <p className="match-assist-copy">
+                  {pendingMatchSuggestion.suggested_content}
+                </p>
+              </div>
+              <div className="match-assist-actions">
+                {pendingMatchSuggestion.actions?.includes('accept') && (
+                  <button
+                    className="match-assist-btn primary"
+                    type="button"
+                    onClick={handleAcceptMatchSuggestion}
+                  >
+                    {pendingMatchSuggestion.category === 'rephrase' ? '使用建議' : '知道了'}
+                  </button>
+                )}
+                {pendingMatchSuggestion.actions?.includes('modify') && (
+                  <button
+                    className="match-assist-btn secondary"
+                    type="button"
+                    onClick={handleEditMatchSuggestion}
+                  >
+                    放到輸入框修改
+                  </button>
+                )}
+                {pendingMatchSuggestion.actions?.includes('ignore') && (
+                  <button
+                    className="match-assist-btn ghost"
+                    type="button"
+                    onClick={handleIgnoreMatchSuggestion}
+                  >
+                    {pendingMatchSuggestion.category === 'rephrase' ? '仍送出原文' : '略過'}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+          {matchSuggestionDraft && (
+            <div className="match-assist-card editing">
+              <div>
+                <span className="match-assist-label">正在修改 AI 建議</span>
+                <p className="match-assist-copy">
+                  編輯完成後按送出，系統會再次檢查語氣後送出。
+                </p>
+              </div>
+              <button
+                className="match-assist-btn ghost"
+                type="button"
+                onClick={handleCancelSuggestionDraft}
+              >
+                取消修改
+              </button>
+            </div>
           )}
           {matchChatDisplayMessages.map((msg) => (
             <div key={msg.id} className={`message-row ${msg.type === 'user' ? 'user-message' : ''}`}>

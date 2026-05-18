@@ -24,6 +24,7 @@
 - Matching mode posts survey answers to `POST /api/matching/join/`.
 - Matching status is polled through `GET /api/matching/status/?topic_id=102`.
 - Matching messages are fetched/persisted through `/api/matching/rooms/<room_id>/messages/` and live updates use `WS /ws/matching/rooms/<room_id>/`.
+- Matching WebSocket can emit `match_system_prompt` and `match_ai_suggestion` when backend H-H AI assist is enabled; keep suggestion-card behavior in `TopicChat.jsx`.
 - Matching participants are anonymous in the UI.
 - Current user's own messages should render on the right.
 - Page leave/unload sends best-effort cancel/leave requests to reduce ghost matching state.
