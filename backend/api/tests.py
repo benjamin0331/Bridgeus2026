@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.test import SimpleTestCase
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
@@ -13,9 +14,28 @@ from api.models import (
     DialogueMatch,
     MatchMessage,
     MatchQueueEntry,
+    MatchStanceDrift,
     UserStanceProfile,
 )
 from api.views import _resolve_stance_category
+
+
+def fake_gemini_items_response():
+    return {
+        "items": [
+            {
+                "claimText": "核廢料處理會帶來長期負擔",
+                "anchorId": "anchor_waste",
+                "path": ["長期處置"],
+                "pointName": "核廢長期負擔",
+                "stance": "反對",
+                "confidence": 0.86,
+                "rationale": "訊息明確提到核廢料與長期處理負擔。",
+            }
+        ],
+        "invalidItems": [],
+        "model": "gemini-2.5-flash",
+    }
 
 
 class FakeDialogueAgent:
@@ -82,6 +102,90 @@ def build_neutral_answers():
 
 def make_test_embedding(first_value):
     return [float(first_value), *([0.0] * 383)]
+
+
+class SemanticTreeServiceTests(SimpleTestCase):
+    def test_builds_gemini_request_with_fixed_anchors_and_prompt_rules(self):
+        from apps.matching.services.semantic_tree import (
+            FIXED_ANCHORS,
+            build_gemini_request,
+            create_initial_tree,
+        )
+
+        request = build_gemini_request(
+            text="核廢料處理會帶來長期負擔，也讓經濟成本上升。",
+            tree=create_initial_tree("核電"),
+            anchors=FIXED_ANCHORS,
+        )
+        request_text = str(request)
+
+        self.assertEqual(
+            [anchor["name"] for anchor in FIXED_ANCHORS],
+            ["核能安全", "經濟成本", "能源問題", "環境保護", "民主治理", "核廢處理"],
+        )
+        self.assertEqual(request["generationConfig"]["responseMimeType"], "application/json")
+        self.assertIn("你是「核能議題對話語意樹」的語意整理 agent", request_text)
+        self.assertIn("每次輸入最多輸出 3 個 items", request_text)
+        self.assertIn("confidence 低於 0.55", request_text)
+        self.assertIn("anchor_waste", request_text)
+        self.assertNotIn("GEMINI_API_KEY", request_text)
+
+    def test_validates_and_applies_gemini_items_to_nested_tree(self):
+        from apps.matching.services.semantic_tree import (
+            apply_analysis_items_to_tree,
+            create_initial_tree,
+            validate_analysis_items,
+        )
+
+        tree = create_initial_tree("核電")
+        result = validate_analysis_items(
+            {
+                "items": [
+                    *fake_gemini_items_response()["items"],
+                    {
+                        "claimText": "信心太低的模糊說法",
+                        "anchorId": "anchor_safety",
+                        "path": [],
+                        "pointName": "模糊核安疑慮",
+                        "stance": "中立",
+                        "confidence": 0.54,
+                        "rationale": "too low",
+                    },
+                    {
+                        "claimText": "錯誤分類",
+                        "anchorId": "anchor_unknown",
+                        "path": [],
+                        "pointName": "未知分類",
+                        "stance": "中立",
+                        "confidence": 0.7,
+                        "rationale": "invalid anchor",
+                    },
+                ]
+            },
+            tree,
+        )
+
+        self.assertEqual(len(result["items"]), 1)
+        self.assertEqual(len(result["invalidItems"]), 2)
+
+        apply_result = apply_analysis_items_to_tree(
+            tree,
+            result["items"],
+            source_message={
+                "id": 7,
+                "content": "核廢料處理會帶來長期負擔",
+                "created_at": "2026-05-20T12:00:00Z",
+                "sender_id": 1,
+            },
+        )
+        waste_anchor = next(child for child in tree["children"] if child["id"] == "anchor_waste")
+        category_node = waste_anchor["children"][0]
+        point_node = category_node["children"][0]
+
+        self.assertEqual(apply_result["appliedItems"][0]["applyMode"], "new")
+        self.assertEqual(category_node["name"], "長期處置")
+        self.assertEqual(point_node["name"], "核廢長期負擔")
+        self.assertEqual(point_node["messages"][0]["sourceMessageId"], "7")
 
 
 class DialogueSessionApiTests(APITestCase):
@@ -710,6 +814,86 @@ class MatchingApiTests(APITestCase):
             "你好，我想先從核安風險談起。",
         )
         self.assertEqual(MatchMessage.objects.filter(match=match).count(), 1)
+
+    def test_room_messages_include_current_user_latest_drift_value(self):
+        match, room_id = self._create_match()
+        MatchStanceDrift.objects.create(
+            match=match,
+            user=self.user,
+            drift_value=0.1234,
+        )
+        MatchStanceDrift.objects.create(
+            match=match,
+            user=self.other_user,
+            drift_value=0.9876,
+        )
+
+        response = self.client.get(f"/api/matching/rooms/{room_id}/messages/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["stance_drift"]["drift_value"], 0.1234)
+        self.assertIsNotNone(response.data["stance_drift"]["measured_at"])
+
+    def test_semantic_tree_get_returns_initial_fixed_anchor_tree(self):
+        _, room_id = self._create_match()
+
+        response = self.client.get(f"/api/matching/rooms/{room_id}/semantic-tree/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["analysisStatus"], "ready")
+        self.assertEqual(response.data["treeData"]["name"], "台灣核能議題討論")
+        self.assertEqual(
+            [child["name"] for child in response.data["treeData"]["children"]],
+            ["核能安全", "經濟成本", "能源問題", "環境保護", "民主治理", "核廢處理"],
+        )
+        self.assertEqual(response.data["analysisHistory"], [])
+
+    def test_semantic_tree_analyze_requires_gemini_key_without_blocking_messages(self):
+        match, room_id = self._create_match()
+        MatchMessage.objects.create(
+            match=match,
+            sender=self.user,
+            content="核廢料處理會帶來長期負擔",
+        )
+
+        with patch.dict("os.environ", {"GEMINI_API_KEY": ""}):
+            response = self.client.post(f"/api/matching/rooms/{room_id}/semantic-tree/analyze/")
+
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(response.data["error"], "missing_gemini_api_key")
+        messages_response = self.client.get(f"/api/matching/rooms/{room_id}/messages/")
+        self.assertEqual(messages_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(messages_response.data["messages"]), 1)
+
+    def test_semantic_tree_analyze_updates_tree_and_skips_analyzed_messages(self):
+        match, room_id = self._create_match()
+        message = MatchMessage.objects.create(
+            match=match,
+            sender=self.user,
+            content="核廢料處理會帶來長期負擔",
+        )
+
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}), patch(
+            "apps.matching.services.semantic_tree.analyze_with_gemini",
+            return_value=fake_gemini_items_response(),
+        ) as mocked_analyze:
+            first_response = self.client.post(
+                f"/api/matching/rooms/{room_id}/semantic-tree/analyze/"
+            )
+            second_response = self.client.post(
+                f"/api/matching/rooms/{room_id}/semantic-tree/analyze/"
+            )
+
+        self.assertEqual(first_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(second_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(mocked_analyze.call_count, 1)
+        self.assertIn(str(message.id), first_response.data["analyzedMessageIds"])
+        self.assertEqual(second_response.data["analyzedCount"], 0)
+
+        tree_data = first_response.data["treeData"]
+        waste_anchor = next(child for child in tree_data["children"] if child["id"] == "anchor_waste")
+        self.assertEqual(waste_anchor["children"][0]["name"], "長期處置")
+        self.assertEqual(waste_anchor["children"][0]["children"][0]["name"], "核廢長期負擔")
 
     def test_room_messages_reject_blank_content(self):
         _, room_id = self._create_match()

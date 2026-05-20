@@ -25,6 +25,7 @@
   - `uv run python manage.py migrate`
   - `uv run python manage.py createsuperuser`
   - `uv run python manage.py runserver 0.0.0.0:8005 --noreload`
+  - `uv run python manage.py warm_nlp_models`
   - `uv run uvicorn BridgeUs_Django.asgi:application --host 0.0.0.0 --port 8005`
   - `uv run python scripts/build_knowledge_base.py --data-dir data/nuclear_energy --collection nuclear_energy_all`
 - Environment is loaded from `backend/.env`. Do not commit real secrets or print secret values.
@@ -37,6 +38,8 @@
   - `H_H_AI_ASSIST_ENABLED=false` keeps H-H AI intervention disabled by default; set `true` only when testing content prompts / rephrase suggestions.
   - `H_H_AI_ASSIST_TIMEOUT_SECONDS=2` prevents slow emotion inference or first-time model downloads from blocking matching chat delivery.
   - `PRELOAD_NLP_MODELS=false`; set `true` in Docker or run `uv run python manage.py warm_nlp_models` before uvicorn to download/warm NLP models ahead of traffic.
+  - `GEMINI_API_KEY` enables backend Gemini semantic-tree analysis for matching rooms; keep it in `backend/.env`, never in frontend code.
+  - `GEMINI_MODEL=gemini-2.5-flash`, `GEMINI_API_TIMEOUT_SECONDS=20`, and `SEMANTIC_TREE_ANALYZE_BATCH_SIZE=5` control semantic-tree analysis.
   - `USE_REDIS_CACHE=true` is required if dialogue session cache must survive multiple workers/containers.
   - `USE_REDIS_CHANNEL=true` enables Redis channel layer for multi-process WebSocket deployment.
 
@@ -46,7 +49,9 @@
 - Matching queue, restart, cancellation, stale queue cleanup, and idle room cleanup: `backend/apps/matching/services/matcher.py`.
 - Heterogeneous matching weights and candidate ranking: `backend/apps/matching/services/matching_algorithm.py`.
 - Q9 semantic embedding bridge: `backend/apps/matching/services/semantic.py`.
+- Gemini semantic-tree prompt/schema/merge service: `backend/apps/matching/services/semantic_tree.py`.
 - H-H AI assist services: `backend/apps/matching/services/hh_ai.py` and `backend/apps/matching/services/hh_analysis.py`.
+- NLP model warmup command: `backend/chat/management/commands/warm_nlp_models.py`.
 - WebSocket consumers for AI dialogue and matching room chat: `backend/api/consumers.py`.
 - Persistent models for stance profiles, queue entries, matches, AI turns, and match messages: `backend/api/models.py`.
 
@@ -65,7 +70,7 @@
 - Backend smoke checks:
   - `uv run python manage.py check`
   - `DB_ENGINE=sqlite uv run python manage.py test api --keepdb --noinput`
-  - `DB_ENGINE=sqlite uv run pytest api/tests_websocket.py chat/tests.py chat/tests_filter.py`
+  - `DB_ENGINE=sqlite uv run pytest api/tests_websocket.py chat/tests*.py`
 - Frontend smoke checks:
   - `npm run lint`
   - `npm run build`
@@ -80,6 +85,9 @@
 - Matching rooms are anonymous in the UI and API payloads.
 - Matching room messages and AI dialogue turns are persisted in the database.
 - Matching rooms auto-close after `MATCH_ROOM_IDLE_TIMEOUT_SECONDS` without conversation activity.
+- Matching rooms still fetch `/api/matching/rooms/<room_id>/messages/` as a snapshot/polling fallback while WebSocket is open; repeated 200 logs here are expected.
+- The matching-room right panel uses backend Gemini semantic-tree endpoints: `GET /api/matching/rooms/<room_id>/semantic-tree/` and `POST /api/matching/rooms/<room_id>/semantic-tree/analyze/`. Frontend must render backend `treeData` and must not use keyword classification for semantic grouping.
+- If H-H AI assist is enabled before NLP models are cached, emotion analysis may time out and fail open so messages still relay. Use `warm_nlp_models` or `PRELOAD_NLP_MODELS=true` to avoid first-use downloads during chat.
 - H-H AI assist is selectively ported from `feat/benjamin`; do not directly merge `feat/benjamin` over the current `feat/Light` architecture.
 
 ## Working Rules

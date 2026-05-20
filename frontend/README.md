@@ -78,8 +78,9 @@ Human matching:
 - If backend returns `ai_recommended`, the UI should guide the user to AI dialogue.
 - Matching chat is anonymous; the current user is displayed on the right side.
 - Room messages are persisted by the backend.
-- The UI polls matching status/messages and also uses WebSocket for live messages.
-- When backend `H_H_AI_ASSIST_ENABLED=true`, matching WebSocket may emit `match_system_prompt` and `match_ai_suggestion`; `TopicChat.jsx` renders these as prompt/suggestion cards with accept, modify, or ignore actions.
+- The UI polls matching status while waiting and fetches room message snapshots from `/api/matching/rooms/<room_id>/messages/` while also using WebSocket for live delivery. Repeated backend 200 logs for this endpoint are expected during an open room.
+- The right-side semantic tree panel does not classify messages locally. It loads `GET /api/matching/rooms/<room_id>/semantic-tree/` and triggers `POST /api/matching/rooms/<room_id>/semantic-tree/analyze/` after new room messages arrive; backend Gemini analysis owns the prompt, schema validation, and tree merge behavior.
+- When backend `H_H_AI_ASSIST_ENABLED=true`, matching WebSocket may emit `match_system_prompt` and `match_ai_suggestion`; `TopicChat.jsx` renders these as prompt/suggestion cards with accept, modify, or ignore actions. Backend may fail open and relay messages without intervention if NLP inference exceeds `H_H_AI_ASSIST_TIMEOUT_SECONDS`.
 - Closing or leaving pages sends best-effort cancel/leave requests to avoid ghost queue entries.
 
 ## Verification

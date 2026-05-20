@@ -73,6 +73,10 @@ MATCH_ROOM_IDLE_TIMEOUT_SECONDS=600
 H_H_AI_ASSIST_ENABLED=false
 H_H_AI_ASSIST_TIMEOUT_SECONDS=2
 PRELOAD_NLP_MODELS=false
+GEMINI_API_KEY=replace-me
+GEMINI_MODEL=gemini-2.5-flash
+GEMINI_API_TIMEOUT_SECONDS=20
+SEMANTIC_TREE_ANALYZE_BATCH_SIZE=5
 
 USE_REDIS_CACHE=false
 USE_REDIS_CHANNEL=false
@@ -107,6 +111,8 @@ CREATE EXTENSION IF NOT EXISTS vector;
 - Matching score algorithm: `apps/matching/services/matching_algorithm.py`
 - H-H AI assist services: `apps/matching/services/hh_ai.py` and `apps/matching/services/hh_analysis.py`
 - Q9 embedding bridge: `apps/matching/services/semantic.py`
+- Gemini semantic conversation tree: `apps/matching/services/semantic_tree.py`
+- NLP model warmup command: `chat/management/commands/warm_nlp_models.py`
 - AI dialogue agent: `apps/matching/services/ai_agent.py`
 - Knowledge-base builder: `scripts/build_knowledge_base.py`
 
@@ -136,6 +142,8 @@ Matching:
 - `GET /api/matching/rooms/<room_id>/messages/`
 - `POST /api/matching/rooms/<room_id>/messages/`
 - `POST /api/matching/rooms/<room_id>/leave/`
+- `GET /api/matching/rooms/<room_id>/semantic-tree/`
+- `POST /api/matching/rooms/<room_id>/semantic-tree/analyze/`
 - `WS /ws/matching/rooms/<room_id>/`
 
 ## Matching Details
@@ -151,7 +159,25 @@ Matching:
 - Q9 embedding is stored in `UserStanceProfile.q9_embedding` using pgvector when available.
 - `DialogueMatch` stores likert distance, semantic distance, weighted match score, and algorithm version.
 - Matching rooms auto-close after `MATCH_ROOM_IDLE_TIMEOUT_SECONDS` without conversation activity.
-- H-H AI assistance is off by default. Set `H_H_AI_ASSIST_ENABLED=true` to enable content-block prompts, emotion rephrase suggestions, topic redirects, and research suggestion records for WebSocket matching rooms. `H_H_AI_ASSIST_TIMEOUT_SECONDS` defaults to `2` so slow NLP inference fails open and chat messages still relay. Run `uv run python manage.py warm_nlp_models` before starting uvicorn, or set `PRELOAD_NLP_MODELS=true` in Docker, to preload models before users enter chat.
+- Matching semantic trees use backend-only Gemini calls. `GET /api/matching/rooms/<room_id>/semantic-tree/` returns the current tree, and `POST /api/matching/rooms/<room_id>/semantic-tree/analyze/` analyzes unprocessed `MatchMessage` rows, applies validated Gemini items, and stores tree/history in `DialogueMatch.stats["semantic_tree"]`. Missing `GEMINI_API_KEY` returns `missing_gemini_api_key` for the tree API but does not block message persistence or WebSocket chat.
+- H-H AI assistance is off by default. Set `H_H_AI_ASSIST_ENABLED=true` to enable content-block prompts, emotion rephrase suggestions, topic redirects, and research suggestion records for WebSocket matching rooms. `H_H_AI_ASSIST_TIMEOUT_SECONDS` defaults to `2` so slow NLP inference fails open and chat messages still relay. Run `uv run python manage.py warm_nlp_models` before starting uvicorn, or set `PRELOAD_NLP_MODELS=true` in Docker, to preload models before users enter chat. If you see repeated `GET /api/matching/rooms/<room_id>/messages/` logs, that is frontend room snapshot polling, not repeated model downloads.
+
+## NLP Model Warmup
+
+Preload models manually before running uvicorn when testing H-H AI assist:
+
+```bash
+uv run python manage.py warm_nlp_models
+```
+
+Useful variants:
+
+```bash
+uv run python manage.py warm_nlp_models --skip-embedding
+uv run python manage.py warm_nlp_models --skip-emotion
+```
+
+`PRELOAD_NLP_MODELS=true` runs this automatically from `backend/docker/entrypoint.sh` before ASGI starts.
 
 ## Admin
 
@@ -182,7 +208,7 @@ Do not use permissive password settings in production.
 ```bash
 uv run python manage.py check
 DB_ENGINE=sqlite uv run python manage.py test api --keepdb --noinput
-DB_ENGINE=sqlite uv run pytest api/tests_websocket.py chat/tests.py chat/tests_filter.py
+DB_ENGINE=sqlite uv run pytest api/tests_websocket.py chat/tests*.py
 ```
 
 The API test suite intentionally logs one fake AI-provider exception to verify stable 503 handling.
@@ -199,6 +225,6 @@ Notes:
 
 - Backend port is `8005`.
 - `backend/docker-compose.yml` starts Redis and persists SQLite/Chroma/Hugging Face data in the `app_data` volume.
-- The container entrypoint runs migrations and collectstatic before starting ASGI.
+- The container entrypoint runs migrations and collectstatic before starting ASGI. If `PRELOAD_NLP_MODELS=true`, it also runs `python manage.py warm_nlp_models` before uvicorn.
 - Use Redis cache if running more than one worker/container and dialogue session state must persist across workers.
 - Use Redis channel layer if WebSocket traffic spans multiple backend processes.

@@ -643,8 +643,9 @@
 
 .right-major-feature-box {
   flex: 9;
-  background: #eee;
-  border-radius: 20px;
+  min-height: 0;
+  border-radius: 22px;
+  overflow: hidden;
 }
 
 .right-minor-feature-row {
@@ -655,8 +656,54 @@
 
 .minor-feature-box {
   flex: 1;
-  background: #eee;
-  border-radius: 15px;
+  border-radius: 16px;
+}
+
+.metric-card {
+  display: flex;
+  min-width: 0;
+  min-height: 112px;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px;
+  background: #f7f3ee;
+  border: 1px solid #ded4ca;
+  box-shadow: 0 8px 20px rgba(71, 55, 43, 0.08);
+}
+
+.metric-card::before {
+  display: block;
+  width: 26px;
+  height: 3px;
+  border-radius: 999px;
+  background: #8a735e;
+  content: "";
+}
+
+.metric-label {
+  overflow: hidden;
+  color: #6a5c50;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric-value {
+  color: #2f2722;
+  font-size: clamp(22px, 2.2vw, 30px);
+  line-height: 1;
+}
+
+.metric-hint {
+  overflow: hidden;
+  color: #8a7d72;
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-messages-display::-webkit-scrollbar {

@@ -22,6 +22,14 @@ urlpatterns = [
         views.MatchingRoomMessagesView.as_view(),
     ),
     path(
+        'matching/rooms/<str:room_id>/semantic-tree/',
+        views.MatchingRoomSemanticTreeView.as_view(),
+    ),
+    path(
+        'matching/rooms/<str:room_id>/semantic-tree/analyze/',
+        views.MatchingRoomSemanticTreeAnalyzeView.as_view(),
+    ),
+    path(
         'matching/rooms/<str:room_id>/leave/',
         views.MatchingRoomLeaveView.as_view(),
     ),

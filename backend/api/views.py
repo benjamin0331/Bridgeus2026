@@ -10,7 +10,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTStatelessUserAuthentication
 
-from .models import AIConversation, DialogueMatch
+from .models import AIConversation, DialogueMatch, MatchStanceDrift
 from .dialogue_topics import (
     TOPIC_CONFIGS,
     get_dialogue_survey,
@@ -26,6 +26,7 @@ from .serializers import (
     MatchingJoinSerializer,
     MatchingRoomMessageCreateSerializer,
     MatchingRoomMessagesSerializer,
+    MatchingRoomSemanticTreeSerializer,
     MatchingStateSerializer,
     MatchingTopicSerializer,
 )
@@ -278,6 +279,21 @@ def _room_match_state_status(match: DialogueMatch) -> str:
     return match.status
 
 
+def _get_latest_room_stance_drift(*, match: DialogueMatch, user_id: int) -> dict | None:
+    latest = (
+        MatchStanceDrift.objects.filter(match=match, user_id=user_id)
+        .order_by("-measured_at", "-id")
+        .first()
+    )
+    if latest is None:
+        return None
+
+    return {
+        "drift_value": latest.drift_value,
+        "measured_at": latest.measured_at,
+    }
+
+
 def _build_room_messages_payload(*, match: DialogueMatch, user_id: int, messages) -> dict:
     other_user = _get_other_user(match, user_id=user_id)
     payload = {
@@ -287,6 +303,7 @@ def _build_room_messages_payload(*, match: DialogueMatch, user_id: int, messages
         "status": _room_match_state_status(match),
         "other_user_id": other_user.id,
         "other_user_name": ANONYMOUS_MATCH_USER_NAME,
+        "stance_drift": _get_latest_room_stance_drift(match=match, user_id=user_id),
         "messages": messages,
     }
     return MatchingRoomMessagesSerializer(payload).data
@@ -299,6 +316,10 @@ def _get_room_match_for_user(*, room_id: str, user_id: int) -> DialogueMatch | N
         .filter(Q(user_a_id=user_id) | Q(user_b_id=user_id))
         .first()
     )
+
+
+def _semantic_tree_root_name(match: DialogueMatch) -> str:
+    return TOPIC_CONFIGS.get(match.topic_id, {}).get("title") or "核電"
 
 
 @lru_cache(maxsize=1)
@@ -659,6 +680,70 @@ class MatchingRoomMessagesView(APIView):
             ),
             status=status.HTTP_201_CREATED,
         )
+
+
+class MatchingRoomSemanticTreeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, room_id: str):
+        from apps.matching.services.matcher import close_match_if_idle
+        from apps.matching.services.semantic_tree import semantic_tree_payload
+
+        match = _get_room_match_for_user(room_id=room_id, user_id=request.user.id)
+        if not match:
+            return Response(
+                {"detail": "找不到這個配對房間。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        match = close_match_if_idle(match=match)
+        payload = semantic_tree_payload(
+            match=match,
+            root_name=_semantic_tree_root_name(match),
+        )
+        return Response(MatchingRoomSemanticTreeSerializer(payload).data)
+
+
+class MatchingRoomSemanticTreeAnalyzeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, room_id: str):
+        from apps.matching.services.matcher import close_match_if_idle
+        from apps.matching.services.semantic_tree import (
+            SemanticTreeError,
+            analyze_pending_room_messages,
+        )
+
+        match = _get_room_match_for_user(room_id=room_id, user_id=request.user.id)
+        if not match:
+            return Response(
+                {"detail": "找不到這個配對房間。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        match = close_match_if_idle(match=match)
+        if match.status != DialogueMatch.Status.ACTIVE:
+            return Response(
+                {"detail": "這個配對房間目前無法分析語意樹。"},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        try:
+            payload = analyze_pending_room_messages(
+                match=match,
+                root_name=_semantic_tree_root_name(match),
+            )
+        except SemanticTreeError as exc:
+            return Response(
+                {
+                    "error": exc.code,
+                    "message": str(exc),
+                    "analysisStatus": exc.code,
+                },
+                status=exc.status_code,
+            )
+
+        return Response(MatchingRoomSemanticTreeSerializer(payload).data)
 
 
 class MatchingRoomLeaveView(APIView):
