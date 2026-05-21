@@ -84,14 +84,12 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'corsheaders',
+    'channels',
     'rest_framework',
     'rest_framework_simplejwt',
-    'channels',
     'api',
     'chat',
 ]
-
-ASGI_APPLICATION = 'BridgeUs_Django.asgi.application'
 
 USE_REDIS_CHANNEL = _env_bool("USE_REDIS_CHANNEL", False)
 
@@ -127,6 +125,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'BridgeUs_Django.wsgi.application'
+ASGI_APPLICATION = 'BridgeUs_Django.asgi.application'
 
 
 # Database
@@ -149,6 +148,8 @@ elif DB_ENGINE in {"postgres", "postgresql"}:
             'PASSWORD': os.getenv("DB_PASSWORD", ""),
             'HOST': os.getenv("DB_HOST", "127.0.0.1"),
             'PORT': os.getenv("DB_PORT", "5432"),
+            'CONN_MAX_AGE': int(os.getenv("DB_CONN_MAX_AGE", "0")),
+            'CONN_HEALTH_CHECKS': _env_bool("DB_CONN_HEALTH_CHECKS", True),
         }
     }
 else:
@@ -199,20 +200,29 @@ else:
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
 
+PASSWORD_MIN_LENGTH = int(os.getenv("DJANGO_PASSWORD_MIN_LENGTH", "8"))
+ALLOW_COMMON_PASSWORDS = _env_bool("ALLOW_COMMON_PASSWORDS", False)
+ALLOW_NUMERIC_PASSWORDS = _env_bool("ALLOW_NUMERIC_PASSWORDS", False)
+
 AUTH_PASSWORD_VALIDATORS = [
     {
-        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
+        "OPTIONS": {"min_length": PASSWORD_MIN_LENGTH},
     },
 ]
+
+if not ALLOW_COMMON_PASSWORDS:
+    AUTH_PASSWORD_VALIDATORS.append(
+        {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"}
+    )
+
+if not ALLOW_NUMERIC_PASSWORDS:
+    AUTH_PASSWORD_VALIDATORS.append(
+        {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"}
+    )
 
 
 # Internationalization

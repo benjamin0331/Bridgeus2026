@@ -1,122 +1,238 @@
 # BridgeUs (橋得攏)
 
-**異質觀點對話平台** — 以結構化對話對抗同溫層與社會極化。
+BridgeUs is a heterogeneous-viewpoint dialogue platform for structured discussion across different stances. The current implementation focuses on the Taiwan nuclear-energy topic and supports two user-facing paths:
 
-> 核心假設：與具備高品質知識架構及無情緒干擾的 AI 對話，能達到與真人異質對話同等甚至更穩定的去極化效果。
+- Human-AI dialogue with an AI agent taking the opposing stance.
+- Anonymous human-human matching based on survey stance scores and optional Q9 semantic distance.
 
----
+The project is currently organized as a monorepo:
 
-## 專案簡介
-
-BridgeUs 是一個配對不同立場用戶進行結構化去極化對話的平台，支援 Human-Human、Human-AI Agent、AI Agent-AI Agent 三種對話模式。本專案為 NSTC 115 年度大專學生研究計畫，研究期間 2026/07 – 2027/02。
-
-指導教授：張昭憲（淡江大學資管系副教授）
-
----
-
-## Git Notes
-
-Current workspace note:
-
-- As of April 27, 2026, `/Users/light/code` is not an active git working tree because `.git` is absent.
-- The old git metadata directory currently exists as `/Users/light/code/.git.removed-20260422`.
-- Any future chat that needs git operations should check the workspace state first instead of assuming `/Users/light/code` is still a live repo.
-
-Last known git layout before `.git` was removed:
-
-- Intended main repo root: `/Users/light/code`
-- Main repo remote: `https://github.com/bridgeus2026/Bridgeus2026.git`
-- Main working branch used in previous sessions: `feat/Light`
-- Backend-only mirror repo: `https://github.com/Bridge-US2026/Light_Django_backend.git`
-- The backend-only repo should receive only the contents of `backend/`, not the whole monorepo.
-
-Recommended first checks for future git work:
-
-```bash
-ls -la /Users/light/code
-git -C /Users/light/code status
+```text
+/Users/light/code
+├── backend/   # Django REST + Channels backend
+├── frontend/  # React + Vite frontend
+├── data/      # shared/source data
+└── docs/      # project notes
 ```
 
-If `/Users/light/code/.git` is still missing, a future chat should inspect `.git.removed-20260422`
-or re-clone from GitHub before attempting `pull`, `push`, or branch operations.
+## Current Git Layout
 
----
+- Active repo root: `/Users/light/code`
+- Main remote: `origin https://github.com/bridgeus2026/Bridgeus2026.git`
+- Active working branch: `feat/Light`
+- Backend-only mirror remote may exist as `light-backend https://github.com/Bridge-US2026/Light_Django_backend.git`
 
-## 系統模組
+Before git operations, verify the target:
 
-| 模組 | 名稱 | 負責人 |
-|------|------|--------|
-| M1 | User Auth | Benjamin |
-| M2 | Topic Selection & Stance Measurement | 伍晨安 |
-| M3 | Heterogeneous Matching & AI Agent Generation | 伍晨安 |
-| M4 | Real-time Dialogue Room | 伍晨安 |
-| M5 | NLP Analysis & CCND Generation | 伍晨安 |
-| M6 | Post-Dialogue Summary & Knowledge Base | 葉錦諦 |
-
----
+```bash
+git rev-parse --show-toplevel
+git status -sb
+git remote -v
+```
 
 ## Tech Stack
 
-- **Backend**: Python 3.11 / Django 5.x / Django REST Framework / Django Channels
-- **Database**: PostgreSQL 16 + pgvector / ChromaDB (RAG)
-- **AI/NLP**: Anthropic Claude 3.5 Sonnet / Sentence-Transformers / LangChain
-- **Frontend**: React / D3.js
-- **Infrastructure**: Docker / GitHub Actions
+- Backend: Python 3.12+, Django 6, Django REST Framework, Django Channels, SimpleJWT
+- Database: SQLite for local smoke tests; PostgreSQL + pgvector for server/realistic testing
+- Matching/NLP: pgvector, scipy cosine distance, sentence-transformers embedding bridge
+- RAG/AI: Anthropic, LangChain, ChromaDB, sentence-transformers
+- Frontend: React 19, React Router 7, Vite 8, axios
+- Deployment: Docker Compose, uvicorn ASGI, optional Redis cache/channel layer
 
----
-
-## 快速開始
-
-### 環境需求
-- Python 3.11+
-- PostgreSQL 16+ (with pgvector extension)
-- Redis
-- Docker (建議)
-
-### Backend 設定
+## Backend Quick Start
 
 ```bash
 cd backend
-python -m venv venv
-# Windows:
-venv\Scripts\activate
-# macOS/Linux:
-source venv/bin/activate
-
-pip install -r requirements.txt
-cp ../.env.example ../.env
-# 填入 .env 中的 API keys & DB credentials
-
-# 資料庫初始化
-python manage.py migrate
-python manage.py createsuperuser
-python manage.py runserver
+uv sync
+cp .env.example .env
+uv run python manage.py migrate
+uv run python manage.py createsuperuser
+uv run python scripts/build_knowledge_base.py --data-dir data/nuclear_energy --collection nuclear_energy_all
+uv run python manage.py warm_nlp_models
+uv run uvicorn BridgeUs_Django.asgi:application --host 0.0.0.0 --port 8005
 ```
 
-### Docker 啟動（建議）
+For simple HTTP-only development, this also works:
 
 ```bash
-docker-compose up --build
+uv run python manage.py runserver 0.0.0.0:8005 --noreload
 ```
 
----
+Use ASGI/uvicorn when testing WebSocket dialogue or matching-room chat.
 
-## 開發規範
+## Frontend Quick Start
 
-請參閱 [CLAUDE.md](./CLAUDE.md) 了解：
-- Git branch 策略與命名規範
-- Commit message 格式（Conventional Commits）
-- PR 流程與 checklist
-- API 設計合約
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
----
+Vite proxies `/api` and `/ws` to `VITE_PROXY_TARGET`, defaulting to `http://127.0.0.1:8005`.
 
-## 團隊成員
+Open the frontend at the Vite dev-server URL, usually:
 
-| 成員 | 角色 |
-|------|------|
+```text
+http://localhost:5173
+```
+
+## Important Environment Values
+
+In `backend/.env`:
+
+```env
+PORT=8005
+DJANGO_DEBUG=true
+DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1,0.0.0.0,dev.bridgeus.work
+CORS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,https://dev.bridgeus.work
+CSRF_TRUSTED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,https://dev.bridgeus.work
+
+DB_ENGINE=sqlite
+# DB_ENGINE=postgres
+DB_NAME=bridgeus
+DB_USER=postgres
+DB_PASSWORD=replace-me
+DB_HOST=127.0.0.1
+DB_PORT=5432
+DB_CONN_MAX_AGE=0
+
+MATCHING_ALLOW_SAME_STANCE_FALLBACK=false
+MATCH_ROOM_IDLE_TIMEOUT_SECONDS=600
+H_H_AI_ASSIST_ENABLED=false
+H_H_AI_ASSIST_TIMEOUT_SECONDS=2
+PRELOAD_NLP_MODELS=false
+USE_REDIS_CACHE=false
+USE_REDIS_CHANNEL=false
+```
+
+For production or shared server use, set `DJANGO_SECRET_KEY` and `JWT_SIGNING_KEY` to separate values with at least 32 characters.
+
+## Database Notes
+
+Local smoke testing can use SQLite. For the server or matching algorithm testing with semantic vectors, use PostgreSQL with pgvector enabled:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+Then run:
+
+```bash
+cd backend
+uv run python manage.py migrate
+```
+
+## Current API Surface
+
+Authentication:
+
+- `POST /api/token/`
+- `POST /api/token/refresh/`
+
+Topics and surveys:
+
+- `GET /api/dialogue/topics/`
+- `GET /api/dialogue/topics/<topic_id>/survey/`
+
+AI dialogue:
+
+- `POST /api/dialogue/sessions/`
+- `POST /api/dialogue/sessions/<session_id>/reply/`
+- `WS /ws/dialogue/<session_id>/`
+
+Human matching:
+
+- `POST /api/matching/join/`
+- `GET /api/matching/status/?topic_id=102`
+- `POST /api/matching/cancel/`
+- `GET /api/matching/rooms/<room_id>/messages/`
+- `POST /api/matching/rooms/<room_id>/messages/`
+- `POST /api/matching/rooms/<room_id>/leave/`
+- `WS /ws/matching/rooms/<room_id>/`
+
+## Matching Behavior
+
+- Topic `102` is currently `台灣核能議題討論`.
+- Likert scoring uses Q2/Q4/Q5/Q6 reverse scoring.
+- Stance score `S` is in `[1, 7]`.
+- `S > 4.5`: support.
+- `S < 3.5`: oppose.
+- `3.5 <= S <= 4.5`: neutral.
+- Default production matching only pairs support with oppose.
+- Neutral users receive `ai_recommended` and should be guided to AI dialogue.
+- Test-only fallback can be enabled with `MATCHING_ALLOW_SAME_STANCE_FALLBACK=true`.
+- Q9 is embedded for semantic matching; Q10 is stored but not scored yet.
+- Matching rooms are anonymous and auto-close after 10 minutes of no conversation activity by default.
+- Human-human AI assistance is feature-flagged with `H_H_AI_ASSIST_ENABLED=true`; when enabled, WebSocket matching rooms can show content-block prompts and AI rephrase/direction/redirect suggestions. `H_H_AI_ASSIST_TIMEOUT_SECONDS` keeps slow NLP inference or first-time model downloads from blocking chat message delivery. Run `uv run python manage.py warm_nlp_models` before starting uvicorn, or set `PRELOAD_NLP_MODELS=true` in Docker, to download and warm models ahead of traffic.
+
+## Verification
+
+Backend:
+
+```bash
+cd backend
+uv run python manage.py check
+DB_ENGINE=sqlite uv run python manage.py test api --keepdb --noinput
+DB_ENGINE=sqlite uv run pytest api/tests_websocket.py chat/tests.py chat/tests_filter.py
+```
+
+Frontend:
+
+```bash
+cd frontend
+npm run lint
+npm run build
+```
+
+## Docker
+
+Use the service-specific compose files for the current app layout. The root `docker-compose.yml` is an older integration draft and should be reviewed before use.
+
+Backend test container:
+
+```bash
+cd backend
+docker compose up --build
+```
+
+Frontend test container:
+
+```bash
+cd frontend
+docker compose up --build
+```
+
+Current defaults:
+
+- Backend: `http://localhost:8005`
+- Frontend: `http://localhost:8080`
+- Frontend container forwards `/api` and `/ws` to `host.docker.internal:8005` unless overridden.
+
+## Project Context
+
+BridgeUs is an NSTC undergraduate research project for structured depolarization dialogue. The research period is planned for 2026/07 - 2027/02. Advisor: 張昭憲（淡江大學資管系副教授）.
+
+Current engineering priority: make the survey, matching, AI dialogue, and anonymous chat lifecycle stable before adding long-running post-dialogue analysis and CCND visualization.
+
+Merge note: `feat/Light` is the source of truth for matching-room architecture. Do not directly merge `feat/benjamin`; selectively port compatible H-H AI-assist services into the current `DialogueMatch` / `MatchMessage` stack.
+
+## System Modules
+
+| Module | Name | Current status |
+|--------|------|----------------|
+| M1 | User Auth | JWT login/admin account flow is implemented. |
+| M2 | Topic Selection & Stance Measurement | Backend topic/survey config and Likert scoring are implemented for topic 102. |
+| M3 | Heterogeneous Matching & AI Agent Generation | Matching queue, stance score, Q9 semantic hook, and AI dialogue agent are implemented. |
+| M4 | Real-time Dialogue Room | WebSocket matching room and persisted messages are implemented; rooms auto-close when idle. |
+| M5 | NLP Analysis & CCND Generation | Planned. |
+| M6 | Post-Dialogue Summary & Knowledge Base | Knowledge-base build flow exists; post-dialogue summary is planned. |
+
+## Team
+
+| Member | Role |
+|--------|------|
 | 賴則名 (Benjamin) | Project Manager |
-| 伍晨安 | Backend Developer |
-| 陳彩希 | Frontend Developer |
-| 黃筱筑 | QA & Optimization |
-| 葉錦諦 | Data Engineering |
+| 伍晨安 | Backend / matching / AI agent development |
+| 陳彩希 | Frontend UI/UX |
+| 黃筱筑 | QA & optimization |
+| 葉錦諦 | Data engineering |

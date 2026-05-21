@@ -1,80 +1,116 @@
 # BridgeUs Frontend
 
-This repository is the Vite + React frontend for BridgeUs.
+React + Vite frontend for BridgeUs. It supports backend-driven topic/survey loading, AI dialogue mode, and anonymous human matching mode.
 
-The frontend expects a separate backend that provides these endpoints:
+## Location
 
-- `POST /api/token/`
-- `POST /api/dialogue/sessions/`
-- `POST /api/dialogue/sessions/:id/reply/`
+```text
+/Users/light/code/frontend
+```
+
+The active git repo is the parent monorepo at `/Users/light/code`, not this folder alone.
+
+## Requirements
+
+- Node.js compatible with the current lockfile/tooling
+- npm
+- Backend running on `http://127.0.0.1:8005` by default
 
 ## Local Development
-
-Install dependencies and run the Vite dev server:
 
 ```bash
 npm install
 npm run dev
 ```
 
-In development, Vite proxies `/api/*` to `http://127.0.0.1:8005` unless `VITE_PROXY_TARGET` is set.
+Vite proxies both HTTP and WebSocket traffic:
+
+- `/api/*` -> `VITE_PROXY_TARGET` or `http://127.0.0.1:8005`
+- `/ws/*` -> `VITE_PROXY_TARGET` or `http://127.0.0.1:8005`
+
+If the backend runs elsewhere:
+
+```bash
+VITE_PROXY_TARGET=http://127.0.0.1:8005 npm run dev
+```
+
+## Main Files
+
+- App shell and routes: `src/App.jsx`
+- API client and auth handling: `src/api/client.js`
+- Login: `src/pages/LoginPage.jsx`
+- Topic / AI dialogue / matching UI: `src/pages/TopicChat.jsx`
+- Topic chat styles: `src/pages/TopicChat.css`
+- Vite proxy: `vite.config.js`
+
+## Backend Contract
+
+Auth:
+
+- `POST /api/token/`
+- `POST /api/token/refresh/`
+
+Topics and surveys:
+
+- `GET /api/dialogue/topics/`
+- `GET /api/dialogue/topics/<topic_id>/survey/`
+
+AI dialogue:
+
+- `POST /api/dialogue/sessions/`
+- `POST /api/dialogue/sessions/<session_id>/reply/`
+- `WS /ws/dialogue/<session_id>/`
+
+Human matching:
+
+- `POST /api/matching/join/`
+- `GET /api/matching/status/?topic_id=102`
+- `POST /api/matching/cancel/`
+- `GET /api/matching/rooms/<room_id>/messages/`
+- `POST /api/matching/rooms/<room_id>/messages/`
+- `POST /api/matching/rooms/<room_id>/leave/`
+- `WS /ws/matching/rooms/<room_id>/`
+
+## Current UX Behavior
+
+- Topic and survey data are loaded from the backend.
+- Matching mode requires completing the backend survey first.
+- If backend returns `ai_recommended`, the UI should guide the user to AI dialogue.
+- Matching chat is anonymous; the current user is displayed on the right side.
+- Room messages are persisted by the backend.
+- The UI polls matching status/messages and also uses WebSocket for live messages.
+- When backend `H_H_AI_ASSIST_ENABLED=true`, matching WebSocket may emit `match_system_prompt` and `match_ai_suggestion`; `TopicChat.jsx` renders these as prompt/suggestion cards with accept, modify, or ignore actions.
+- Closing or leaving pages sends best-effort cancel/leave requests to avoid ghost queue entries.
+
+## Verification
+
+```bash
+npm run lint
+npm run build
+```
+
+In sandboxed environments, `npm run build` may need permission to write Vite temporary files under `node_modules/.vite-temp`.
 
 ## Docker Test Deployment
 
-This repo includes a lightweight Docker setup intended for testing:
+The frontend Docker setup builds static files and serves them through nginx. It forwards `/api/*` and `/ws/*` to the backend.
 
-- The frontend is built into static files.
-- `nginx` serves the frontend.
-- `nginx` forwards `/api/*` to your Django project running on the same host.
+Default assumptions:
 
-### Assumptions
-
-- Your Django project is already running on the host machine.
-- Django is reachable at `host.docker.internal:8005` from Docker.
-- For local testing, the simplest command is usually:
-
-```bash
-python manage.py runserver 0.0.0.0:8005
-```
-
-### Start the frontend container
+- Backend is reachable from Docker as `host.docker.internal:8005`.
+- Browser opens the frontend on `http://localhost:8080`.
 
 ```bash
 docker compose up --build
 ```
 
-Then open:
-
-```text
-http://localhost:8080
-```
-
-### Backend target override
-
-The compose file forwards `/api/*` to these defaults:
-
-- `BACKEND_HOST=host.docker.internal`
-- `BACKEND_PORT=8005`
-
-You can override them at startup:
+Override backend target if needed:
 
 ```bash
 BACKEND_HOST=host.docker.internal BACKEND_PORT=8005 docker compose up --build
 ```
 
-### Django-side notes
-
-If the frontend opens but API calls fail, check these first:
-
-- Django is actually listening on `0.0.0.0:8005`, not only on an isolated local interface.
-- `ALLOWED_HOSTS` includes the host you use in the browser, usually `localhost` and `127.0.0.1`.
-- If you use CSRF protection on API endpoints, make sure your proxy setup and trusted origins match your Django settings.
-
-### Linux note
-
-On Docker Desktop for macOS, `host.docker.internal` usually works out of the box.
-
-If you later run this on Linux, you may need to add this to the frontend service in `docker-compose.yml`:
+On Linux, you may need:
 
 ```yaml
 extra_hosts:

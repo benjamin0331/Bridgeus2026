@@ -1,31 +1,60 @@
 import React from 'react';
 
+const ISSUE_ENTRY_MODES = [
+  {
+    key: 'ai',
+    label: 'AI',
+    description: '和 AI 對談',
+  },
+  {
+    key: 'match',
+    label: '配對',
+    description: '等待真人匹配',
+  },
+];
+
+function buildIssueEntries(issues) {
+  return issues.flatMap((issue) =>
+    ISSUE_ENTRY_MODES.map((mode) => ({
+      ...issue,
+      entryKey: `${issue.id}-${mode.key}`,
+      mode: mode.key,
+      modeLabel: mode.label,
+      modeDescription: mode.description,
+    })),
+  );
+}
+
 function IssueCard({ navigate, issues, issuesLoaded }) {
-  const hasIssues = issues.length > 0;
+  const entries = buildIssueEntries(issues);
+  const hasIssues = entries.length > 0;
 
   return (
     <div className="issue-highlight-card">
       <h3 className="card-title">開放中主題</h3>
-      
-      {/* 議題列表容器：包含捲動功能以應對大量議題數據 */}
+
       <div className="issue-list scrollable">
         {hasIssues ? (
-          // 迭代議題資料並渲染單個議題項目
-          issues.map((issue) => (
-            <div 
-              key={issue.id} 
+          entries.map((issue) => (
+            <div
+              key={issue.entryKey}
               className="issue-item"
-              // 點擊後根據議題 ID 導向動態路由對話頁面
-              onClick={() => navigate(`/topic/${issue.id}`)}
+              onClick={() => navigate(`/topic/${issue.id}?mode=${issue.mode}`)}
             >
-              <span>{issue.title}</span>
-              {/* 顯示議題發布日期或更新時間 */}
+              <div className="issue-primary">
+                <div className="issue-title-row">
+                  <span className="issue-title-text">{issue.title}</span>
+                  <span className={`issue-mode-badge mode-${issue.mode}`}>
+                    {issue.modeLabel}
+                  </span>
+                </div>
+                <span className="issue-mode-description">{issue.modeDescription}</span>
+              </div>
               <span className="issue-timestamp">{issue.date}</span>
             </div>
           ))
         ) : (
-          // 資料加載中或無資料時的預留顯示狀態
-          <div className="issue-item" style={{ color: '#999', justifyContent: 'center' }}>
+          <div className="issue-item issue-item-empty" style={{ color: '#999', justifyContent: 'center' }}>
             {issuesLoaded ? '目前沒有可用議題' : '正在整理議題中...'}
           </div>
         )}

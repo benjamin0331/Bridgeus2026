@@ -17,4 +17,12 @@ urlpatterns = [
     path('matching/join/', views.MatchingJoinView.as_view()),
     path('matching/status/', views.MatchingStatusView.as_view()),
     path('matching/cancel/', views.MatchingCancelView.as_view()),
+    path(
+        'matching/rooms/<str:room_id>/messages/',
+        views.MatchingRoomMessagesView.as_view(),
+    ),
+    path(
+        'matching/rooms/<str:room_id>/leave/',
+        views.MatchingRoomLeaveView.as_view(),
+    ),
 ]

@@ -4,11 +4,13 @@ from functools import lru_cache
 from uuid import uuid4
 
 from django.core.cache import cache
+from django.db.models import Q
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.authentication import JWTStatelessUserAuthentication
 
-from .models import AIConversation
+from .models import AIConversation, DialogueMatch
 from .dialogue_topics import (
     TOPIC_CONFIGS,
     get_dialogue_survey,
@@ -20,7 +22,10 @@ from .serializers import (
     DialogueSurveySerializer,
     DialogueTopicSerializer,
     DialogueSessionCreateSerializer,
+    MatchMessageSerializer,
     MatchingJoinSerializer,
+    MatchingRoomMessageCreateSerializer,
+    MatchingRoomMessagesSerializer,
     MatchingStateSerializer,
     MatchingTopicSerializer,
 )
@@ -31,6 +36,7 @@ DEFAULT_DIALOGUE_COLLECTION = os.getenv(
     "DEFAULT_DIALOGUE_COLLECTION",
     "general_knowledge",
 )
+ANONYMOUS_MATCH_USER_NAME = "匿名對話者"
 
 
 def _session_cache_key(session_id: str) -> str:
@@ -85,6 +91,7 @@ def _get_open_answer(
     ).strip()
 
 
+# 問卷分數邏輯
 def _compute_user_stance_score(
     *,
     topic_id: int,
@@ -227,14 +234,19 @@ def _build_topic_config(
     }
 
 
+def _get_other_user(match: DialogueMatch, *, user_id: int):
+    return match.user_b if match.user_a_id == user_id else match.user_a
+
+
 def _build_matching_state_payload(*, topic_id: int, state, user_id: int) -> dict:
     queue_entry = state.queue_entry
     match = state.match
     other_user_id = None
+    other_user_name = None
     if match:
-        other_user_id = (
-            match.user_b_id if match.user_a_id == user_id else match.user_a_id
-        )
+        other_user = _get_other_user(match, user_id=user_id)
+        other_user_id = other_user.id
+        other_user_name = ANONYMOUS_MATCH_USER_NAME
 
     payload = {
         "topic_id": topic_id,
@@ -251,11 +263,42 @@ def _build_matching_state_payload(*, topic_id: int, state, user_id: int) -> dict
         ),
         "matched_at": queue_entry.matched_at if queue_entry else None,
         "cancelled_at": queue_entry.cancelled_at if queue_entry else None,
+        "closed_at": match.closed_at if match else None,
         "match_id": match.id if match else None,
         "room_id": match.room_id if match else None,
         "other_user_id": other_user_id,
+        "other_user_name": other_user_name,
     }
     return MatchingStateSerializer(payload).data
+
+
+def _room_match_state_status(match: DialogueMatch) -> str:
+    if match.status == DialogueMatch.Status.ACTIVE:
+        return "matched"
+    return match.status
+
+
+def _build_room_messages_payload(*, match: DialogueMatch, user_id: int, messages) -> dict:
+    other_user = _get_other_user(match, user_id=user_id)
+    payload = {
+        "room_id": match.room_id,
+        "match_id": match.id,
+        "topic_id": match.topic_id,
+        "status": _room_match_state_status(match),
+        "other_user_id": other_user.id,
+        "other_user_name": ANONYMOUS_MATCH_USER_NAME,
+        "messages": messages,
+    }
+    return MatchingRoomMessagesSerializer(payload).data
+
+
+def _get_room_match_for_user(*, room_id: str, user_id: int) -> DialogueMatch | None:
+    return (
+        DialogueMatch.objects.select_related("user_a", "user_b")
+        .filter(room_id=room_id)
+        .filter(Q(user_a_id=user_id) | Q(user_b_id=user_id))
+        .first()
+    )
 
 
 @lru_cache(maxsize=1)
@@ -276,19 +319,29 @@ def get_dialogue_agent(collection_name: str):
 
 
 class AIConversationListCreate(generics.ListCreateAPIView):
-    queryset = AIConversation.objects.all().order_by("-created_at")
     serializer_class = AIConversationSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return AIConversation.objects.filter(user=self.request.user).order_by(
+            "-created_at"
+        )
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
 
 
 class AIConversationDetail(generics.RetrieveUpdateDestroyAPIView):
-    queryset = AIConversation.objects.all()
     serializer_class = AIConversationSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return AIConversation.objects.filter(user=self.request.user)
 
 
 class DialogueTopicListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    authentication_classes = [JWTStatelessUserAuthentication]
 
     def get(self, request):
         serializer = DialogueTopicSerializer(get_dialogue_topics(), many=True)
@@ -297,6 +350,7 @@ class DialogueTopicListView(APIView):
 
 class DialogueSurveyView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    authentication_classes = [JWTStatelessUserAuthentication]
 
     def get(self, request, topic_id: int):
         survey = get_dialogue_survey(topic_id)
@@ -343,6 +397,9 @@ class DialogueSessionCreateView(APIView):
             _session_cache_key(session_id),
             {
                 "user_id": request.user.id,
+                "session_id": session_id,
+                "topic_id": validated["topic_id"],
+                "topic_title": topic_config["topic"],
                 "collection_name": topic_config["collection_name"],
                 "survey_context": {
                     "survey_answers": validated.get("survey_answers", {}),
@@ -389,9 +446,17 @@ class DialogueSessionReplyView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        user_message = serializer.validated_data["message"].strip()
         session = DialogueSession.from_dict(session_record["session"])
-        session.add_user_message(serializer.validated_data["message"])
+        session.add_user_message(user_message)
         session.dialogue_phase = DialoguePhase.from_turn_count(session.turn_count)
+        saved_turn = AIConversation.objects.create(
+            user=request.user,
+            session_id=session_id,
+            topic_id=session_record.get("topic_id"),
+            user_prompt=user_message,
+            dialogue_phase=session.dialogue_phase.value,
+        )
 
         try:
             reply = get_dialogue_agent(session_record["collection_name"]).respond(
@@ -411,16 +476,19 @@ class DialogueSessionReplyView(APIView):
             )
 
         from apps.matching.services.ai_agent import split_into_chunks
-        chunks = split_into_chunks(reply)
 
+        chunks = split_into_chunks(reply)
         session.add_agent_message(reply)
         session_record["session"] = session.to_dict()
         cache.set(cache_key, session_record, timeout=SESSION_TTL_SECONDS)
+        saved_turn.ai_response = reply
+        saved_turn.dialogue_phase = session.dialogue_phase.value
+        saved_turn.save(update_fields=["ai_response", "dialogue_phase"])
 
         return Response(
             {
-                "chunks": chunks,
                 "reply": reply,
+                "chunks": chunks,
                 "dialogue_phase": session.dialogue_phase.value,
                 "history": session_record["session"]["history"],
             }
@@ -457,6 +525,7 @@ class MatchingJoinView(APIView):
             stance_category=stance_category,
             survey_answers=validated["survey_answers"],
             survey_open_answers=resolved_open_answers,
+            restart_existing_match=validated.get("restart_existing_match", False),
         )
 
         return Response(
@@ -520,6 +589,96 @@ class MatchingCancelView(APIView):
         return Response(
             _build_matching_state_payload(
                 topic_id=topic_id,
+                state=state,
+                user_id=request.user.id,
+            )
+        )
+
+
+class MatchingRoomMessagesView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, room_id: str):
+        from apps.matching.services.matcher import (
+            close_match_if_idle,
+            get_room_messages,
+        )
+
+        match = _get_room_match_for_user(room_id=room_id, user_id=request.user.id)
+        if not match:
+            return Response(
+                {"detail": "找不到這個配對房間。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        match = close_match_if_idle(match=match)
+        messages = get_room_messages(match=match)
+        return Response(
+            _build_room_messages_payload(
+                match=match,
+                user_id=request.user.id,
+                messages=messages,
+            )
+        )
+
+    def post(self, request, room_id: str):
+        from apps.matching.services.matcher import (
+            close_match_if_idle,
+            get_room_messages,
+        )
+        from .models import MatchMessage
+
+        match = _get_room_match_for_user(room_id=room_id, user_id=request.user.id)
+        if not match:
+            return Response(
+                {"detail": "找不到這個配對房間。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        match = close_match_if_idle(match=match)
+        if match.status != DialogueMatch.Status.ACTIVE:
+            return Response(
+                {"detail": "這個配對房間目前無法傳送訊息。"},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        serializer = MatchingRoomMessageCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        MatchMessage.objects.create(
+            match=match,
+            sender=request.user,
+            content=serializer.validated_data["content"].strip(),
+        )
+
+        messages = get_room_messages(match=match)
+        return Response(
+            _build_room_messages_payload(
+                match=match,
+                user_id=request.user.id,
+                messages=messages,
+            ),
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class MatchingRoomLeaveView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, room_id: str):
+        from apps.matching.services.matcher import close_match, get_matching_state
+
+        match = _get_room_match_for_user(room_id=room_id, user_id=request.user.id)
+        if not match:
+            return Response(
+                {"detail": "找不到這個配對房間。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        closed_match = close_match(match=match)
+        state = get_matching_state(user=request.user, topic_id=closed_match.topic_id)
+        return Response(
+            _build_matching_state_payload(
+                topic_id=closed_match.topic_id,
                 state=state,
                 user_id=request.user.id,
             )

@@ -1,134 +1,171 @@
-/* --- 1. 首頁標題區域 --- */
-.greeting-text { 
-  font-size: 42px; 
-  margin: 0; 
-  color: #1a1a1a; 
-  letter-spacing: 1px; 
+.greeting-text {
+  font-size: 42px;
+  margin: 0;
+  color: #1a1a1a;
+  letter-spacing: 1px;
   flex-shrink: 0;
 }
 
-.sub-greeting-text { 
-  font-size: 24px; 
-  margin: 10px 0 20px 0; 
-  font-weight: 500; 
-  color: #333; 
+.sub-greeting-text {
+  font-size: 24px;
+  margin: 10px 0 20px 0;
+  font-weight: 500;
+  color: #333;
   flex-shrink: 0;
 }
 
-/* --- 2. 主要佈局網格 --- */
-.dashboard-grid { 
-  display: flex; 
-  gap: 35px; 
+.dashboard-grid {
+  display: flex;
+  gap: 35px;
   flex: 1;
-  min-height: 0; 
+  min-height: 0;
   margin-bottom: 20px;
-  /* 增加內距以確保元件陰影不被截斷 */
-  padding: 5px 10px 25px 10px; 
+  padding: 5px 10px 25px 10px;
   margin-left: -10px;
 }
 
-/* --- 3. 議題展示大卡片 (左側粉色區塊) --- */
-.issue-highlight-card { 
-  flex: 2.2; 
-  background-color: #efc9ca; 
-  border-radius: 35px; 
-  padding: 35px; 
+.issue-highlight-card {
+  flex: 2.2;
+  background-color: #efc9ca;
+  border-radius: 35px;
+  padding: 35px;
   display: flex;
-  flex-direction: column; 
-  height: 100%; 
+  flex-direction: column;
+  height: 100%;
   min-height: 0;
   box-shadow: 0 12px 45px rgba(0, 0, 0, 0.07);
 }
 
-.card-title { 
-  margin-bottom: 25px; 
-  font-size: 26px; 
-  color: #444; 
+.card-title {
+  margin-bottom: 25px;
+  font-size: 26px;
+  color: #444;
   flex-shrink: 0;
 }
 
-/* 議題清單滾動容器 */
-.issue-list.scrollable { 
-  display: flex; 
-  flex-direction: column; 
-  gap: 20px; 
-  overflow-y: auto; 
+.issue-list.scrollable {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  overflow-y: auto;
   flex: 1;
-  padding: 10px 15px 10px 0; 
+  padding: 10px 15px 10px 0;
   min-height: 0;
 }
 
-/* --- 單個議題項目樣式 (白色長條) --- */
 .issue-item {
-  background: white; 
-  padding: 25px 30px; 
+  background: white;
+  padding: 22px 24px;
   border-radius: 20px;
-  display: flex; 
-  justify-content: space-between; 
+  display: flex;
+  justify-content: space-between;
   align-items: center;
-  font-weight: bold; 
-  font-size: 20px; 
+  gap: 18px;
   cursor: pointer;
   flex-shrink: 0;
-  
-  /* 基礎陰影與過渡動畫設定 */
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
   transition: transform 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
 }
 
-/* 議題項目懸浮效果：向上位移並加深陰影 */
-.issue-item:hover { 
-  transform: translateY(-5px); 
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08); 
+.issue-item:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
   background-color: #fafafa;
 }
 
-.issue-timestamp { 
-  color: #999; 
-  font-weight: normal; 
-  font-size: 16px; 
+.issue-item-empty {
+  min-height: 84px;
 }
 
-/* --- 4. 右側操作按鈕區域 --- */
-.action-button-stack { 
-  display: flex; 
-  flex-direction: column; 
-  gap: 35px; 
+.issue-primary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.issue-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.issue-title-text {
+  font-weight: bold;
+  font-size: 20px;
+  color: #1f1a17;
+  min-width: 0;
+}
+
+.issue-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+
+.issue-mode-badge.mode-ai {
+  background: #dfe8ff;
+  color: #284a8a;
+}
+
+.issue-mode-badge.mode-match {
+  background: #d9f0e4;
+  color: #1f6b4b;
+}
+
+.issue-mode-description {
+  font-size: 13px;
+  color: #7a716a;
+}
+
+.issue-timestamp {
+  color: #999;
+  font-weight: normal;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.action-button-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 35px;
   flex: 1;
 }
 
-/* 操作卡片基礎樣式 (知識庫與聊天室入口) */
 .action-card {
-  border-radius: 35px; 
+  border-radius: 35px;
   padding: 35px;
   font-size: 26px;
-  font-weight: bold; 
+  font-weight: bold;
   color: #444;
   cursor: pointer;
   display: flex;
-  flex: 1;            
+  flex: 1;
   align-items: flex-start;
   justify-content: flex-start;
   box-shadow: 0 12px 45px rgba(0, 0, 0, 0.07);
 }
 
-/* 不同入口的特定背景色 */
 .knowledge-base-entry { background-color: #f6f3cc; }
 .virtual-chat-entry { background-color: #b9e6d0; }
 
-/* 瀏覽器原生滾動條美化 */
-.issue-list.scrollable::-webkit-scrollbar { 
-  width: 8px; 
+.issue-list.scrollable::-webkit-scrollbar {
+  width: 8px;
 }
 
-.issue-list.scrollable::-webkit-scrollbar-thumb { 
-  background: rgba(0,0,0,0.1); 
-  border-radius: 4px; 
+.issue-list.scrollable::-webkit-scrollbar-thumb {
+  background: rgba(0,0,0,0.1);
+  border-radius: 4px;
 }
 
-/* ============================
-   RWD：手機版 (≤ 768px)
-   ============================ */
 @media (max-width: 768px) {
   .greeting-text {
     font-size: 26px;
@@ -139,7 +176,6 @@
     margin: 6px 0 14px 0;
   }
 
-  /* 左右兩欄改為上下堆疊 */
   .dashboard-grid {
     flex-direction: column;
     gap: 16px;
@@ -169,8 +205,18 @@
 
   .issue-item {
     padding: 14px 18px;
-    font-size: 15px;
     border-radius: 14px;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .issue-title-text {
+    font-size: 15px;
+  }
+
+  .issue-title-row {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .issue-timestamp {

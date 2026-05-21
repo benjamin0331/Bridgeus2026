@@ -1,0 +1,191 @@
+"""Analysis helpers for current matching-room data models."""
+
+from __future__ import annotations
+
+import math
+import random
+import re
+
+import numpy as np
+from asgiref.sync import sync_to_async
+
+from chat.services.embedding import cosine_distance, cosine_similarity, get_embedding
+
+TOPIC_RELEVANCE_THRESHOLD = 0.25
+STALEMATE_THRESHOLD = 0.05
+DIRECTION_THRESHOLD = 0.02
+
+_STALEMATE_PROMPTS = [
+    "對方提到了「{keyword}」，你怎麼看？",
+    "你似乎還沒有回應關於「{keyword}」的論點。",
+    "關於「{keyword}」，你有什麼不同的想法嗎？",
+    "試著回應對方關於「{keyword}」的觀點。",
+]
+
+
+def _mean_embedding(embeddings) -> np.ndarray | None:
+    vectors = []
+    for embedding in embeddings:
+        if embedding is None:
+            continue
+        try:
+            vector = np.array(embedding, dtype=np.float32)
+        except (TypeError, ValueError):
+            continue
+        if vector.size and np.all(np.isfinite(vector)):
+            vectors.append(vector)
+    if not vectors:
+        return None
+    return np.mean(vectors, axis=0)
+
+
+def get_topic_anchor_embedding(topic_description: str) -> list[float]:
+    return get_embedding(topic_description)
+
+
+def check_match_topic_relevance(
+    *,
+    match_id: int,
+    user_id: int,
+    topic_anchor_embedding,
+    window: int = 5,
+) -> dict:
+    from api.models import MatchMessage
+
+    messages = list(
+        MatchMessage.objects.filter(
+            match_id=match_id,
+            sender_id=user_id,
+            embedding__isnull=False,
+        ).order_by("-created_at")[:window]
+    )
+    mean_embedding = _mean_embedding(message.embedding for message in messages)
+    if mean_embedding is None or topic_anchor_embedding is None:
+        return {"relevance_score": 1.0, "is_off_topic": False}
+
+    score = float(cosine_similarity(mean_embedding, topic_anchor_embedding))
+    if not math.isfinite(score):
+        return {"relevance_score": 1.0, "is_off_topic": False}
+    return {
+        "relevance_score": round(score, 4),
+        "is_off_topic": score < TOPIC_RELEVANCE_THRESHOLD,
+    }
+
+
+def calculate_match_stance_drift(*, match_id: int, user_id: int) -> dict:
+    from api.models import DialogueMatch, MatchMessage, MatchStanceDrift, UserStanceProfile
+
+    match = DialogueMatch.objects.get(id=match_id)
+    profile = (
+        UserStanceProfile.objects.filter(user_id=user_id, topic_id=match.topic_id)
+        .order_by("-updated_at", "-id")
+        .first()
+    )
+    if not profile or profile.q9_embedding is None:
+        return {"drift_value": 0.0, "direction": "stable"}
+
+    last_record = (
+        MatchStanceDrift.objects.filter(match_id=match_id, user_id=user_id)
+        .order_by("-measured_at")
+        .first()
+    )
+    messages = MatchMessage.objects.filter(
+        match_id=match_id,
+        sender_id=user_id,
+        embedding__isnull=False,
+    )
+    if last_record is not None:
+        messages = messages.filter(created_at__gt=last_record.measured_at)
+
+    mean_embedding = _mean_embedding(
+        message.embedding for message in messages.order_by("created_at")
+    )
+    if mean_embedding is None:
+        return {"drift_value": 0.0, "direction": "stable"}
+
+    drift_value = round(float(cosine_distance(mean_embedding, profile.q9_embedding)), 4)
+    if not math.isfinite(drift_value):
+        return {"drift_value": 0.0, "direction": "stable"}
+
+    if last_record is not None:
+        diff = drift_value - last_record.drift_value
+        if diff > DIRECTION_THRESHOLD:
+            direction = "approaching"
+        elif diff < -DIRECTION_THRESHOLD:
+            direction = "diverging"
+        else:
+            direction = "stable"
+    else:
+        direction = "stable"
+
+    MatchStanceDrift.objects.create(
+        match_id=match_id,
+        user_id=user_id,
+        drift_value=drift_value,
+    )
+    return {"drift_value": drift_value, "direction": direction}
+
+
+def detect_match_stalemate(*, match_id: int, window_size: int = 5) -> dict:
+    from api.models import DialogueMatch, MatchMessage
+
+    match = DialogueMatch.objects.get(id=match_id)
+    messages_a = list(
+        MatchMessage.objects.filter(
+            match_id=match_id,
+            sender_id=match.user_a_id,
+            embedding__isnull=False,
+        ).order_by("-created_at")[:window_size]
+    )
+    messages_b = list(
+        MatchMessage.objects.filter(
+            match_id=match_id,
+            sender_id=match.user_b_id,
+            embedding__isnull=False,
+        ).order_by("-created_at")[:window_size]
+    )
+    pair_count = min(len(messages_a), len(messages_b))
+    if pair_count < 2:
+        return {"is_stalemate": False, "distance_trend": [], "std_dev": 0.0}
+
+    distances = [
+        round(cosine_distance(messages_a[index].embedding, messages_b[index].embedding), 4)
+        for index in range(pair_count)
+    ]
+    std_dev = round(float(np.std(distances)), 4)
+    return {
+        "is_stalemate": std_dev < STALEMATE_THRESHOLD and pair_count >= window_size,
+        "distance_trend": list(reversed(distances)),
+        "std_dev": std_dev,
+    }
+
+
+def extract_match_opponent_keywords(*, match_id: int, user_id: int, top_n: int = 2) -> list[str]:
+    from api.models import DialogueMatch, MatchMessage
+
+    match = DialogueMatch.objects.get(id=match_id)
+    opponent_id = match.user_b_id if match.user_a_id == user_id else match.user_a_id
+    messages = list(
+        MatchMessage.objects.filter(match_id=match_id, sender_id=opponent_id)
+        .order_by("-created_at")[:5]
+    )
+    text = " ".join(message.content for message in messages)
+    candidates = [token for token in re.split(r"[\s，。！？、,.!?；;：:（）()]+", text) if len(token) >= 2]
+    seen = []
+    for token in candidates:
+        if token not in seen:
+            seen.append(token)
+    return seen[:top_n]
+
+
+def build_stalemate_prompt(keywords: list[str]) -> str:
+    if not keywords:
+        return "雙方的討論似乎陷入僵局，試著換個角度思考對方的論點。"
+    return random.choice(_STALEMATE_PROMPTS).format(keyword=keywords[0])
+
+
+aget_topic_anchor_embedding = sync_to_async(get_topic_anchor_embedding, thread_sensitive=False)
+acheck_match_topic_relevance = sync_to_async(check_match_topic_relevance, thread_sensitive=False)
+acalculate_match_stance_drift = sync_to_async(calculate_match_stance_drift, thread_sensitive=False)
+adetect_match_stalemate = sync_to_async(detect_match_stalemate, thread_sensitive=False)
+aextract_match_opponent_keywords = sync_to_async(extract_match_opponent_keywords, thread_sensitive=False)

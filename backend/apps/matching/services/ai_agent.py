@@ -27,6 +27,7 @@ from langchain_chroma import Chroma
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
+from core.chroma_utils import ensure_chroma_dir_writable
 from core.llm_provider import get_embeddings, get_llm
 
 
@@ -34,17 +35,15 @@ from core.llm_provider import get_embeddings, get_llm
 # Response Chunking & Streaming
 # ═══════════════════════════════════════════════════════════
 
-_SENTENCE_END_RE = re.compile(r'(?<=[。！？…])\s*')
+_SENTENCE_END_RE = re.compile(r"(?<=[。！？…])\s*")
 
 
 def split_into_chunks(text: str, max_chars: int = 30) -> list[str]:
-    """
-    按中文句末標點切分回應，每段不超過 max_chars 字。
-    若單句本身超過 max_chars，整句仍作為一個 chunk 傳出，不強制截斷語意。
-    """
-    sentences = [s for s in _SENTENCE_END_RE.split(text) if s.strip()]
+    """Split Chinese replies into display chunks without cutting sentences."""
+    sentences = [sentence for sentence in _SENTENCE_END_RE.split(text) if sentence.strip()]
     chunks: list[str] = []
     current = ""
+
     for sentence in sentences:
         if not current:
             current = sentence
@@ -53,8 +52,10 @@ def split_into_chunks(text: str, max_chars: int = 30) -> list[str]:
         else:
             chunks.append(current)
             current = sentence
+
     if current:
         chunks.append(current)
+
     return chunks
 
 
@@ -65,37 +66,12 @@ async def stream_chunks(
     min_delay: float = 2.0,
     max_delay: float = 3.0,
 ) -> None:
-    """
-    逐一傳送回應分段，模擬打字節奏。
-
-    每段流程：觸發打字動畫 → 等待 2-3 秒 → 送出訊息。
-
-    Args:
-        chunks:       split_into_chunks() 的輸出
-        send_message: async (content: str) -> None，傳送一段訊息
-        send_typing:  async () -> None，觸發前端打字動畫（可為 None）
-        min_delay:    打字動畫持續的最短秒數
-        max_delay:    打字動畫持續的最長秒數
-
-    M4 Django Channels consumer 呼叫範例：
-        response = agent.respond(session)
-        chunks = split_into_chunks(response)
-        await stream_chunks(
-            chunks,
-            send_message=lambda c: self.send(json.dumps({
-                "type": "agent_message", "content": c
-            })),
-            send_typing=lambda: self.send(json.dumps({
-                "type": "agent_typing"
-            })),
-        )
-    """
+    """Send pre-split chunks with a small typing delay between chunks."""
     for chunk in chunks:
         if send_typing:
             await send_typing()
         await asyncio.sleep(random.uniform(min_delay, max_delay))
         await send_message(chunk)
-
 
 # ═══════════════════════════════════════════════════════════
 # Prompt Loading
@@ -205,7 +181,7 @@ class DialogueSession:
     agent_stance: str = ""
     agent_stance_summary: str = ""
     user_stance_label: str = ""
-    user_stance_score: float = 0.5
+    user_stance_score: float = 4.0
     user_initial_argument: str = ""
     dialogue_phase: DialoguePhase = DialoguePhase.ENGAGEMENT
     history: list[DialogueMessage] = field(default_factory=list)
@@ -233,7 +209,7 @@ class DialogueSession:
             agent_stance=data.get("agent_stance", ""),
             agent_stance_summary=data.get("agent_stance_summary", ""),
             user_stance_label=data.get("user_stance_label", ""),
-            user_stance_score=data.get("user_stance_score", 0.5),
+            user_stance_score=data.get("user_stance_score", 4.0),
             user_initial_argument=data.get("user_initial_argument", ""),
             dialogue_phase=DialoguePhase(
                 data.get("dialogue_phase", DialoguePhase.ENGAGEMENT.value)
@@ -308,7 +284,7 @@ class DialogueAgent:
             agent_stance="支持重啟核電",
             agent_stance_summary="核電是兼顧減碳與穩定供電的務實選擇",
             user_stance_label="反對核電",
-            user_stance_score=0.75,
+            user_stance_score=2.0,
         )
 
         # 建立 agent（可指定不同 prompt 檔案）
@@ -329,9 +305,7 @@ class DialogueAgent:
         prompt_file: str = _DEFAULT_PROMPT_FILE,
         max_history_turns: int = 20,
     ):
-        self._chroma_dir = chroma_dir or os.getenv(
-            "CHROMA_PERSIST_DIR", "./chroma_data"
-        )
+        self._chroma_dir = ensure_chroma_dir_writable(chroma_dir)
         self._collection_name = collection_name
         self._retriever_k = retriever_k
         self._temperature = temperature
@@ -349,11 +323,18 @@ class DialogueAgent:
 
         # Initialize retriever
         embeddings = get_embeddings()
-        vectorstore = Chroma(
-            persist_directory=self._chroma_dir,
-            collection_name=self._collection_name,
-            embedding_function=embeddings,
-        )
+        try:
+            vectorstore = Chroma(
+                persist_directory=self._chroma_dir,
+                collection_name=self._collection_name,
+                embedding_function=embeddings,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "無法初始化 Chroma 知識庫。"
+                f" collection={self._collection_name}, path={self._chroma_dir}。"
+                " 請確認該目錄存在且目前執行帳號有讀寫權限。"
+            ) from exc
         self._retriever = vectorstore.as_retriever(
             search_kwargs={"k": self._retriever_k}
         )
@@ -421,17 +402,8 @@ class DialogueAgent:
                 f"DialogueAgent LLM 呼叫失敗（輪次 {session.turn_count}）：{exc}"
             ) from exc
 
-    async def astream_respond(self, session: "DialogueSession"):
-        """
-        Async streaming version of respond() for Django Channels consumers.
-
-        Yields text chunks as they arrive from the Anthropic API.
-        Uses prompt caching on the system prompt to reduce cost and latency.
-
-        Usage (in AsyncWebsocketConsumer):
-            async for chunk in agent.astream_respond(session):
-                await self.send(json.dumps({"type": "agent_stream", "content": chunk}))
-        """
+    async def astream_respond(self, session: DialogueSession):
+        """Stream an AI reply for Django Channels while preserving session semantics."""
         import anthropic
         from asgiref.sync import sync_to_async
 
@@ -442,7 +414,7 @@ class DialogueAgent:
 
         rag_context = await sync_to_async(self._retrieve_context)(latest_msg)
 
-        replacements = {
+        prompt_vars = {
             "topic": session.topic,
             "topic_description": session.topic_description,
             "agent_stance": session.agent_stance,
@@ -457,14 +429,16 @@ class DialogueAgent:
             "turn_count": str(session.turn_count),
             "dialogue_phase": session.dialogue_phase.value,
         }
+
         system_text = self._system_prompt_raw
-        for key, value in replacements.items():
+        for key, value in prompt_vars.items():
             system_text = system_text.replace("{" + key + "}", value)
 
         client = anthropic.AsyncAnthropic()
         async with client.messages.stream(
             model=os.getenv("CLAUDE_CHAT_MODEL", "claude-sonnet-4-6"),
-            max_tokens=1024,
+            max_tokens=int(os.getenv("CLAUDE_CHAT_MAX_TOKENS", "1024")),
+            temperature=self._temperature,
             system=[
                 {
                     "type": "text",
@@ -489,7 +463,7 @@ class DialogueAgent:
             agent_stance="對立立場",
             agent_stance_summary="與使用者持相反觀點",
             user_stance_label="使用者立場",
-            user_stance_score=0.5,
+            user_stance_score=4.0,
         )
         session.add_user_message(user_message)
         return self.respond(session)
@@ -511,11 +485,10 @@ if __name__ == "__main__":
     import os
     from pathlib import Path as _Path
 
-    # 載入 .env
+    # 載入專案根目錄 .env
     try:
         from dotenv import load_dotenv as _load_dotenv
-        for _p in [_Path(__file__).resolve().parents[3] / ".env",
-                   _Path(__file__).resolve().parents[4] / ".env"]:
+        for _p in [_Path(__file__).resolve().parents[3] / ".env"]:
             if _p.exists():
                 _load_dotenv(_p)
                 break
@@ -545,7 +518,7 @@ if __name__ == "__main__":
             "不應因恐懼而放棄"
         ),
         user_stance_label="反對核電",
-        user_stance_score=0.75,
+        user_stance_score=2.0,
     )
 
     print("輸入 'exit' 或按 Ctrl+C 結束對話\n")

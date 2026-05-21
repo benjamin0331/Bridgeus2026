@@ -6,6 +6,14 @@ from django.conf import settings
 from django.db import migrations, models
 
 
+def enable_vector_extension(apps, schema_editor):
+    if schema_editor.connection.vendor != "postgresql":
+        return
+
+    with schema_editor.connection.cursor() as cursor:
+        cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
+
+
 class Migration(migrations.Migration):
 
     initial = True
@@ -15,6 +23,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.RunPython(enable_vector_extension, migrations.RunPython.noop),
         migrations.CreateModel(
             name='Conversation',
             fields=[
