@@ -48,6 +48,52 @@
   font-weight: 800;
 }
 
+.conversation-tree-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.conversation-tree-tab {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 10px;
+  color: #6d5a47;
+  background: rgba(255, 255, 255, 0.58);
+  border: 1px solid rgba(127, 101, 78, 0.22);
+  border-radius: 14px;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.conversation-tree-tab:hover {
+  border-color: rgba(246, 162, 58, 0.72);
+  transform: translateY(-1px);
+}
+
+.conversation-tree-tab.is-active {
+  color: #2b211b;
+  background: rgba(255, 250, 241, 0.9);
+  border-color: rgba(246, 162, 58, 0.95);
+  box-shadow: 0 8px 18px rgba(70, 53, 38, 0.1);
+}
+
+.conversation-tree-tab span {
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.conversation-tree-tab small {
+  flex: 0 0 auto;
+  color: #8d8075;
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .conversation-tree-canvas-shell {
   position: relative;
   flex: 1;
@@ -233,5 +279,9 @@
 
   .conversation-tree-header h2 {
     font-size: 18px;
+  }
+
+  .conversation-tree-tabs {
+    grid-template-columns: 1fr;
   }
 }

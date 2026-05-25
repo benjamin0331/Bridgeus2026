@@ -79,10 +79,8 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
             await self.close(code=4001)
             return
 
-        session_record = await sync_to_async(cache.get)(
-            _session_cache_key(self.session_id)
-        )
-        if not session_record or session_record.get("user_id") != self.user.id:
+        session_record = await self._get_session_record()
+        if not session_record:
             await self.close(code=4004)
             return
 
@@ -114,12 +112,10 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
         session_record = await sync_to_async(cache.get)(cache_key)
 
         if not session_record:
-            await self._send_error("找不到對話 session，請重新建立對話。")
-            return
-
-        if session_record.get("user_id") != self.user.id:
-            await self._send_error("你沒有存取這個對話 session 的權限。")
-            return
+            session_record = await self._get_session_record()
+            if not session_record:
+                await self._send_error("找不到對話 session，請重新建立對話。")
+                return
 
         session = DialogueSession.from_dict(session_record["session"])
         session.add_user_message(user_message)
@@ -160,6 +156,7 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
             session_record,
             timeout=SESSION_TTL_SECONDS,
         )
+        await self._persist_session_record(session_record)
         await self._update_ai_conversation(
             saved_turn=saved_turn,
             ai_response=full_response,
@@ -167,6 +164,29 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
         )
 
         await self.send(json.dumps({"type": "agent_stream_end"}))
+
+    async def _get_session_record(self):
+        from api.views import _restore_dialogue_session_record_for_user
+
+        session_record, _ = await sync_to_async(
+            _restore_dialogue_session_record_for_user
+        )(
+            session_id=self.session_id,
+            user_id=self.user.id,
+        )
+        return session_record
+
+    async def _persist_session_record(self, session_record: dict):
+        from api.views import _persist_dialogue_session_record
+
+        try:
+            await sync_to_async(_persist_dialogue_session_record)(session_record)
+        except Exception:
+            logger.exception(
+                "Failed to persist AI session record session=%s user=%s.",
+                self.session_id,
+                self.user.id,
+            )
 
     async def _create_ai_conversation(
         self,
@@ -237,6 +257,9 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
         if not self.match:
             await self.close(code=4004)
             return
+        if not await self._refresh_current_match_for_activity():
+            await self.close(code=4004)
+            return
 
         self.room_group_name = f"match_room_{self.room_id}"
         self.blocked_count = 0
@@ -245,6 +268,8 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
         await self.accept()
 
     async def disconnect(self, close_code):
+        if hasattr(self, "match") and self.match:
+            await self._mark_current_user_disconnected()
         if hasattr(self, "room_group_name"):
             await self.channel_layer.group_discard(
                 self.room_group_name,
@@ -276,8 +301,8 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
         if not content:
             return
 
-        if not await self._close_current_match_if_idle():
-            await self._send_error("聊天室已超過 10 分鐘沒有對話，已自動結束。")
+        if not await self._refresh_current_match_for_activity():
+            await self._send_error("聊天室已自動結束，無法再傳送訊息。")
             await self.close(code=4000)
             return
 
@@ -632,14 +657,43 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
             .afirst()
         )
 
-    async def _close_current_match_if_idle(self) -> bool:
+    async def _refresh_current_match_for_activity(self) -> bool:
         from api.models import DialogueMatch
-        from apps.matching.services.matcher import close_match_if_idle
+        from apps.matching.services.matcher import (
+            close_match_if_idle,
+            close_match_if_participant_absent,
+            mark_match_participant_connected,
+        )
 
-        self.match = await database_sync_to_async(close_match_if_idle)(
+        self.match = await database_sync_to_async(close_match_if_participant_absent)(
             match=self.match
         )
+        if self.match.status == DialogueMatch.Status.ACTIVE:
+            self.match = await database_sync_to_async(mark_match_participant_connected)(
+                match=self.match,
+                user_id=self.user.id,
+            )
+            self.match = await database_sync_to_async(close_match_if_idle)(
+                match=self.match
+            )
         return self.match.status == DialogueMatch.Status.ACTIVE
+
+    async def _mark_current_user_disconnected(self):
+        from apps.matching.services.matcher import mark_match_participant_disconnected
+
+        try:
+            self.match = await database_sync_to_async(
+                mark_match_participant_disconnected
+            )(
+                match=self.match,
+                user_id=self.user.id,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to mark match participant disconnected room=%s user=%s.",
+                self.room_id,
+                self.user.id,
+            )
 
     async def _create_message(self, content: str, *, emotion_score=None):
         from api.models import MatchMessage

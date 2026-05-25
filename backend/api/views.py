@@ -5,12 +5,18 @@ from uuid import uuid4
 
 from django.core.cache import cache
 from django.db.models import Q
+from django.utils import timezone
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTStatelessUserAuthentication
 
-from .models import AIConversation, DialogueMatch, MatchStanceDrift
+from .models import (
+    AIConversation,
+    DialogueMatch,
+    DialogueSessionRecord,
+    MatchStanceDrift,
+)
 from .dialogue_topics import (
     TOPIC_CONFIGS,
     get_dialogue_survey,
@@ -42,6 +48,123 @@ ANONYMOUS_MATCH_USER_NAME = "匿名對話者"
 
 def _session_cache_key(session_id: str) -> str:
     return f"dialogue_session:{session_id}"
+
+
+def _cache_dialogue_session_record(session_record: dict) -> None:
+    cache.set(
+        _session_cache_key(session_record["session_id"]),
+        session_record,
+        timeout=SESSION_TTL_SECONDS,
+    )
+
+
+def _rebuild_session_state_from_turns(record: DialogueSessionRecord) -> dict:
+    session_state = (record.session_state or {}).copy()
+    turns = AIConversation.objects.filter(
+        user=record.user,
+        session_id=record.session_id,
+    ).order_by("created_at", "id")
+    history = []
+    latest_phase = session_state.get("dialogue_phase") or "engagement"
+
+    for turn in turns:
+        if turn.user_prompt:
+            history.append({"role": "user", "content": turn.user_prompt})
+        if turn.ai_response:
+            history.append({"role": "agent", "content": turn.ai_response})
+        if turn.dialogue_phase:
+            latest_phase = turn.dialogue_phase
+
+    if history:
+        session_state["history"] = history
+    session_state["dialogue_phase"] = latest_phase
+    return session_state
+
+
+def _dialogue_session_cache_payload_from_record(
+    record: DialogueSessionRecord,
+) -> dict:
+    session_state = _rebuild_session_state_from_turns(record)
+    payload = {
+        "user_id": record.user_id,
+        "session_id": record.session_id,
+        "topic_id": record.topic_id,
+        "topic_title": record.topic_title,
+        "collection_name": record.collection_name,
+        "survey_context": record.survey_context or {},
+        "session": session_state,
+    }
+    if record.semantic_tree_state:
+        payload["semantic_tree"] = record.semantic_tree_state
+    return payload
+
+
+def _persist_dialogue_session_record(session_record: dict) -> DialogueSessionRecord:
+    current_time = timezone.now()
+    record, _ = DialogueSessionRecord.objects.update_or_create(
+        session_id=session_record["session_id"],
+        defaults={
+            "user_id": session_record["user_id"],
+            "topic_id": session_record["topic_id"],
+            "topic_title": session_record.get("topic_title")
+            or session_record.get("session", {}).get("topic")
+            or f"議題 {session_record['topic_id']}",
+            "collection_name": session_record.get("collection_name")
+            or DEFAULT_DIALOGUE_COLLECTION,
+            "survey_context": session_record.get("survey_context") or {},
+            "session_state": session_record.get("session") or {},
+            "semantic_tree_state": session_record.get("semantic_tree") or {},
+            "status": DialogueSessionRecord.Status.ACTIVE,
+            "last_activity_at": current_time,
+        },
+    )
+    return record
+
+
+def _restore_dialogue_session_record_for_user(
+    *,
+    session_id: str,
+    user_id: int,
+) -> tuple[dict | None, str]:
+    cached = cache.get(_session_cache_key(session_id))
+    if cached and cached.get("user_id") == user_id:
+        return cached, "cache"
+
+    record = (
+        DialogueSessionRecord.objects.filter(
+            user_id=user_id,
+            session_id=session_id,
+            status=DialogueSessionRecord.Status.ACTIVE,
+        )
+        .order_by("-last_activity_at", "-id")
+        .first()
+    )
+    if record is None:
+        return None, ""
+
+    session_record = _dialogue_session_cache_payload_from_record(record)
+    _cache_dialogue_session_record(session_record)
+    return session_record, "database"
+
+
+def _dialogue_session_response_payload(
+    *,
+    session_record: dict,
+    restored_from: str,
+) -> dict:
+    session_state = session_record.get("session") or {}
+    history = session_state.get("history") or []
+    return {
+        "session_id": session_record["session_id"],
+        "topic_id": session_record.get("topic_id"),
+        "topic_title": session_record.get("topic_title")
+        or session_state.get("topic"),
+        "dialogue_phase": session_state.get("dialogue_phase", "engagement"),
+        "history": history,
+        "messages": history,
+        "restored_from": restored_from,
+        "status": DialogueSessionRecord.Status.ACTIVE,
+    }
 
 
 def _get_survey_scoring_config(topic_id: int) -> dict:
@@ -239,6 +362,29 @@ def _get_other_user(match: DialogueMatch, *, user_id: int):
     return match.user_b if match.user_a_id == user_id else match.user_a
 
 
+def _match_presence_fields(match: DialogueMatch | None, *, user_id: int) -> dict:
+    if not match:
+        return {
+            "presence": None,
+            "absence_deadline": None,
+        }
+
+    from apps.matching.services.matcher import get_match_presence_payload
+
+    presence = get_match_presence_payload(match=match, current_user_id=user_id)
+    absence_deadline = presence.get("absence_deadline")
+    presence = {
+        **presence,
+        "absence_deadline": (
+            absence_deadline.isoformat() if absence_deadline else None
+        ),
+    }
+    return {
+        "presence": presence,
+        "absence_deadline": absence_deadline,
+    }
+
+
 def _build_matching_state_payload(*, topic_id: int, state, user_id: int) -> dict:
     queue_entry = state.queue_entry
     match = state.match
@@ -269,6 +415,7 @@ def _build_matching_state_payload(*, topic_id: int, state, user_id: int) -> dict
         "room_id": match.room_id if match else None,
         "other_user_id": other_user_id,
         "other_user_name": other_user_name,
+        **_match_presence_fields(match, user_id=user_id),
     }
     return MatchingStateSerializer(payload).data
 
@@ -304,6 +451,7 @@ def _build_room_messages_payload(*, match: DialogueMatch, user_id: int, messages
         "other_user_id": other_user.id,
         "other_user_name": ANONYMOUS_MATCH_USER_NAME,
         "stance_drift": _get_latest_room_stance_drift(match=match, user_id=user_id),
+        **_match_presence_fields(match, user_id=user_id),
         "messages": messages,
     }
     return MatchingRoomMessagesSerializer(payload).data
@@ -318,8 +466,44 @@ def _get_room_match_for_user(*, room_id: str, user_id: int) -> DialogueMatch | N
     )
 
 
+def _touch_room_match_for_user_activity(
+    *,
+    match: DialogueMatch,
+    user_id: int,
+) -> DialogueMatch:
+    from apps.matching.services.matcher import (
+        close_match_if_idle,
+        close_match_if_participant_absent,
+        mark_match_participant_connected,
+    )
+
+    match = close_match_if_participant_absent(match=match)
+    if match.status == DialogueMatch.Status.ACTIVE:
+        match = mark_match_participant_connected(match=match, user_id=user_id)
+        match = close_match_if_idle(match=match)
+    return match
+
+
 def _semantic_tree_root_name(match: DialogueMatch) -> str:
-    return TOPIC_CONFIGS.get(match.topic_id, {}).get("title") or "核電"
+    return _semantic_tree_root_name_for_topic_id(match.topic_id)
+
+
+def _semantic_tree_root_name_for_topic_id(topic_id: int | None) -> str:
+    return TOPIC_CONFIGS.get(topic_id, {}).get("title") or "核電"
+
+
+def _get_dialogue_session_record_for_user(*, session_id: str, user_id: int):
+    session_record, _ = _restore_dialogue_session_record_for_user(
+        session_id=session_id,
+        user_id=user_id,
+    )
+    if not session_record:
+        return None, Response(
+            {"detail": "找不到對話 session，請重新建立對話。"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    return session_record, None
 
 
 @lru_cache(maxsize=1)
@@ -414,25 +598,23 @@ class DialogueSessionCreateView(APIView):
         )
 
         session_id = uuid4().hex
-        cache.set(
-            _session_cache_key(session_id),
-            {
-                "user_id": request.user.id,
-                "session_id": session_id,
-                "topic_id": validated["topic_id"],
-                "topic_title": topic_config["topic"],
-                "collection_name": topic_config["collection_name"],
-                "survey_context": {
-                    "survey_answers": validated.get("survey_answers", {}),
-                    "survey_open_answers": topic_config["survey_open_answers"],
-                    "semantic_vector_interface": topic_config[
-                        "semantic_vector_interface"
-                    ],
-                },
-                "session": session.to_dict(),
+        session_record = {
+            "user_id": request.user.id,
+            "session_id": session_id,
+            "topic_id": validated["topic_id"],
+            "topic_title": topic_config["topic"],
+            "collection_name": topic_config["collection_name"],
+            "survey_context": {
+                "survey_answers": validated.get("survey_answers", {}),
+                "survey_open_answers": topic_config["survey_open_answers"],
+                "semantic_vector_interface": topic_config[
+                    "semantic_vector_interface"
+                ],
             },
-            timeout=SESSION_TTL_SECONDS,
-        )
+            "session": session.to_dict(),
+        }
+        _cache_dialogue_session_record(session_record)
+        _persist_dialogue_session_record(session_record)
 
         return Response(
             {
@@ -444,6 +626,72 @@ class DialogueSessionCreateView(APIView):
         )
 
 
+class DialogueSessionLatestView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        topic_id = request.query_params.get("topic_id")
+        try:
+            topic_id = int(topic_id)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "topic_id 必須是有效的議題編號。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        record = (
+            DialogueSessionRecord.objects.filter(
+                user=request.user,
+                topic_id=topic_id,
+                status=DialogueSessionRecord.Status.ACTIVE,
+            )
+            .order_by("-last_activity_at", "-id")
+            .first()
+        )
+        if record is None:
+            return Response(
+                {"detail": "找不到可恢復的對話 session。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        session_record, restored_from = _restore_dialogue_session_record_for_user(
+            session_id=record.session_id,
+            user_id=request.user.id,
+        )
+        if session_record is None:
+            return Response(
+                {"detail": "找不到可恢復的對話 session。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(
+            _dialogue_session_response_payload(
+                session_record=session_record,
+                restored_from=restored_from,
+            )
+        )
+
+
+class DialogueSessionDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, session_id: str):
+        session_record, restored_from = _restore_dialogue_session_record_for_user(
+            session_id=session_id,
+            user_id=request.user.id,
+        )
+        if session_record is None:
+            return Response(
+                {"detail": "找不到對話 session，請重新建立對話。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(
+            _dialogue_session_response_payload(
+                session_record=session_record,
+                restored_from=restored_from,
+            )
+        )
+
+
 class DialogueSessionReplyView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -452,19 +700,15 @@ class DialogueSessionReplyView(APIView):
         serializer = DialogueReplySerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        cache_key = _session_cache_key(session_id)
-        session_record = cache.get(cache_key)
+        session_record, _ = _restore_dialogue_session_record_for_user(
+            session_id=session_id,
+            user_id=request.user.id,
+        )
 
         if not session_record:
             return Response(
                 {"detail": "找不到對話 session，請重新建立對話。"},
                 status=status.HTTP_404_NOT_FOUND,
-            )
-
-        if session_record["user_id"] != request.user.id:
-            return Response(
-                {"detail": "你沒有存取這個對話 session 的權限。"},
-                status=status.HTTP_403_FORBIDDEN,
             )
 
         user_message = serializer.validated_data["message"].strip()
@@ -501,7 +745,8 @@ class DialogueSessionReplyView(APIView):
         chunks = split_into_chunks(reply)
         session.add_agent_message(reply)
         session_record["session"] = session.to_dict()
-        cache.set(cache_key, session_record, timeout=SESSION_TTL_SECONDS)
+        _cache_dialogue_session_record(session_record)
+        _persist_dialogue_session_record(session_record)
         saved_turn.ai_response = reply
         saved_turn.dialogue_phase = session.dialogue_phase.value
         saved_turn.save(update_fields=["ai_response", "dialogue_phase"])
@@ -514,6 +759,69 @@ class DialogueSessionReplyView(APIView):
                 "history": session_record["session"]["history"],
             }
         )
+
+
+class DialogueSessionSemanticTreeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, session_id: str):
+        from apps.matching.services.semantic_tree import semantic_tree_session_payload
+
+        session_record, error_response = _get_dialogue_session_record_for_user(
+            session_id=session_id,
+            user_id=request.user.id,
+        )
+        if error_response is not None:
+            return error_response
+
+        payload = semantic_tree_session_payload(
+            session_record=session_record,
+            session_id=session_id,
+            root_name=_semantic_tree_root_name_for_topic_id(
+                session_record.get("topic_id"),
+            ),
+        )
+        return Response(MatchingRoomSemanticTreeSerializer(payload).data)
+
+
+class DialogueSessionSemanticTreeAnalyzeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, session_id: str):
+        from apps.matching.services.semantic_tree import (
+            SemanticTreeError,
+            analyze_pending_ai_conversations,
+        )
+
+        session_record, error_response = _get_dialogue_session_record_for_user(
+            session_id=session_id,
+            user_id=request.user.id,
+        )
+        if error_response is not None:
+            return error_response
+
+        try:
+            payload = analyze_pending_ai_conversations(
+                session_record=session_record,
+                session_id=session_id,
+                user_id=request.user.id,
+                root_name=_semantic_tree_root_name_for_topic_id(
+                    session_record.get("topic_id"),
+                ),
+            )
+        except SemanticTreeError as exc:
+            return Response(
+                {
+                    "error": exc.code,
+                    "message": str(exc),
+                    "analysisStatus": exc.code,
+                },
+                status=exc.status_code,
+            )
+
+        _cache_dialogue_session_record(session_record)
+        _persist_dialogue_session_record(session_record)
+        return Response(MatchingRoomSemanticTreeSerializer(payload).data)
 
 
 class MatchingJoinView(APIView):
@@ -620,10 +928,7 @@ class MatchingRoomMessagesView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, room_id: str):
-        from apps.matching.services.matcher import (
-            close_match_if_idle,
-            get_room_messages,
-        )
+        from apps.matching.services.matcher import get_room_messages
 
         match = _get_room_match_for_user(room_id=room_id, user_id=request.user.id)
         if not match:
@@ -632,7 +937,10 @@ class MatchingRoomMessagesView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        match = close_match_if_idle(match=match)
+        match = _touch_room_match_for_user_activity(
+            match=match,
+            user_id=request.user.id,
+        )
         messages = get_room_messages(match=match)
         return Response(
             _build_room_messages_payload(
@@ -643,10 +951,7 @@ class MatchingRoomMessagesView(APIView):
         )
 
     def post(self, request, room_id: str):
-        from apps.matching.services.matcher import (
-            close_match_if_idle,
-            get_room_messages,
-        )
+        from apps.matching.services.matcher import get_room_messages
         from .models import MatchMessage
 
         match = _get_room_match_for_user(room_id=room_id, user_id=request.user.id)
@@ -655,7 +960,10 @@ class MatchingRoomMessagesView(APIView):
                 {"detail": "找不到這個配對房間。"},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        match = close_match_if_idle(match=match)
+        match = _touch_room_match_for_user_activity(
+            match=match,
+            user_id=request.user.id,
+        )
         if match.status != DialogueMatch.Status.ACTIVE:
             return Response(
                 {"detail": "這個配對房間目前無法傳送訊息。"},
@@ -686,7 +994,6 @@ class MatchingRoomSemanticTreeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, room_id: str):
-        from apps.matching.services.matcher import close_match_if_idle
         from apps.matching.services.semantic_tree import semantic_tree_payload
 
         match = _get_room_match_for_user(room_id=room_id, user_id=request.user.id)
@@ -696,10 +1003,14 @@ class MatchingRoomSemanticTreeView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        match = close_match_if_idle(match=match)
+        match = _touch_room_match_for_user_activity(
+            match=match,
+            user_id=request.user.id,
+        )
         payload = semantic_tree_payload(
             match=match,
             root_name=_semantic_tree_root_name(match),
+            current_user_id=request.user.id,
         )
         return Response(MatchingRoomSemanticTreeSerializer(payload).data)
 
@@ -708,7 +1019,6 @@ class MatchingRoomSemanticTreeAnalyzeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, room_id: str):
-        from apps.matching.services.matcher import close_match_if_idle
         from apps.matching.services.semantic_tree import (
             SemanticTreeError,
             analyze_pending_room_messages,
@@ -721,7 +1031,10 @@ class MatchingRoomSemanticTreeAnalyzeView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        match = close_match_if_idle(match=match)
+        match = _touch_room_match_for_user_activity(
+            match=match,
+            user_id=request.user.id,
+        )
         if match.status != DialogueMatch.Status.ACTIVE:
             return Response(
                 {"detail": "這個配對房間目前無法分析語意樹。"},
@@ -732,6 +1045,7 @@ class MatchingRoomSemanticTreeAnalyzeView(APIView):
             payload = analyze_pending_room_messages(
                 match=match,
                 root_name=_semantic_tree_root_name(match),
+                current_user_id=request.user.id,
             )
         except SemanticTreeError as exc:
             return Response(

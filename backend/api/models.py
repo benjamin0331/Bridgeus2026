@@ -29,6 +29,45 @@ class AIConversation(models.Model):
         return f"session={self.session_id or '-'} prompt={self.user_prompt[:20]}..."
 
 
+class DialogueSessionRecord(models.Model):
+    class Status(models.TextChoices):
+        ACTIVE = "active", "進行中"
+        CLOSED = "closed", "已結束"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="dialogue_session_records",
+    )
+    session_id = models.CharField(max_length=64, unique=True, db_index=True)
+    topic_id = models.PositiveIntegerField(db_index=True)
+    topic_title = models.CharField(max_length=255)
+    collection_name = models.CharField(max_length=255)
+    survey_context = models.JSONField(default=dict, blank=True)
+    session_state = models.JSONField(default=dict, blank=True)
+    semantic_tree_state = models.JSONField(default=dict, blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+        db_index=True,
+    )
+    last_activity_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(
+                fields=["user", "topic_id", "status", "last_activity_at"],
+                name="dialogue_session_restore_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return f"session={self.session_id} topic={self.topic_id} status={self.status}"
+
+
 class UserStanceProfile(models.Model):
     class StanceCategory(models.TextChoices):
         SUPPORT = "support", "支持"

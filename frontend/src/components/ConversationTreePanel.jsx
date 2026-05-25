@@ -130,6 +130,30 @@ function normalizeTreeData(treeData, topicTitle) {
   };
 }
 
+function normalizeTreeEntries(trees, treeData, topicTitle) {
+  const sourceTrees = Array.isArray(trees) && trees.length
+    ? trees
+    : [
+      {
+        ownerKey: 'default',
+        label: '我的脈絡',
+        isCurrentUser: true,
+        treeData,
+      },
+    ];
+
+  return sourceTrees.map((entry, index) => {
+    const ownerKey = cleanText(entry.ownerKey) || `tree-${index}`;
+    return {
+      ownerKey,
+      label: cleanText(entry.label) || (entry.isCurrentUser ? '我的脈絡' : '對方脈絡'),
+      isCurrentUser: Boolean(entry.isCurrentUser),
+      treeData: normalizeTreeData(entry.treeData, topicTitle),
+      analyzedSourceIds: Array.isArray(entry.analyzedSourceIds) ? entry.analyzedSourceIds : [],
+    };
+  });
+}
+
 function shouldRenderNode(node) {
   if (node.type !== 'anchor') {
     return true;
@@ -435,9 +459,11 @@ function appendNodeShape(nodeSelection) {
   });
 }
 
-function statusText({ isActive, isLoading, isAnalyzing, analysisStatus, analysisMessage, messageCount }) {
+function statusText({ isActive, isLoading, isAnalyzing, analysisStatus, analysisMessage, messageCount, mode }) {
   if (!isActive) {
-    return { title: '真人配對後啟用', detail: '進入配對房間後，這裡會顯示 Gemini 建出的核電語意對話樹。' };
+    return mode === 'ai'
+      ? { title: 'AI 對話開始後啟用', detail: '送出第一則訊息後，這裡會顯示你的個人想法脈絡樹。' }
+      : { title: '真人配對後啟用', detail: '進入配對房間後，這裡會分開顯示雙方各自的想法脈絡。' };
   }
 
   if (isLoading) {
@@ -453,7 +479,7 @@ function statusText({ isActive, isLoading, isAnalyzing, analysisStatus, analysis
   }
 
   if (!messageCount) {
-    return { title: '等待對話訊息', detail: '六個核電分類已就緒；送出訊息後會由 Gemini 歸納節點。' };
+    return { title: '等待對話訊息', detail: '送出訊息後會由 Gemini 歸納到個人脈絡樹；未使用的大分類會先隱藏。' };
   }
 
   if (analysisStatus && analysisStatus !== 'ready') {
@@ -466,7 +492,9 @@ function statusText({ isActive, isLoading, isAnalyzing, analysisStatus, analysis
 function ConversationTreePanel({
   topicTitle,
   treeData,
+  trees = [],
   messageCount = 0,
+  mode = 'matching',
   isActive,
   isLoading = false,
   isAnalyzing = false,
@@ -475,7 +503,20 @@ function ConversationTreePanel({
 }) {
   const shellRef = useRef(null);
   const svgRef = useRef(null);
-  const normalizedTreeData = useMemo(() => normalizeTreeData(treeData, topicTitle), [topicTitle, treeData]);
+  const zoomTransformRef = useRef(null);
+  const treeEntries = useMemo(
+    () => normalizeTreeEntries(trees, treeData, topicTitle),
+    [topicTitle, treeData, trees],
+  );
+  const preferredOwnerKey = treeEntries.find((entry) => entry.isCurrentUser)?.ownerKey || treeEntries[0]?.ownerKey || 'default';
+  const [requestedOwnerKey, setRequestedOwnerKey] = useState('');
+  const activeOwnerKey = treeEntries.some((entry) => entry.ownerKey === requestedOwnerKey)
+    ? requestedOwnerKey
+    : preferredOwnerKey;
+  const activeTreeEntry = treeEntries.find((entry) => entry.ownerKey === activeOwnerKey)
+    || treeEntries.find((entry) => entry.ownerKey === preferredOwnerKey)
+    || treeEntries[0];
+  const normalizedTreeData = activeTreeEntry?.treeData || normalizeTreeData(treeData, topicTitle);
   const visibleTreeData = useMemo(() => deriveVisibleTreeData(normalizedTreeData), [normalizedTreeData]);
   const [selectedNodeId, setSelectedNodeId] = useState(normalizedTreeData.id);
   const selectedNode = findNodeById(visibleTreeData, selectedNodeId) || visibleTreeData;
@@ -489,6 +530,7 @@ function ConversationTreePanel({
     analysisStatus,
     analysisMessage,
     messageCount,
+    mode,
   });
 
   useEffect(() => {
@@ -576,6 +618,7 @@ function ConversationTreePanel({
       const zoomBehavior = zoom()
         .scaleExtent([0.58, 2.5])
         .on('zoom', (event) => {
+          zoomTransformRef.current = event.transform;
           zoomLayer.attr('transform', event.transform);
         });
 
@@ -583,6 +626,10 @@ function ConversationTreePanel({
         .call(zoomBehavior)
         .on('dblclick.zoom', null)
         .on('click', () => setSelectedNodeId(visibleTreeData.id));
+
+      if (zoomTransformRef.current) {
+        svg.call(zoomBehavior.transform, zoomTransformRef.current);
+      }
     };
 
     renderChart();
@@ -614,10 +661,31 @@ function ConversationTreePanel({
       <div className="conversation-tree-header">
         <div>
           <span className="conversation-tree-eyebrow">Gemini Semantic Tree</span>
-          <h2>核電語意樹</h2>
+          <h2>{mode === 'ai' ? '我的想法脈絡' : '雙方想法脈絡'}</h2>
         </div>
         <span className="conversation-tree-count">{messageCount} 則訊息</span>
       </div>
+
+      {treeEntries.length > 1 && (
+        <div className="conversation-tree-tabs" role="tablist" aria-label="語意脈絡切換">
+          {treeEntries.map((entry) => (
+            <button
+              key={entry.ownerKey}
+              type="button"
+              role="tab"
+              className={`conversation-tree-tab${entry.ownerKey === activeTreeEntry.ownerKey ? ' is-active' : ''}`}
+              aria-selected={entry.ownerKey === activeTreeEntry.ownerKey}
+              onClick={() => {
+                setRequestedOwnerKey(entry.ownerKey);
+                setSelectedNodeId(entry.treeData.id);
+              }}
+            >
+              <span>{entry.label}</span>
+              <small>{entry.analyzedSourceIds.length} 已分析</small>
+            </button>
+          ))}
+        </div>
+      )}
 
       <div ref={shellRef} className="conversation-tree-canvas-shell">
         <svg ref={svgRef} className="conversation-tree-canvas" role="img" aria-label="核電語意對話樹" />

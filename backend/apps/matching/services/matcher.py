@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from django.db import transaction
 from django.db.models import Q
+from django.utils.dateparse import parse_datetime
 from django.utils import timezone
 
 from api.models import DialogueMatch, MatchMessage, MatchQueueEntry, UserStanceProfile
@@ -24,6 +25,8 @@ MATCHING_QUEUE_HEARTBEAT_TIMEOUT_SECONDS = int(
 )
 AI_RECOMMENDED_STATUS = "ai_recommended"
 DEFAULT_MATCH_ROOM_IDLE_TIMEOUT_SECONDS = 600
+DEFAULT_MATCH_ROOM_ABSENCE_TIMEOUT_SECONDS = 180
+MATCH_PRESENCE_STATS_KEY = "presence"
 
 
 class MatchingError(Exception):
@@ -91,6 +94,242 @@ def match_room_idle_timeout_seconds() -> int:
     return max(0, timeout)
 
 
+def match_room_absence_timeout_seconds() -> int:
+    try:
+        timeout = int(
+            os.getenv(
+                "MATCH_ROOM_ABSENCE_TIMEOUT_SECONDS",
+                str(DEFAULT_MATCH_ROOM_ABSENCE_TIMEOUT_SECONDS),
+            )
+        )
+    except (TypeError, ValueError):
+        return DEFAULT_MATCH_ROOM_ABSENCE_TIMEOUT_SECONDS
+    return max(0, timeout)
+
+
+def _stats_dict(match: DialogueMatch) -> dict:
+    return match.stats if isinstance(match.stats, dict) else {}
+
+
+def _isoformat(value) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _parse_presence_datetime(value):
+    if not value:
+        return None
+    if hasattr(value, "utcoffset"):
+        parsed = value
+    elif isinstance(value, str):
+        parsed = parse_datetime(value)
+    else:
+        return None
+
+    if parsed is None:
+        return None
+    if timezone.is_naive(parsed):
+        return timezone.make_aware(parsed, timezone.get_current_timezone())
+    return parsed
+
+
+def _presence_state(match: DialogueMatch) -> dict:
+    stats = _stats_dict(match)
+    existing = stats.get(MATCH_PRESENCE_STATS_KEY)
+    if not isinstance(existing, dict):
+        existing = {}
+
+    existing_participants = existing.get("participants")
+    if not isinstance(existing_participants, dict):
+        existing_participants = {}
+
+    participants = {}
+    for user_id in (match.user_a_id, match.user_b_id):
+        participant = existing_participants.get(str(user_id))
+        if not isinstance(participant, dict):
+            participant = {}
+        participants[str(user_id)] = {
+            "connected": bool(participant.get("connected", False)),
+            "last_seen": participant.get("last_seen"),
+            "disconnected_at": participant.get("disconnected_at"),
+        }
+
+    return {
+        "version": 1,
+        "participants": participants,
+    }
+
+
+def _save_presence_state(match: DialogueMatch, presence: dict) -> None:
+    stats = _stats_dict(match).copy()
+    stats[MATCH_PRESENCE_STATS_KEY] = presence
+    match.stats = stats
+    match.save(update_fields=["stats"])
+
+
+def _participant_key_for_user(match: DialogueMatch, user_id: int) -> str | None:
+    if user_id in {match.user_a_id, match.user_b_id}:
+        return str(user_id)
+    return None
+
+
+def _absence_deadline_for_participant(participant: dict, *, timeout_seconds: int):
+    if participant.get("connected") or timeout_seconds <= 0:
+        return None
+
+    disconnected_at = _parse_presence_datetime(participant.get("disconnected_at"))
+    if disconnected_at is None:
+        return None
+    return disconnected_at + timedelta(seconds=timeout_seconds)
+
+
+def _absence_deadline(match: DialogueMatch, *, now=None):
+    if match.status != DialogueMatch.Status.ACTIVE:
+        return None
+
+    timeout_seconds = match_room_absence_timeout_seconds()
+    if timeout_seconds <= 0:
+        return None
+
+    deadlines = [
+        deadline
+        for participant in _presence_state(match)["participants"].values()
+        for deadline in [
+            _absence_deadline_for_participant(
+                participant,
+                timeout_seconds=timeout_seconds,
+            )
+        ]
+        if deadline is not None
+    ]
+    if not deadlines:
+        return None
+    return min(deadlines)
+
+
+def _close_locked_match(locked_match: DialogueMatch, *, now=None) -> DialogueMatch:
+    if locked_match.status != DialogueMatch.Status.ACTIVE:
+        return locked_match
+
+    current_time = now or timezone.now()
+    locked_match.status = DialogueMatch.Status.CLOSED
+    locked_match.closed_at = current_time
+    locked_match.save(update_fields=["status", "closed_at"])
+    return locked_match
+
+
+def close_match_if_participant_absent(
+    *,
+    match: DialogueMatch,
+    now=None,
+) -> DialogueMatch:
+    if match.status != DialogueMatch.Status.ACTIVE:
+        return match
+
+    timeout_seconds = match_room_absence_timeout_seconds()
+    if timeout_seconds <= 0:
+        return match
+
+    current_time = now or timezone.now()
+    with transaction.atomic():
+        locked_match = DialogueMatch.objects.select_for_update().get(pk=match.pk)
+        if locked_match.status != DialogueMatch.Status.ACTIVE:
+            return locked_match
+
+        deadline = _absence_deadline(locked_match, now=current_time)
+        if deadline is None or current_time < deadline:
+            return locked_match
+
+        return _close_locked_match(locked_match, now=current_time)
+
+
+def mark_match_participant_connected(
+    *,
+    match: DialogueMatch,
+    user_id: int,
+    now=None,
+) -> DialogueMatch:
+    current_time = now or timezone.now()
+    with transaction.atomic():
+        locked_match = DialogueMatch.objects.select_for_update().get(pk=match.pk)
+        if locked_match.status != DialogueMatch.Status.ACTIVE:
+            return locked_match
+
+        participant_key = _participant_key_for_user(locked_match, user_id)
+        if participant_key is None:
+            return locked_match
+
+        presence = _presence_state(locked_match)
+        participant = presence["participants"][participant_key]
+        participant["connected"] = True
+        participant["last_seen"] = _isoformat(current_time)
+        participant["disconnected_at"] = None
+        _save_presence_state(locked_match, presence)
+        return locked_match
+
+
+def mark_match_participant_disconnected(
+    *,
+    match: DialogueMatch,
+    user_id: int,
+    now=None,
+) -> DialogueMatch:
+    current_time = now or timezone.now()
+    with transaction.atomic():
+        locked_match = DialogueMatch.objects.select_for_update().get(pk=match.pk)
+        if locked_match.status != DialogueMatch.Status.ACTIVE:
+            return locked_match
+
+        participant_key = _participant_key_for_user(locked_match, user_id)
+        if participant_key is None:
+            return locked_match
+
+        presence = _presence_state(locked_match)
+        participant = presence["participants"][participant_key]
+        was_already_disconnected = (
+            not participant.get("connected")
+            and participant.get("disconnected_at")
+        )
+        participant["connected"] = False
+        participant["last_seen"] = participant.get("last_seen") or _isoformat(current_time)
+        if not was_already_disconnected:
+            participant["disconnected_at"] = _isoformat(current_time)
+        _save_presence_state(locked_match, presence)
+        return locked_match
+
+
+def get_match_presence_payload(
+    *,
+    match: DialogueMatch,
+    current_user_id: int,
+    now=None,
+) -> dict:
+    presence = _presence_state(match)
+    current_key = str(current_user_id)
+    other_user_id = match.user_b_id if match.user_a_id == current_user_id else match.user_a_id
+    other_key = str(other_user_id)
+    deadline = _absence_deadline(match, now=now)
+
+    def participant_payload(user_id: int) -> dict:
+        participant = presence["participants"].get(str(user_id), {})
+        return {
+            "user_id": user_id,
+            "connected": bool(participant.get("connected", False)),
+            "last_seen": participant.get("last_seen"),
+            "disconnected_at": participant.get("disconnected_at"),
+        }
+
+    return {
+        "current_user": participant_payload(current_user_id),
+        "other_user": participant_payload(other_user_id),
+        "absence_timeout_seconds": match_room_absence_timeout_seconds(),
+        "absence_deadline": deadline,
+        "participants": {
+            current_key: participant_payload(current_user_id),
+            other_key: participant_payload(other_user_id),
+        },
+    }
+
+
 def get_match_last_activity_at(*, match: DialogueMatch):
     latest_message_at = (
         MatchMessage.objects.filter(match=match)
@@ -114,7 +353,7 @@ def close_match_if_idle(*, match: DialogueMatch, now=None) -> DialogueMatch:
     if current_time - last_activity_at < timedelta(seconds=timeout_seconds):
         return match
 
-    return close_match(match=match)
+    return close_match(match=match, now=current_time)
 
 
 def expire_stale_matching_entries(*, topic_id: int, now=None) -> int:
@@ -199,9 +438,19 @@ def enqueue_for_matching(
     with transaction.atomic():
         active_match = _get_active_match(user_id=user.id, topic_id=topic_id)
         if active_match:
+            active_match = close_match_if_participant_absent(
+                match=active_match,
+                now=now,
+            )
             active_match = close_match_if_idle(match=active_match, now=now)
             if active_match.status != DialogueMatch.Status.ACTIVE:
                 active_match = None
+            else:
+                active_match = mark_match_participant_connected(
+                    match=active_match,
+                    user_id=user.id,
+                    now=now,
+                )
 
         if active_match and restart_existing_match:
             active_match.status = DialogueMatch.Status.CLOSED
@@ -341,6 +590,12 @@ def enqueue_for_matching(
 def get_matching_state(*, user, topic_id: int) -> MatchingState:
     active_match = _get_active_match(user_id=user.id, topic_id=topic_id)
     if active_match:
+        active_match = close_match_if_participant_absent(match=active_match)
+    if active_match and active_match.status == DialogueMatch.Status.ACTIVE:
+        active_match = mark_match_participant_connected(
+            match=active_match,
+            user_id=user.id,
+        )
         active_match = close_match_if_idle(match=active_match)
 
     if active_match and active_match.status == DialogueMatch.Status.ACTIVE:
@@ -447,13 +702,7 @@ def get_room_messages(*, match: DialogueMatch):
     )
 
 
-def close_match(*, match: DialogueMatch) -> DialogueMatch:
+def close_match(*, match: DialogueMatch, now=None) -> DialogueMatch:
     with transaction.atomic():
         locked_match = DialogueMatch.objects.select_for_update().get(pk=match.pk)
-        if locked_match.status != DialogueMatch.Status.ACTIVE:
-            return locked_match
-
-        locked_match.status = DialogueMatch.Status.CLOSED
-        locked_match.closed_at = timezone.now()
-        locked_match.save(update_fields=["status", "closed_at"])
-        return locked_match
+        return _close_locked_match(locked_match, now=now)

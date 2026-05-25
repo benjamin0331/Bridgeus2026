@@ -185,6 +185,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const [isSending, setIsSending] = useState(false);
   const [isAgentStreaming, setIsAgentStreaming] = useState(false);
   const [chatError, setChatError] = useState('');
+  const [isSessionRestoring, setIsSessionRestoring] = useState(false);
+  const [pendingRestoredSession, setPendingRestoredSession] = useState(null);
 
   const [matchingState, setMatchingState] = useState(null);
   const [isMatchingStateLoading, setIsMatchingStateLoading] = useState(isMatchingMode);
@@ -192,7 +194,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const [matchingError, setMatchingError] = useState('');
   const [matchMessages, setMatchMessages] = useState([]);
   const [matchStanceDrift, setMatchStanceDrift] = useState(null);
-  const [matchSemanticTree, setMatchSemanticTree] = useState(null);
+  const [semanticTreePayload, setSemanticTreePayload] = useState(null);
   const [semanticTreeStatus, setSemanticTreeStatus] = useState('ready');
   const [semanticTreeMessage, setSemanticTreeMessage] = useState('');
   const [isSemanticTreeLoading, setIsSemanticTreeLoading] = useState(false);
@@ -236,6 +238,29 @@ function TopicChat({ user, issues, issuesLoaded }) {
     () => matchMessages.map((message) => message.id).filter(Boolean).join(','),
     [matchMessages],
   );
+  const aiUserMessageIdsSignature = useMemo(
+    () => messages
+      .filter((message) => message.type === 'user')
+      .map((message) => message.id)
+      .filter(Boolean)
+      .join(','),
+    [messages],
+  );
+  const pendingRestoredUserMessageCount = useMemo(() => {
+    const history = pendingRestoredSession?.history;
+    if (!Array.isArray(history)) {
+      return 0;
+    }
+    return history.filter((message) => message.role === 'user').length;
+  }, [pendingRestoredSession]);
+  const pendingRestoredPreview = useMemo(() => {
+    const history = pendingRestoredSession?.history;
+    if (!Array.isArray(history) || history.length === 0) {
+      return '';
+    }
+    const latestMessage = history[history.length - 1];
+    return latestMessage?.content || '';
+  }, [pendingRestoredSession]);
 
   const scrollMessagesToBottom = useCallback((behavior = 'smooth') => {
     window.requestAnimationFrame(() => {
@@ -249,8 +274,60 @@ function TopicChat({ user, issues, issuesLoaded }) {
     });
   }, []);
 
+  const resetAiSemanticTreeState = useCallback(() => {
+    setSemanticTreePayload(null);
+    setSemanticTreeStatus('ready');
+    setSemanticTreeMessage('');
+    setIsSemanticTreeLoading(false);
+    setIsSemanticTreeAnalyzing(false);
+    semanticTreeAnalyzeSignatureRef.current = '';
+  }, []);
+
+  const handleContinueRestoredSession = useCallback(() => {
+    if (!pendingRestoredSession?.session_id) {
+      return;
+    }
+
+    wsRef.current?.close();
+    wsRef.current = null;
+    wsSessionIdRef.current = null;
+    currentAgentMsgIdRef.current = null;
+    resetAiSemanticTreeState();
+    setSessionId(pendingRestoredSession.session_id);
+    setMessages(mapHistoryToMessages(pendingRestoredSession.history || [], displayUserName));
+    setPendingRestoredSession(null);
+    setShowSurvey(false);
+    setChatError('');
+    window.requestAnimationFrame(() => {
+      scrollMessagesToBottom('auto');
+    });
+  }, [
+    displayUserName,
+    pendingRestoredSession,
+    resetAiSemanticTreeState,
+    scrollMessagesToBottom,
+  ]);
+
+  const handleStartNewAiDialogue = useCallback(() => {
+    wsRef.current?.close();
+    wsRef.current = null;
+    wsSessionIdRef.current = null;
+    currentAgentMsgIdRef.current = null;
+    resetAiSemanticTreeState();
+    setPendingRestoredSession(null);
+    setSessionId(null);
+    setMessages([]);
+    setSurveyAnswers({});
+    setSurveyOpenAnswers({});
+    setInputValue('');
+    setChatError('');
+    setIsSending(false);
+    setIsAgentStreaming(false);
+    setShowSurvey(true);
+  }, [resetAiSemanticTreeState]);
+
   const applySemanticTreePayload = useCallback((payload) => {
-    setMatchSemanticTree(payload?.treeData || null);
+    setSemanticTreePayload(payload || null);
     setSemanticTreeStatus(payload?.analysisStatus || 'ready');
     setSemanticTreeMessage(payload?.message || '');
   }, []);
@@ -445,6 +522,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setIsSending(false);
     setChatError('');
     setIsAgentStreaming(false);
+    setIsSessionRestoring(false);
+    setPendingRestoredSession(null);
     currentAgentMsgIdRef.current = null;
     wsRef.current?.close();
     wsRef.current = null;
@@ -456,7 +535,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setMatchingError('');
     setMatchMessages([]);
     setMatchStanceDrift(null);
-    setMatchSemanticTree(null);
+    setSemanticTreePayload(null);
     setSemanticTreeStatus('ready');
     setSemanticTreeMessage('');
     setIsSemanticTreeLoading(false);
@@ -558,6 +637,63 @@ function TopicChat({ user, issues, issuesLoaded }) {
       cancelled = true;
     };
   }, [currentIssue, id, isMatchingMode]);
+
+  useEffect(() => {
+    if (isMatchingMode || !currentIssue) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const restoreLatestSession = async () => {
+      setIsSessionRestoring(true);
+      setChatError('');
+      setShowSurvey(false);
+
+      try {
+        const response = await api.get(`/api/dialogue/sessions/latest/?topic_id=${id}`);
+        if (cancelled) {
+          return;
+        }
+
+        const restoredHistory = Array.isArray(response.data?.history)
+          ? response.data.history
+          : [];
+        setPendingRestoredSession({
+          ...response.data,
+          history: restoredHistory,
+        });
+        setSessionId(null);
+        setMessages([]);
+        setShowSurvey(false);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+
+        setSessionId(null);
+        setMessages([]);
+        setPendingRestoredSession(null);
+        setShowSurvey(true);
+        if (error?.response?.status && error.response.status !== 404) {
+          setChatError(
+            error?.response?.data?.detail ||
+              '目前無法恢復最近一次 AI 對話，請稍後再試。',
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setIsSessionRestoring(false);
+        }
+      }
+    };
+
+    void restoreLatestSession();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentIssue, displayUserName, id, isMatchingMode]);
 
   useEffect(() => {
     if (!isMatchChatReady || !matchingState?.room_id) {
@@ -701,8 +837,12 @@ function TopicChat({ user, issues, issuesLoaded }) {
   }, [isMatchChatReady, isMatchingMode, matchingState?.room_id]);
 
   useEffect(() => {
+    if (!isMatchingMode) {
+      return undefined;
+    }
+
     if (!isMatchChatReady || !matchingState?.room_id) {
-      setMatchSemanticTree(null);
+      setSemanticTreePayload(null);
       setSemanticTreeStatus('ready');
       setSemanticTreeMessage('');
       setIsSemanticTreeLoading(false);
@@ -746,9 +886,64 @@ function TopicChat({ user, issues, issuesLoaded }) {
     return () => {
       cancelled = true;
     };
-  }, [applySemanticTreePayload, isMatchChatReady, matchingState?.room_id]);
+  }, [applySemanticTreePayload, isMatchChatReady, isMatchingMode, matchingState?.room_id]);
 
   useEffect(() => {
+    if (isMatchingMode) {
+      return undefined;
+    }
+
+    if (!sessionId) {
+      setSemanticTreePayload(null);
+      setSemanticTreeStatus('ready');
+      setSemanticTreeMessage('');
+      setIsSemanticTreeLoading(false);
+      setIsSemanticTreeAnalyzing(false);
+      semanticTreeAnalyzeSignatureRef.current = '';
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const fetchSemanticTree = async () => {
+      setIsSemanticTreeLoading(true);
+      setSemanticTreeStatus('ready');
+      setSemanticTreeMessage('');
+
+      try {
+        const response = await api.get(`/api/dialogue/sessions/${sessionId}/semantic-tree/`);
+        if (!cancelled) {
+          applySemanticTreePayload(response.data);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setSemanticTreeStatus(error?.response?.data?.analysisStatus || 'load_failed');
+          setSemanticTreeMessage(
+            error?.response?.data?.message ||
+              error?.response?.data?.detail ||
+              '目前無法載入語意樹。',
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setIsSemanticTreeLoading(false);
+        }
+      }
+    };
+
+    semanticTreeAnalyzeSignatureRef.current = '';
+    void fetchSemanticTree();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [applySemanticTreePayload, isMatchingMode, sessionId]);
+
+  useEffect(() => {
+    if (!isMatchingMode) {
+      return undefined;
+    }
+
     if (!isMatchChatReady || !matchingState?.room_id || !matchMessageIdsSignature) {
       return undefined;
     }
@@ -790,7 +985,50 @@ function TopicChat({ user, issues, issuesLoaded }) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [applySemanticTreePayload, isMatchChatReady, matchMessageIdsSignature, matchingState?.room_id]);
+  }, [applySemanticTreePayload, isMatchChatReady, isMatchingMode, matchMessageIdsSignature, matchingState?.room_id]);
+
+  useEffect(() => {
+    if (isMatchingMode || isSending || !sessionId || !aiUserMessageIdsSignature) {
+      return undefined;
+    }
+
+    const signature = `ai:${sessionId}:${aiUserMessageIdsSignature}`;
+    if (semanticTreeAnalyzeSignatureRef.current === signature) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setIsSemanticTreeAnalyzing(true);
+
+      try {
+        const response = await api.post(`/api/dialogue/sessions/${sessionId}/semantic-tree/analyze/`);
+        if (!cancelled) {
+          applySemanticTreePayload(response.data);
+          semanticTreeAnalyzeSignatureRef.current = signature;
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setSemanticTreeStatus(error?.response?.data?.analysisStatus || 'analyze_failed');
+          setSemanticTreeMessage(
+            error?.response?.data?.message ||
+              error?.response?.data?.detail ||
+              'Gemini 語意分析暫時失敗，對話仍可使用。',
+          );
+          semanticTreeAnalyzeSignatureRef.current = signature;
+        }
+      } finally {
+        if (!cancelled) {
+          setIsSemanticTreeAnalyzing(false);
+        }
+      }
+    }, 700);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [aiUserMessageIdsSignature, applySemanticTreePayload, isMatchingMode, isSending, sessionId]);
 
   const sendCancelMatchingQueueRequest = useCallback((topicId, { keepalive = false } = {}) => {
     if (!topicId) {
@@ -817,29 +1055,6 @@ function TopicChat({ user, issues, issuesLoaded }) {
     });
   }, []);
 
-  const sendLeaveMatchRoomRequest = useCallback((roomId, { keepalive = false } = {}) => {
-    if (!roomId) {
-      return;
-    }
-
-    const token = localStorage.getItem('access');
-    if (!token) {
-      return;
-    }
-
-    const url = `${window.location.origin}${import.meta.env.VITE_API_BASE_URL || ''}/api/matching/rooms/${roomId}/leave/`;
-
-    fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-      keepalive,
-    }).catch(() => {
-      // Best-effort cleanup when user leaves the page.
-    });
-  }, []);
-
   const triggerAutoCancelMatchingQueue = useCallback(({ keepalive = false } = {}) => {
     if (!isMatchingMode) {
       return;
@@ -854,20 +1069,6 @@ function TopicChat({ user, issues, issuesLoaded }) {
     sendCancelMatchingQueueRequest(topicId, { keepalive });
   }, [isMatchingMode, sendCancelMatchingQueueRequest]);
 
-  const triggerAutoLeaveMatchRoom = useCallback(({ keepalive = false } = {}) => {
-    if (!isMatchingMode) {
-      return;
-    }
-
-    const { roomId, status } = activeMatchRef.current;
-    if (!roomId || status !== 'matched' || leaveRequestSentRef.current) {
-      return;
-    }
-
-    leaveRequestSentRef.current = true;
-    sendLeaveMatchRoomRequest(roomId, { keepalive });
-  }, [isMatchingMode, sendLeaveMatchRoomRequest]);
-
   useEffect(() => {
     if (!isMatchingMode) {
       return undefined;
@@ -875,7 +1076,6 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
     const handlePageHide = () => {
       triggerAutoCancelMatchingQueue({ keepalive: true });
-      triggerAutoLeaveMatchRoom({ keepalive: true });
     };
 
     window.addEventListener('pagehide', handlePageHide);
@@ -883,9 +1083,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
     return () => {
       window.removeEventListener('pagehide', handlePageHide);
       triggerAutoCancelMatchingQueue({ keepalive: true });
-      triggerAutoLeaveMatchRoom({ keepalive: true });
     };
-  }, [isMatchingMode, triggerAutoCancelMatchingQueue, triggerAutoLeaveMatchRoom]);
+  }, [isMatchingMode, triggerAutoCancelMatchingQueue]);
 
   const connectDialogueWebSocket = (activeSessionId) => {
     const token = localStorage.getItem('access');
@@ -1065,6 +1264,16 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setSurveyOpenAnswers(openAnswers);
 
     if (!isMatchingMode) {
+      wsRef.current?.close();
+      wsRef.current = null;
+      wsSessionIdRef.current = null;
+      currentAgentMsgIdRef.current = null;
+      setSessionId(null);
+      setMessages([]);
+      setSemanticTreePayload(null);
+      setSemanticTreeStatus('ready');
+      setSemanticTreeMessage('');
+      semanticTreeAnalyzeSignatureRef.current = '';
       setShowSurvey(false);
       setChatError('');
       return;
@@ -1085,8 +1294,6 @@ function TopicChat({ user, issues, issuesLoaded }) {
       if (!isChatPageMountedRef.current) {
         if (response.data?.status === 'matching') {
           sendCancelMatchingQueueRequest(topicId, { keepalive: true });
-        } else if (response.data?.status === 'matched' && response.data?.room_id) {
-          sendLeaveMatchRoomRequest(response.data.room_id, { keepalive: true });
         }
         return;
       }
@@ -1422,7 +1629,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
             <span className="matching-status-badge">配對中</span>
             <h2 className="matching-status-title">正在為你尋找可配對的對話對象</h2>
             <p className="matching-status-copy">
-              你現在已經在等待佇列中。即使離開頁面，系統仍會繼續等待匹配；只有按下取消匹配才會停止。
+              你現在已經在等待佇列中。離開頁面會自動取消等待；配對成功後短暫重整頁面可以回到同一個聊天室。
             </p>
             <div className="matching-status-meta">
               <div className="matching-status-row">
@@ -1470,6 +1677,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
               <span>房間：{matchingState?.room_id || '—'}</span>
               <span>匹配完成：{formatTimestamp(matchingState?.matched_at)}</span>
             </div>
+            {matchPresenceNotice && (
+              <p className="match-room-banner-presence">{matchPresenceNotice}</p>
+            )}
             <div className="matching-status-actions">
               <button
                 className="matching-status-btn secondary"
@@ -1692,19 +1902,29 @@ function TopicChat({ user, issues, issuesLoaded }) {
               : matchingState?.status === 'cancelled'
                 ? '已取消匹配，可重新填寫問卷'
                 : '請先加入匹配佇列'
-    : showSurvey
+    : isSessionRestoring
+      ? '正在恢復最近一次 AI 對話...'
+      : pendingRestoredSession
+        ? '請先選擇繼續上次對話或開始新對話'
+      : showSurvey
       ? '請先完成立場檢測問卷'
       : '輸入觀點...';
 
   const isInputDisabled = isMatchingMode
     ? !isMatchChatReady || isMatchSending
-    : showSurvey || isSending;
+    : showSurvey || isSending || isSessionRestoring || Boolean(pendingRestoredSession);
 
   const activeChatError = isMatchingMode && showSurvey
     ? ''
     : isMatchingMode
       ? matchChatError
       : chatError;
+  const otherPresence = matchingState?.presence?.other_user;
+  const matchPresenceNotice = isMatchChatReady && otherPresence?.connected === false
+    ? `匿名對話者暫時離線，若持續到 ${formatTimestamp(
+        matchingState?.absence_deadline || matchingState?.presence?.absence_deadline,
+      )} 對話會自動結束。`
+    : '';
   const driftUpdatedAt = matchStanceDrift?.measured_at
     ? `更新：${formatTimestamp(matchStanceDrift.measured_at)}`
     : '傳送訊息後由系統計算';
@@ -1714,6 +1934,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const matchMessageCount = isMatchingMode && isMatchChatReady
     ? matchMessages.length
     : 0;
+  const aiUserMessageCount = !isMatchingMode
+    ? messages.filter((message) => message.type === 'user').length
+    : 0;
+  const semanticTreeMessageCount = isMatchingMode ? matchMessageCount : aiUserMessageCount;
+  const isSemanticTreeActive = isMatchingMode ? isMatchChatReady : Boolean(sessionId);
 
   return (
     <div className="chat-page-container">
@@ -1767,6 +1992,34 @@ function TopicChat({ user, issues, issuesLoaded }) {
             </>
           ) : (
             <>
+              {pendingRestoredSession && (
+                <div className="ai-session-choice-card">
+                  <span className="ai-session-choice-kicker">找到上次 AI 對話</span>
+                  <h2 className="ai-session-choice-title">要繼續上次，還是開始新對話？</h2>
+                  <p className="ai-session-choice-copy">
+                    上次對話有 {pendingRestoredUserMessageCount} 則你的發言。
+                    {pendingRestoredPreview
+                      ? ` 最近內容：「${pendingRestoredPreview.slice(0, 80)}${pendingRestoredPreview.length > 80 ? '...' : ''}」`
+                      : ' 你也可以直接重新填寫問卷建立新的對話脈絡。'}
+                  </p>
+                  <div className="ai-session-choice-actions">
+                    <button
+                      className="ai-session-choice-btn primary"
+                      type="button"
+                      onClick={handleContinueRestoredSession}
+                    >
+                      繼續上次對話
+                    </button>
+                    <button
+                      className="ai-session-choice-btn secondary"
+                      type="button"
+                      onClick={handleStartNewAiDialogue}
+                    >
+                      開始新對話
+                    </button>
+                  </div>
+                </div>
+              )}
               {messages.map((msg) => (
                 <div key={msg.id} className={`message-row ${msg.type === 'user' ? 'user-message' : ''}`}>
                   <div className="message-user-info">
@@ -1847,9 +2100,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
         <div className="right-major-feature-box">
           <ConversationTreePanel
             topicTitle={currentIssue?.title || '未知的領域'}
-            treeData={matchSemanticTree}
-            messageCount={matchMessages.length}
-            isActive={isMatchingMode && isMatchChatReady}
+            treeData={semanticTreePayload?.treeData || null}
+            trees={semanticTreePayload?.trees || []}
+            messageCount={semanticTreeMessageCount}
+            mode={isMatchingMode ? 'matching' : 'ai'}
+            isActive={isSemanticTreeActive}
             isLoading={isSemanticTreeLoading}
             isAnalyzing={isSemanticTreeAnalyzing}
             analysisStatus={semanticTreeStatus}

@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -31,6 +32,42 @@ def fake_gemini_items_response():
                 "stance": "反對",
                 "confidence": 0.86,
                 "rationale": "訊息明確提到核廢料與長期處理負擔。",
+            }
+        ],
+        "invalidItems": [],
+        "model": "gemini-2.5-flash",
+    }
+
+
+def fake_energy_items_response():
+    return {
+        "items": [
+            {
+                "claimText": "核能可以補足再生能源不穩定",
+                "anchorId": "anchor_energy",
+                "path": ["供電穩定"],
+                "pointName": "補足間歇供電",
+                "stance": "支持",
+                "confidence": 0.88,
+                "rationale": "訊息明確提到核能能支援供電穩定。",
+            }
+        ],
+        "invalidItems": [],
+        "model": "gemini-2.5-flash",
+    }
+
+
+def fake_economy_items_response():
+    return {
+        "items": [
+            {
+                "claimText": "核電除役與維護成本會增加負擔",
+                "anchorId": "anchor_economy",
+                "path": ["長期成本"],
+                "pointName": "除役維護成本",
+                "stance": "反對",
+                "confidence": 0.84,
+                "rationale": "訊息明確提到成本負擔。",
             }
         ],
         "invalidItems": [],
@@ -124,7 +161,8 @@ class SemanticTreeServiceTests(SimpleTestCase):
             ["核能安全", "經濟成本", "能源問題", "環境保護", "民主治理", "核廢處理"],
         )
         self.assertEqual(request["generationConfig"]["responseMimeType"], "application/json")
-        self.assertIn("你是「核能議題對話語意樹」的語意整理 agent", request_text)
+        self.assertIn("你是「核能議題個人想法脈絡樹」的語意整理 agent", request_text)
+        self.assertIn("只整理單一說話者自己的想法脈絡", request_text)
         self.assertIn("每次輸入最多輸出 3 個 items", request_text)
         self.assertIn("confidence 低於 0.55", request_text)
         self.assertIn("anchor_waste", request_text)
@@ -364,6 +402,136 @@ class DialogueSessionApiTests(APITestCase):
         self.assertEqual(saved_turn.user_prompt, "核能真的比其他方案更穩定嗎？")
         self.assertEqual(saved_turn.ai_response, "AI reply to: 核能真的比其他方案更穩定嗎？")
         mocked_get_agent.assert_called_once_with("nuclear_energy_all")
+
+    @patch("api.views.get_dialogue_agent", return_value=FakeDialogueAgent())
+    def test_latest_session_restores_history_after_cache_loss(self, mocked_get_agent):
+        create_response = self.client.post(
+            "/api/dialogue/sessions/",
+            {
+                "topic_id": 102,
+                "topic_title": "核能發電在減碳中的角色",
+                "survey_answers": {"1": 4, "2": 5, "3": 4},
+                "user_initial_argument": "我想先釐清核電與減碳的關係。",
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        session_id = create_response.data["session_id"]
+
+        reply_response = self.client.post(
+            f"/api/dialogue/sessions/{session_id}/reply/",
+            {"message": "核電能不能補足再生能源不穩定？"},
+            format="json",
+        )
+        self.assertEqual(reply_response.status_code, status.HTTP_200_OK)
+
+        cache.clear()
+        restore_response = self.client.get("/api/dialogue/sessions/latest/?topic_id=102")
+
+        self.assertEqual(restore_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(restore_response.data["session_id"], session_id)
+        self.assertEqual(restore_response.data["restored_from"], "database")
+        self.assertEqual(len(restore_response.data["history"]), 2)
+        self.assertEqual(
+            restore_response.data["history"][0]["content"],
+            "核電能不能補足再生能源不穩定？",
+        )
+        self.assertEqual(
+            restore_response.data["history"][1]["content"],
+            "AI reply to: 核電能不能補足再生能源不穩定？",
+        )
+        self.assertIsNotNone(cache.get(f"dialogue_session:{session_id}"))
+        mocked_get_agent.assert_called_once_with("nuclear_energy_all")
+
+    def test_session_restore_forbids_other_users(self):
+        create_response = self.client.post(
+            "/api/dialogue/sessions/",
+            {
+                "topic_id": 102,
+                "topic_title": "核能發電在減碳中的角色",
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        session_id = create_response.data["session_id"]
+        other_user = get_user_model().objects.create_user(
+            username="mallory",
+            password="secret123",
+        )
+        other_client = APIClient()
+        other_client.force_authenticate(user=other_user)
+
+        response = other_client.get(f"/api/dialogue/sessions/{session_id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_ai_semantic_tree_analyzes_only_user_prompts(self):
+        create_response = self.client.post(
+            "/api/dialogue/sessions/",
+            {
+                "topic_id": 102,
+                "topic_title": "核能發電在減碳中的角色",
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        session_id = create_response.data["session_id"]
+        AIConversation.objects.create(
+            user=self.user,
+            session_id=session_id,
+            topic_id=102,
+            user_prompt="核能可以補足再生能源不穩定",
+            ai_response="AI 回覆提到核廢料處理會帶來長期負擔",
+        )
+
+        analyzed_texts = []
+
+        def fake_analyze(*, text, tree, anchors=None, api_key=None, model=None):
+            analyzed_texts.append(text)
+            return fake_energy_items_response()
+
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}), patch(
+            "apps.matching.services.semantic_tree.analyze_with_gemini",
+            side_effect=fake_analyze,
+        ):
+            response = self.client.post(
+                f"/api/dialogue/sessions/{session_id}/semantic-tree/analyze/"
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(analyzed_texts, ["核能可以補足再生能源不穩定"])
+        self.assertEqual(len(response.data["trees"]), 1)
+        self.assertEqual(response.data["trees"][0]["label"], "我的脈絡")
+        self.assertEqual(response.data["trees"][0]["analyzedSourceIds"], [str(AIConversation.objects.get().id)])
+        self.assertNotIn("核廢料", str(response.data["treeData"]))
+
+    def test_ai_semantic_tree_requires_gemini_key_without_blocking_session(self):
+        create_response = self.client.post(
+            "/api/dialogue/sessions/",
+            {
+                "topic_id": 102,
+                "topic_title": "核能發電在減碳中的角色",
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        session_id = create_response.data["session_id"]
+        AIConversation.objects.create(
+            user=self.user,
+            session_id=session_id,
+            topic_id=102,
+            user_prompt="核能可以補足再生能源不穩定",
+            ai_response="AI 回覆",
+        )
+
+        with patch.dict("os.environ", {"GEMINI_API_KEY": ""}):
+            response = self.client.post(
+                f"/api/dialogue/sessions/{session_id}/semantic-tree/analyze/"
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(response.data["error"], "missing_gemini_api_key")
+        self.assertIsNotNone(cache.get(f"dialogue_session:{session_id}"))
 
 
 class MatchingApiTests(APITestCase):
@@ -847,6 +1015,10 @@ class MatchingApiTests(APITestCase):
             ["核能安全", "經濟成本", "能源問題", "環境保護", "民主治理", "核廢處理"],
         )
         self.assertEqual(response.data["analysisHistory"], [])
+        self.assertEqual(len(response.data["trees"]), 2)
+        self.assertEqual(response.data["trees"][0]["label"], "我的脈絡")
+        self.assertEqual(response.data["trees"][1]["label"], "匿名對話者")
+        self.assertTrue(response.data["trees"][0]["isCurrentUser"])
 
     def test_semantic_tree_analyze_requires_gemini_key_without_blocking_messages(self):
         match, room_id = self._create_match()
@@ -894,6 +1066,46 @@ class MatchingApiTests(APITestCase):
         waste_anchor = next(child for child in tree_data["children"] if child["id"] == "anchor_waste")
         self.assertEqual(waste_anchor["children"][0]["name"], "長期處置")
         self.assertEqual(waste_anchor["children"][0]["children"][0]["name"], "核廢長期負擔")
+
+    def test_semantic_tree_analyze_keeps_two_participants_in_separate_trees(self):
+        match, room_id = self._create_match()
+        own_message = MatchMessage.objects.create(
+            match=match,
+            sender=self.user,
+            content="核廢料處理會帶來長期負擔",
+        )
+        partner_message = MatchMessage.objects.create(
+            match=match,
+            sender=self.other_user,
+            content="核電除役與維護成本會增加負擔",
+        )
+        tree_snapshots = []
+
+        def fake_analyze(*, text, tree, anchors=None, api_key=None, model=None):
+            tree_snapshots.append(deepcopy(tree))
+            if "核廢料" in text:
+                return fake_gemini_items_response()
+            return fake_economy_items_response()
+
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}), patch(
+            "apps.matching.services.semantic_tree.analyze_with_gemini",
+            side_effect=fake_analyze,
+        ) as mocked_analyze:
+            response = self.client.post(f"/api/matching/rooms/{room_id}/semantic-tree/analyze/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(mocked_analyze.call_count, 2)
+        self.assertNotIn("核廢長期負擔", str(tree_snapshots[1]))
+        self.assertEqual(response.data["analyzedCount"], 2)
+        self.assertEqual(len(response.data["trees"]), 2)
+        own_tree = next(tree for tree in response.data["trees"] if tree["isCurrentUser"])
+        partner_tree = next(tree for tree in response.data["trees"] if not tree["isCurrentUser"])
+        self.assertIn(str(own_message.id), own_tree["analyzedSourceIds"])
+        self.assertNotIn(str(partner_message.id), own_tree["analyzedSourceIds"])
+        self.assertIn(str(partner_message.id), partner_tree["analyzedSourceIds"])
+        self.assertIn("核廢長期負擔", str(own_tree["treeData"]))
+        self.assertNotIn("除役維護成本", str(own_tree["treeData"]))
+        self.assertIn("除役維護成本", str(partner_tree["treeData"]))
 
     def test_room_messages_reject_blank_content(self):
         _, room_id = self._create_match()
@@ -1018,6 +1230,47 @@ class MatchingApiTests(APITestCase):
             format="json",
         )
         self.assertEqual(send_response.status_code, status.HTTP_409_CONFLICT)
+
+    @patch.dict("os.environ", {"MATCH_ROOM_ABSENCE_TIMEOUT_SECONDS": "180"})
+    def test_disconnected_participant_can_rejoin_before_absence_timeout(self):
+        match, _ = self._create_match()
+        from apps.matching.services.matcher import mark_match_participant_disconnected
+
+        disconnected_at = timezone.now() - timedelta(seconds=179)
+        mark_match_participant_disconnected(
+            match=match,
+            user_id=self.user.id,
+            now=disconnected_at,
+        )
+
+        response = self.client.get("/api/matching/status/?topic_id=102")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], MatchQueueEntry.Status.MATCHED)
+        self.assertIsNone(response.data["absence_deadline"])
+        self.assertTrue(response.data["presence"]["current_user"]["connected"])
+        match.refresh_from_db()
+        self.assertEqual(match.status, DialogueMatch.Status.ACTIVE)
+
+    @patch.dict("os.environ", {"MATCH_ROOM_ABSENCE_TIMEOUT_SECONDS": "180"})
+    def test_disconnected_participant_closes_room_after_absence_timeout(self):
+        match, _ = self._create_match()
+        from apps.matching.services.matcher import mark_match_participant_disconnected
+
+        disconnected_at = timezone.now() - timedelta(seconds=181)
+        mark_match_participant_disconnected(
+            match=match,
+            user_id=self.user.id,
+            now=disconnected_at,
+        )
+
+        response = self.client.get("/api/matching/status/?topic_id=102")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], "closed")
+        match.refresh_from_db()
+        self.assertEqual(match.status, DialogueMatch.Status.CLOSED)
+        self.assertIsNotNone(match.closed_at)
 
     def test_session_uses_backend_title_for_known_topic(self):
         create_response = self.client.post(

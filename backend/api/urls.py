@@ -11,8 +11,24 @@ urlpatterns = [
     ),
     path('dialogue/sessions/', views.DialogueSessionCreateView.as_view()),
     path(
+        'dialogue/sessions/latest/',
+        views.DialogueSessionLatestView.as_view(),
+    ),
+    path(
+        'dialogue/sessions/<str:session_id>/',
+        views.DialogueSessionDetailView.as_view(),
+    ),
+    path(
         'dialogue/sessions/<str:session_id>/reply/',
         views.DialogueSessionReplyView.as_view(),
+    ),
+    path(
+        'dialogue/sessions/<str:session_id>/semantic-tree/',
+        views.DialogueSessionSemanticTreeView.as_view(),
+    ),
+    path(
+        'dialogue/sessions/<str:session_id>/semantic-tree/analyze/',
+        views.DialogueSessionSemanticTreeAnalyzeView.as_view(),
     ),
     path('matching/join/', views.MatchingJoinView.as_view()),
     path('matching/status/', views.MatchingStatusView.as_view()),

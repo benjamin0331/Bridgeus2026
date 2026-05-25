@@ -10,7 +10,7 @@ from typing import Any
 from django.db import transaction
 from django.utils import timezone
 
-from api.models import DialogueMatch
+from api.models import AIConversation, DialogueMatch
 
 
 DEFAULT_MODEL = "gemini-2.5-flash"
@@ -18,6 +18,12 @@ MAX_ANALYSIS_ITEMS = 3
 MAX_PATH_DEPTH = 2
 MIN_CONFIDENCE = 0.55
 SEMANTIC_TREE_STATS_KEY = "semantic_tree"
+SEMANTIC_TREE_STATE_VERSION = 2
+MATCH_TREE_MODE = "participant_trees"
+AI_TREE_MODE = "ai_user_tree"
+OWNER_USER_A = "user_a"
+OWNER_USER_B = "user_b"
+OWNER_AI_USER = "user"
 
 FIXED_ANCHORS = [
     {"id": "anchor_safety", "name": "核能安全"},
@@ -127,12 +133,35 @@ def create_initial_tree(root_name: str = "核電") -> dict[str, Any]:
     }
 
 
-def _empty_state(root_name: str) -> dict[str, Any]:
+def create_owner_tree_state(owner_key: str, root_name: str) -> dict[str, Any]:
     return {
+        "ownerKey": owner_key,
         "treeData": create_initial_tree(root_name),
-        "anchors": deepcopy(FIXED_ANCHORS),
+        "analyzedSourceIds": [],
         "analysisHistory": [],
-        "analyzedMessageIds": [],
+    }
+
+
+def _empty_match_state(root_name: str) -> dict[str, Any]:
+    return {
+        "version": SEMANTIC_TREE_STATE_VERSION,
+        "mode": MATCH_TREE_MODE,
+        "anchors": deepcopy(FIXED_ANCHORS),
+        "participants": {
+            OWNER_USER_A: create_owner_tree_state(OWNER_USER_A, root_name),
+            OWNER_USER_B: create_owner_tree_state(OWNER_USER_B, root_name),
+        },
+    }
+
+
+def _empty_ai_state(root_name: str) -> dict[str, Any]:
+    return {
+        "version": SEMANTIC_TREE_STATE_VERSION,
+        "mode": AI_TREE_MODE,
+        "anchors": deepcopy(FIXED_ANCHORS),
+        "participants": {
+            OWNER_AI_USER: create_owner_tree_state(OWNER_AI_USER, root_name),
+        },
     }
 
 
@@ -140,24 +169,92 @@ def _stats_dict(match: DialogueMatch) -> dict[str, Any]:
     return match.stats if isinstance(match.stats, dict) else {}
 
 
-def get_semantic_tree_state(match: DialogueMatch, *, root_name: str) -> dict[str, Any]:
-    stats = _stats_dict(match)
-    state = stats.get(SEMANTIC_TREE_STATS_KEY)
-    if not isinstance(state, dict):
-        return _empty_state(root_name)
+def _normalize_source_ids(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [clean_text(item) for item in value if clean_text(item)]
 
-    tree_data = state.get("treeData")
+
+def _ensure_owner_tree_state(
+    owner_state: Any,
+    *,
+    owner_key: str,
+    root_name: str,
+) -> dict[str, Any]:
+    if not isinstance(owner_state, dict):
+        owner_state = create_owner_tree_state(owner_key, root_name)
+
+    owner_state["ownerKey"] = owner_key
+    tree_data = owner_state.get("treeData")
     if not isinstance(tree_data, dict) or not isinstance(tree_data.get("children"), list):
-        return _empty_state(root_name)
+        tree_data = create_initial_tree(root_name)
+        owner_state["treeData"] = tree_data
 
     if root_name and tree_data.get("name") in {None, "", "核電"}:
         tree_data["name"] = root_name
 
-    state.setdefault("anchors", deepcopy(FIXED_ANCHORS))
-    state.setdefault("analysisHistory", [])
-    state.setdefault("analyzedMessageIds", [])
+    owner_state["analyzedSourceIds"] = _normalize_source_ids(
+        owner_state.get("analyzedSourceIds")
+        or owner_state.get("analyzedMessageIds")
+    )
+    if not isinstance(owner_state.get("analysisHistory"), list):
+        owner_state["analysisHistory"] = []
+
     _normalize_tree_node_types(tree_data)
     _ensure_fixed_anchors(tree_data)
+    return owner_state
+
+
+def get_semantic_tree_state(match: DialogueMatch, *, root_name: str) -> dict[str, Any]:
+    stats = _stats_dict(match)
+    state = stats.get(SEMANTIC_TREE_STATS_KEY)
+
+    # v1 stored one room-wide tree. v2 intentionally starts fresh so new
+    # analysis represents each participant's own thought context.
+    if (
+        not isinstance(state, dict)
+        or state.get("version") != SEMANTIC_TREE_STATE_VERSION
+        or state.get("mode") != MATCH_TREE_MODE
+        or not isinstance(state.get("participants"), dict)
+    ):
+        return _empty_match_state(root_name)
+
+    state["anchors"] = deepcopy(FIXED_ANCHORS)
+    participants = state.setdefault("participants", {})
+    participants[OWNER_USER_A] = _ensure_owner_tree_state(
+        participants.get(OWNER_USER_A),
+        owner_key=OWNER_USER_A,
+        root_name=root_name,
+    )
+    participants[OWNER_USER_B] = _ensure_owner_tree_state(
+        participants.get(OWNER_USER_B),
+        owner_key=OWNER_USER_B,
+        root_name=root_name,
+    )
+    return state
+
+
+def get_ai_semantic_tree_state(
+    session_record: dict[str, Any],
+    *,
+    root_name: str,
+) -> dict[str, Any]:
+    state = session_record.get(SEMANTIC_TREE_STATS_KEY)
+    if (
+        not isinstance(state, dict)
+        or state.get("version") != SEMANTIC_TREE_STATE_VERSION
+        or state.get("mode") != AI_TREE_MODE
+        or not isinstance(state.get("participants"), dict)
+    ):
+        return _empty_ai_state(root_name)
+
+    state["anchors"] = deepcopy(FIXED_ANCHORS)
+    participants = state.setdefault("participants", {})
+    participants[OWNER_AI_USER] = _ensure_owner_tree_state(
+        participants.get(OWNER_AI_USER),
+        owner_key=OWNER_AI_USER,
+        root_name=root_name,
+    )
     return state
 
 
@@ -166,6 +263,13 @@ def save_semantic_tree_state(match: DialogueMatch, state: dict[str, Any]) -> Non
     stats[SEMANTIC_TREE_STATS_KEY] = state
     match.stats = stats
     match.save(update_fields=["stats"])
+
+
+def save_ai_semantic_tree_state(
+    session_record: dict[str, Any],
+    state: dict[str, Any],
+) -> None:
+    session_record[SEMANTIC_TREE_STATS_KEY] = state
 
 
 def _normalize_tree_node_types(node: dict[str, Any], depth: int = 0) -> None:
@@ -257,10 +361,11 @@ def build_gemini_request(
 
     prompt_text = "\n".join(
         [
-            "你是「核能議題對話語意樹」的語意整理 agent，不是逐字拆句工具。",
+            "你是「核能議題個人想法脈絡樹」的語意整理 agent，不是逐字拆句工具。",
             "",
             "你的任務：",
-            "把使用者輸入整理成少量、高品質、適合放進樹狀圖的語意節點。",
+            "只整理單一說話者自己的想法脈絡，把這次輸入歸納成少量、高品質、適合放進樹狀圖的語意節點。",
+            "你看見的目前樹狀資料只屬於同一位說話者；不要推論或整理對話中另一個人的立場。",
             "重點是「歸納」而不是「盡量拆分」。",
             "",
             "第二層固定分類不可新增，只能使用下列 anchorId：",
@@ -285,7 +390,7 @@ def build_gemini_request(
             "path 規則：",
             "- path 不包含 anchor 本身，只描述 anchor 底下的子分類路徑。",
             f"- path 最多 {MAX_PATH_DEPTH} 層。",
-            "- 優先使用目前樹中已有的相近節點名稱。",
+            "- 優先使用目前這位說話者樹中已有的相近節點名稱。",
             "- 只有當現有節點完全不適合時，才建立新的子分類。",
             "- 新子分類名稱必須抽象、可容納未來類似討論，不要太細。",
             "- 不要為單一小例子建立新子分類。",
@@ -441,11 +546,12 @@ def _message_source_metadata(source_message: dict[str, Any] | None) -> dict[str,
     if not source_message:
         return {}
     return {
-        "source": "match_message",
+        "source": clean_text(source_message.get("source")) or "match_message",
         "sourceMessageId": clean_text(source_message.get("id")),
         "sourceTimestamp": clean_text(source_message.get("created_at")),
         "sourceParticipant": clean_text(source_message.get("sender_id")),
         "sourceMatchId": clean_text(source_message.get("match_id")),
+        "sourceSessionId": clean_text(source_message.get("session_id")),
     }
 
 
@@ -630,6 +736,7 @@ def analyze_with_gemini(
 
 def _message_to_source(message) -> dict[str, Any]:
     return {
+        "source": "match_message",
         "id": message.id,
         "content": message.content,
         "created_at": message.created_at.isoformat() if message.created_at else "",
@@ -638,23 +745,140 @@ def _message_to_source(message) -> dict[str, Any]:
     }
 
 
+def _ai_turn_to_source(turn: AIConversation) -> dict[str, Any]:
+    return {
+        "source": "ai_user_prompt",
+        "id": turn.id,
+        "content": turn.user_prompt,
+        "created_at": turn.created_at.isoformat() if turn.created_at else "",
+        "sender_id": turn.user_id,
+        "session_id": turn.session_id,
+    }
+
+
+def _owner_key_for_user(match: DialogueMatch, user_id: int | None) -> str:
+    if user_id == match.user_a_id:
+        return OWNER_USER_A
+    if user_id == match.user_b_id:
+        return OWNER_USER_B
+    return OWNER_USER_A
+
+
+def _owner_key_for_message(match: DialogueMatch, sender_id: int | None) -> str | None:
+    if sender_id == match.user_a_id:
+        return OWNER_USER_A
+    if sender_id == match.user_b_id:
+        return OWNER_USER_B
+    return None
+
+
+def _ordered_match_owner_keys(match: DialogueMatch, current_user_id: int | None) -> list[str]:
+    current_owner_key = _owner_key_for_user(match, current_user_id)
+    other_owner_key = OWNER_USER_B if current_owner_key == OWNER_USER_A else OWNER_USER_A
+    return [current_owner_key, other_owner_key]
+
+
+def _owner_payload(
+    owner_state: dict[str, Any],
+    *,
+    label: str,
+    is_current_user: bool,
+) -> dict[str, Any]:
+    return {
+        "ownerKey": owner_state["ownerKey"],
+        "label": label,
+        "isCurrentUser": is_current_user,
+        "treeData": owner_state["treeData"],
+        "analysisHistory": owner_state["analysisHistory"],
+        "analyzedSourceIds": owner_state["analyzedSourceIds"],
+    }
+
+
+def _match_tree_payloads(
+    *,
+    state: dict[str, Any],
+    match: DialogueMatch,
+    current_user_id: int | None,
+) -> list[dict[str, Any]]:
+    current_owner_key = _owner_key_for_user(match, current_user_id)
+    payloads = []
+    for owner_key in _ordered_match_owner_keys(match, current_user_id):
+        owner_state = state["participants"][owner_key]
+        payloads.append(
+            _owner_payload(
+                owner_state,
+                label="我的脈絡" if owner_key == current_owner_key else "匿名對話者",
+                is_current_user=owner_key == current_owner_key,
+            )
+        )
+    return payloads
+
+
+def _active_tree_payload(trees: list[dict[str, Any]]) -> dict[str, Any]:
+    return next((tree for tree in trees if tree.get("isCurrentUser")), trees[0])
+
+
 def semantic_tree_payload(
     *,
     match: DialogueMatch,
     root_name: str,
+    current_user_id: int | None = None,
     analysis_status: str = "ready",
     message: str = "",
     analyzed_count: int = 0,
 ) -> dict[str, Any]:
     state = get_semantic_tree_state(match, root_name=root_name)
+    trees = _match_tree_payloads(
+        state=state,
+        match=match,
+        current_user_id=current_user_id,
+    )
+    active_tree = _active_tree_payload(trees)
     return {
         "room_id": match.room_id,
         "match_id": match.id,
         "topic_id": match.topic_id,
-        "treeData": state["treeData"],
+        "semanticMode": MATCH_TREE_MODE,
+        "treeData": active_tree["treeData"],
+        "trees": trees,
         "anchors": state["anchors"],
-        "analysisHistory": state["analysisHistory"],
-        "analyzedMessageIds": state["analyzedMessageIds"],
+        "analysisHistory": active_tree["analysisHistory"],
+        "analyzedMessageIds": active_tree["analyzedSourceIds"],
+        "analyzedSourceIds": active_tree["analyzedSourceIds"],
+        "analysisStatus": analysis_status,
+        "message": message,
+        "analyzedCount": analyzed_count,
+    }
+
+
+def semantic_tree_session_payload(
+    *,
+    session_record: dict[str, Any],
+    session_id: str,
+    root_name: str,
+    analysis_status: str = "ready",
+    message: str = "",
+    analyzed_count: int = 0,
+) -> dict[str, Any]:
+    state = get_ai_semantic_tree_state(session_record, root_name=root_name)
+    owner_state = state["participants"][OWNER_AI_USER]
+    trees = [
+        _owner_payload(
+            owner_state,
+            label="我的脈絡",
+            is_current_user=True,
+        )
+    ]
+    return {
+        "session_id": session_id,
+        "topic_id": session_record.get("topic_id"),
+        "semanticMode": AI_TREE_MODE,
+        "treeData": owner_state["treeData"],
+        "trees": trees,
+        "anchors": state["anchors"],
+        "analysisHistory": owner_state["analysisHistory"],
+        "analyzedMessageIds": owner_state["analyzedSourceIds"],
+        "analyzedSourceIds": owner_state["analyzedSourceIds"],
         "analysisStatus": analysis_status,
         "message": message,
         "analyzedCount": analyzed_count,
@@ -668,36 +892,45 @@ def semantic_tree_batch_size() -> int:
         return 5
 
 
-def analyze_pending_room_messages(*, match: DialogueMatch, root_name: str) -> dict[str, Any]:
+def analyze_pending_room_messages(
+    *,
+    match: DialogueMatch,
+    root_name: str,
+    current_user_id: int | None = None,
+) -> dict[str, Any]:
     with transaction.atomic():
         locked_match = DialogueMatch.objects.select_for_update().get(pk=match.pk)
         state = get_semantic_tree_state(locked_match, root_name=root_name)
-        analyzed_ids = {clean_text(message_id) for message_id in state.get("analyzedMessageIds", [])}
         pending_messages = [
-            message
+            (message, owner_key)
             for message in locked_match.messages.order_by("created_at", "id")
-            if clean_text(message.id) not in analyzed_ids
+            for owner_key in [_owner_key_for_message(locked_match, message.sender_id)]
+            if owner_key
+            and clean_text(message.id)
+            not in set(state["participants"][owner_key]["analyzedSourceIds"])
         ][: semantic_tree_batch_size()]
 
         if pending_messages and not get_gemini_api_key():
             raise MissingGeminiApiKey("server 缺少 GEMINI_API_KEY，無法呼叫 Gemini。")
 
         analyzed_count = 0
-        for message in pending_messages:
+        for message, owner_key in pending_messages:
+            owner_state = state["participants"][owner_key]
             source_message = _message_to_source(message)
             result = analyze_with_gemini(
                 text=message.content,
-                tree=state["treeData"],
+                tree=owner_state["treeData"],
                 anchors=state["anchors"],
             )
             apply_result = apply_analysis_items_to_tree(
-                state["treeData"],
+                owner_state["treeData"],
                 result.get("items", []),
                 source_message=source_message,
             )
-            state["analysisHistory"].append(
+            owner_state["analysisHistory"].append(
                 {
-                    "messageId": clean_text(message.id),
+                    "sourceId": clean_text(message.id),
+                    "sourceType": "match_message",
                     "analyzedAt": timezone.now().isoformat(),
                     "model": result.get("model") or get_gemini_model(),
                     "sourceText": message.content,
@@ -705,14 +938,73 @@ def analyze_pending_room_messages(*, match: DialogueMatch, root_name: str) -> di
                     "invalidItems": result.get("invalidItems", []),
                 }
             )
-            state["analyzedMessageIds"].append(clean_text(message.id))
-            analyzed_ids.add(clean_text(message.id))
+            owner_state["analyzedSourceIds"].append(clean_text(message.id))
             analyzed_count += 1
 
         save_semantic_tree_state(locked_match, state)
         return semantic_tree_payload(
             match=locked_match,
             root_name=root_name,
+            current_user_id=current_user_id,
             analysis_status="ready",
             analyzed_count=analyzed_count,
         )
+
+
+def analyze_pending_ai_conversations(
+    *,
+    session_record: dict[str, Any],
+    session_id: str,
+    user_id: int,
+    root_name: str,
+) -> dict[str, Any]:
+    state = get_ai_semantic_tree_state(session_record, root_name=root_name)
+    owner_state = state["participants"][OWNER_AI_USER]
+    analyzed_ids = set(owner_state["analyzedSourceIds"])
+    pending_turns = [
+        turn
+        for turn in AIConversation.objects.filter(
+            user_id=user_id,
+            session_id=session_id,
+        ).order_by("created_at", "id")
+        if clean_text(turn.user_prompt) and clean_text(turn.id) not in analyzed_ids
+    ][: semantic_tree_batch_size()]
+
+    if pending_turns and not get_gemini_api_key():
+        raise MissingGeminiApiKey("server 缺少 GEMINI_API_KEY，無法呼叫 Gemini。")
+
+    analyzed_count = 0
+    for turn in pending_turns:
+        source_message = _ai_turn_to_source(turn)
+        result = analyze_with_gemini(
+            text=turn.user_prompt,
+            tree=owner_state["treeData"],
+            anchors=state["anchors"],
+        )
+        apply_result = apply_analysis_items_to_tree(
+            owner_state["treeData"],
+            result.get("items", []),
+            source_message=source_message,
+        )
+        owner_state["analysisHistory"].append(
+            {
+                "sourceId": clean_text(turn.id),
+                "sourceType": "ai_user_prompt",
+                "analyzedAt": timezone.now().isoformat(),
+                "model": result.get("model") or get_gemini_model(),
+                "sourceText": turn.user_prompt,
+                "appliedItems": apply_result["appliedItems"],
+                "invalidItems": result.get("invalidItems", []),
+            }
+        )
+        owner_state["analyzedSourceIds"].append(clean_text(turn.id))
+        analyzed_count += 1
+
+    save_ai_semantic_tree_state(session_record, state)
+    return semantic_tree_session_payload(
+        session_record=session_record,
+        session_id=session_id,
+        root_name=root_name,
+        analysis_status="ready",
+        analyzed_count=analyzed_count,
+    )
