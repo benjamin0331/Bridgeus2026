@@ -1,0 +1,287 @@
+.conversation-tree-panel {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  color: #2f2722;
+  background:
+    radial-gradient(circle at 16% 18%, rgba(246, 162, 58, 0.2), transparent 28%),
+    linear-gradient(145deg, #fffaf1 0%, #eee5dc 100%);
+  border: 1px solid #dccfc2;
+  border-radius: 22px;
+  box-shadow: 0 18px 40px rgba(70, 53, 38, 0.12);
+  overflow: hidden;
+}
+
+.conversation-tree-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.conversation-tree-header h2 {
+  margin: 2px 0 0;
+  color: #2b211b;
+  font-size: 20px;
+  line-height: 1.15;
+}
+
+.conversation-tree-eyebrow {
+  color: #8a735e;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.conversation-tree-count {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  color: #6d5a47;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(143, 117, 92, 0.25);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.conversation-tree-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.conversation-tree-tab {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 10px;
+  color: #6d5a47;
+  background: rgba(255, 255, 255, 0.58);
+  border: 1px solid rgba(127, 101, 78, 0.22);
+  border-radius: 14px;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.conversation-tree-tab:hover {
+  border-color: rgba(246, 162, 58, 0.72);
+  transform: translateY(-1px);
+}
+
+.conversation-tree-tab.is-active {
+  color: #2b211b;
+  background: rgba(255, 250, 241, 0.9);
+  border-color: rgba(246, 162, 58, 0.95);
+  box-shadow: 0 8px 18px rgba(70, 53, 38, 0.1);
+}
+
+.conversation-tree-tab span {
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.conversation-tree-tab small {
+  flex: 0 0 auto;
+  color: #8d8075;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.conversation-tree-canvas-shell {
+  position: relative;
+  flex: 1;
+  min-height: 310px;
+  overflow: hidden;
+  background:
+    linear-gradient(rgba(93, 74, 58, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(93, 74, 58, 0.06) 1px, transparent 1px),
+    rgba(255, 252, 246, 0.68);
+  background-size: 26px 26px;
+  border: 1px solid rgba(137, 110, 86, 0.2);
+  border-radius: 18px;
+}
+
+.conversation-tree-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: grab;
+  touch-action: none;
+}
+
+.conversation-tree-canvas:active {
+  cursor: grabbing;
+}
+
+.conversation-tree-empty {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  left: 16px;
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 5px;
+  padding: 12px 14px;
+  color: #7a6858;
+  background: rgba(255, 250, 241, 0.86);
+  border: 1px solid rgba(127, 101, 78, 0.28);
+  border-radius: 14px;
+  backdrop-filter: blur(8px);
+}
+
+.conversation-tree-empty strong {
+  color: #3a2d25;
+  font-size: 14px;
+}
+
+.conversation-tree-empty span {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.conversation-tree-link {
+  fill: none;
+  stroke: #7b7167;
+  stroke-linecap: round;
+  stroke-opacity: 0.68;
+  stroke-width: 1.35px;
+}
+
+.conversation-tree-node {
+  cursor: pointer;
+}
+
+.conversation-tree-node-shape {
+  stroke: #1f2937;
+  stroke-width: 1.25px;
+  vector-effect: non-scaling-stroke;
+}
+
+.node-root .conversation-tree-node-shape {
+  fill: #050505;
+}
+
+.node-anchor .conversation-tree-node-shape {
+  fill: #f6a23a;
+}
+
+.node-point .conversation-tree-node-shape {
+  fill: #9be1e4;
+}
+
+.conversation-tree-node.is-selected .conversation-tree-node-shape {
+  stroke: #2563eb;
+  stroke-width: 3px;
+}
+
+.conversation-tree-node-label {
+  dominant-baseline: middle;
+  fill: #10202b;
+  font-weight: 800;
+  letter-spacing: 0;
+  pointer-events: none;
+  text-anchor: middle;
+}
+
+.root-label {
+  fill: #ffffff;
+  font-size: 12px;
+}
+
+.anchor-label {
+  font-size: 11px;
+}
+
+.point-label {
+  fill: #10202b;
+  font-size: 9.5px;
+}
+
+.conversation-tree-detail {
+  min-height: 128px;
+  max-height: 176px;
+  padding: 13px 14px;
+  overflow-y: auto;
+  background: rgba(255, 255, 255, 0.68);
+  border: 1px solid rgba(127, 101, 78, 0.2);
+  border-radius: 16px;
+}
+
+.conversation-tree-detail-label {
+  display: block;
+  color: #8a735e;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+}
+
+.conversation-tree-detail p {
+  margin: 7px 0 8px;
+  color: #2f2722;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.conversation-tree-message-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.conversation-tree-message {
+  padding: 9px 10px;
+  background: rgba(255, 250, 241, 0.74);
+  border: 1px solid rgba(127, 101, 78, 0.16);
+  border-radius: 12px;
+}
+
+.conversation-tree-message p {
+  margin: 0 0 6px;
+}
+
+.conversation-tree-message span,
+.conversation-tree-message small {
+  display: block;
+  color: #8d8075;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.conversation-tree-message small {
+  margin-top: 4px;
+  color: #6d5a47;
+}
+
+.conversation-tree-detail-time {
+  color: #8d8075;
+  font-size: 12px;
+}
+
+@media (max-width: 768px) {
+  .conversation-tree-panel {
+    min-height: 460px;
+    padding: 14px;
+    border-radius: 18px;
+  }
+
+  .conversation-tree-canvas-shell {
+    min-height: 260px;
+  }
+
+  .conversation-tree-header h2 {
+    font-size: 18px;
+  }
+
+  .conversation-tree-tabs {
+    grid-template-columns: 1fr;
+  }
+}

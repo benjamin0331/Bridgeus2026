@@ -151,6 +151,8 @@ class MatchingStateSerializer(serializers.Serializer):
     room_id = serializers.CharField(max_length=64, required=False, allow_null=True)
     other_user_id = serializers.IntegerField(required=False, allow_null=True)
     other_user_name = serializers.CharField(max_length=150, required=False, allow_null=True)
+    presence = serializers.JSONField(required=False, allow_null=True)
+    absence_deadline = serializers.DateTimeField(required=False, allow_null=True)
 
 
 class MatchMessageSerializer(serializers.ModelSerializer):
@@ -180,6 +182,11 @@ class MatchingRoomMessageCreateSerializer(serializers.Serializer):
         return value
 
 
+class MatchingRoomStanceDriftSerializer(serializers.Serializer):
+    drift_value = serializers.FloatField()
+    measured_at = serializers.DateTimeField()
+
+
 class MatchingRoomMessagesSerializer(serializers.Serializer):
     room_id = serializers.CharField(max_length=64)
     match_id = serializers.IntegerField()
@@ -187,4 +194,24 @@ class MatchingRoomMessagesSerializer(serializers.Serializer):
     status = serializers.CharField(max_length=20)
     other_user_id = serializers.IntegerField(required=False, allow_null=True)
     other_user_name = serializers.CharField(max_length=150, required=False, allow_null=True)
+    stance_drift = MatchingRoomStanceDriftSerializer(required=False, allow_null=True)
+    presence = serializers.JSONField(required=False, allow_null=True)
+    absence_deadline = serializers.DateTimeField(required=False, allow_null=True)
     messages = MatchMessageSerializer(many=True)
+
+
+class MatchingRoomSemanticTreeSerializer(serializers.Serializer):
+    room_id = serializers.CharField(max_length=64, required=False)
+    match_id = serializers.IntegerField(required=False)
+    session_id = serializers.CharField(max_length=64, required=False)
+    topic_id = serializers.IntegerField(required=False, allow_null=True)
+    semanticMode = serializers.CharField(max_length=32, required=False)
+    treeData = serializers.JSONField()
+    trees = serializers.JSONField()
+    anchors = serializers.JSONField()
+    analysisHistory = serializers.JSONField()
+    analyzedMessageIds = serializers.ListField(child=serializers.CharField())
+    analyzedSourceIds = serializers.ListField(child=serializers.CharField(), required=False)
+    analysisStatus = serializers.CharField(max_length=32)
+    message = serializers.CharField(required=False, allow_blank=True)
+    analyzedCount = serializers.IntegerField()

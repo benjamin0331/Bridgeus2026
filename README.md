@@ -101,6 +101,10 @@ MATCH_ROOM_IDLE_TIMEOUT_SECONDS=600
 H_H_AI_ASSIST_ENABLED=false
 H_H_AI_ASSIST_TIMEOUT_SECONDS=2
 PRELOAD_NLP_MODELS=false
+GEMINI_API_KEY=replace-me
+GEMINI_MODEL=gemini-2.5-flash
+GEMINI_API_TIMEOUT_SECONDS=20
+SEMANTIC_TREE_ANALYZE_BATCH_SIZE=5
 USE_REDIS_CACHE=false
 USE_REDIS_CHANNEL=false
 ```
@@ -148,6 +152,8 @@ Human matching:
 - `GET /api/matching/rooms/<room_id>/messages/`
 - `POST /api/matching/rooms/<room_id>/messages/`
 - `POST /api/matching/rooms/<room_id>/leave/`
+- `GET /api/matching/rooms/<room_id>/semantic-tree/`
+- `POST /api/matching/rooms/<room_id>/semantic-tree/analyze/`
 - `WS /ws/matching/rooms/<room_id>/`
 
 ## Matching Behavior
@@ -163,7 +169,19 @@ Human matching:
 - Test-only fallback can be enabled with `MATCHING_ALLOW_SAME_STANCE_FALLBACK=true`.
 - Q9 is embedded for semantic matching; Q10 is stored but not scored yet.
 - Matching rooms are anonymous and auto-close after 10 minutes of no conversation activity by default.
-- Human-human AI assistance is feature-flagged with `H_H_AI_ASSIST_ENABLED=true`; when enabled, WebSocket matching rooms can show content-block prompts and AI rephrase/direction/redirect suggestions. `H_H_AI_ASSIST_TIMEOUT_SECONDS` keeps slow NLP inference or first-time model downloads from blocking chat message delivery. Run `uv run python manage.py warm_nlp_models` before starting uvicorn, or set `PRELOAD_NLP_MODELS=true` in Docker, to download and warm models ahead of traffic.
+- Matching room semantic trees are built by backend Gemini analysis, not frontend keyword matching. `GET /semantic-tree/` returns the persisted `DialogueMatch.stats["semantic_tree"]` tree; `POST /semantic-tree/analyze/` analyzes unprocessed room messages in small batches and stores applied nodes/history. Missing `GEMINI_API_KEY` returns a semantic-tree error only; chat message delivery remains unaffected.
+- Human-human AI assistance is feature-flagged with `H_H_AI_ASSIST_ENABLED=true`; when enabled, WebSocket matching rooms can show content-block prompts and AI rephrase/direction/redirect suggestions. `H_H_AI_ASSIST_TIMEOUT_SECONDS` keeps slow NLP inference or first-time model downloads from blocking chat message delivery. Run `uv run python manage.py warm_nlp_models` before starting uvicorn, or set `PRELOAD_NLP_MODELS=true` in Docker, to download and warm models ahead of traffic. Repeated `GET /api/matching/rooms/<room_id>/messages/` logs during chat are the frontend polling room snapshots and are expected.
+
+## NLP Model Warmup
+
+If H-H AI assist is enabled, preload NLP models before testing chat intervention so first-use Hugging Face downloads do not happen during a live room:
+
+```bash
+cd backend
+uv run python manage.py warm_nlp_models
+```
+
+This warms the Q9/message embedding model and the emotion model. Use `--skip-embedding` or `--skip-emotion` when debugging only one side. Docker can run the same step before uvicorn with `PRELOAD_NLP_MODELS=true`.
 
 ## Verification
 
@@ -173,7 +191,7 @@ Backend:
 cd backend
 uv run python manage.py check
 DB_ENGINE=sqlite uv run python manage.py test api --keepdb --noinput
-DB_ENGINE=sqlite uv run pytest api/tests_websocket.py chat/tests.py chat/tests_filter.py
+DB_ENGINE=sqlite uv run pytest api/tests_websocket.py chat/tests*.py
 ```
 
 Frontend:
@@ -224,7 +242,7 @@ Merge note: `feat/Light` is the source of truth for matching-room architecture. 
 | M2 | Topic Selection & Stance Measurement | Backend topic/survey config and Likert scoring are implemented for topic 102. |
 | M3 | Heterogeneous Matching & AI Agent Generation | Matching queue, stance score, Q9 semantic hook, and AI dialogue agent are implemented. |
 | M4 | Real-time Dialogue Room | WebSocket matching room and persisted messages are implemented; rooms auto-close when idle. |
-| M5 | NLP Analysis & CCND Generation | Planned. |
+| M5 | NLP Analysis & CCND Generation | H-H AI assist, emotion timeout fail-open, NLP model warmup, and research suggestion records are implemented; CCND generation is planned. |
 | M6 | Post-Dialogue Summary & Knowledge Base | Knowledge-base build flow exists; post-dialogue summary is planned. |
 
 ## Team

@@ -8,7 +8,7 @@
 
 ## Git State And Remotes
 - `/Users/light/code` is the active git worktree.
-- Current working branch used by the user: `feat/Light`.
+- Current working branch used by the user: `feat/gemini-semantic-tree`.
 - Main monorepo remote: `origin https://github.com/bridgeus2026/Bridgeus2026.git`.
 - Backend-only mirror remote may exist as `light-backend https://github.com/Bridge-US2026/Light_Django_backend.git`; do not push the whole monorepo there.
 - Before any commit or push, run:
@@ -25,6 +25,7 @@
   - `uv run python manage.py migrate`
   - `uv run python manage.py createsuperuser`
   - `uv run python manage.py runserver 0.0.0.0:8005 --noreload`
+  - `uv run python manage.py warm_nlp_models`
   - `uv run uvicorn BridgeUs_Django.asgi:application --host 0.0.0.0 --port 8005`
   - `uv run python scripts/build_knowledge_base.py --data-dir data/nuclear_energy --collection nuclear_energy_all`
 - Environment is loaded from `backend/.env`. Do not commit real secrets or print secret values.
@@ -34,9 +35,12 @@
   - `DB_CONN_MAX_AGE=0` to avoid exhausting small Postgres deployments during local/server mixed testing.
   - `MATCHING_ALLOW_SAME_STANCE_FALLBACK=false` for production heterogeneous matching; set `true` only for test convenience.
   - `MATCH_ROOM_IDLE_TIMEOUT_SECONDS=600` closes inactive matching rooms after 10 minutes.
+  - `MATCH_ROOM_ABSENCE_TIMEOUT_SECONDS=180` closes an active matching room when either participant stays disconnected for 3 minutes; short reloads should reconnect to the same room.
   - `H_H_AI_ASSIST_ENABLED=false` keeps H-H AI intervention disabled by default; set `true` only when testing content prompts / rephrase suggestions.
   - `H_H_AI_ASSIST_TIMEOUT_SECONDS=2` prevents slow emotion inference or first-time model downloads from blocking matching chat delivery.
   - `PRELOAD_NLP_MODELS=false`; set `true` in Docker or run `uv run python manage.py warm_nlp_models` before uvicorn to download/warm NLP models ahead of traffic.
+  - `GEMINI_API_KEY` enables backend Gemini semantic-tree analysis for matching rooms and AI dialogue sessions; keep it in `backend/.env`, never in frontend code.
+  - `GEMINI_MODEL=gemini-2.5-flash`, `GEMINI_API_TIMEOUT_SECONDS=20`, and `SEMANTIC_TREE_ANALYZE_BATCH_SIZE=5` control semantic-tree analysis.
   - `USE_REDIS_CACHE=true` is required if dialogue session cache must survive multiple workers/containers.
   - `USE_REDIS_CHANNEL=true` enables Redis channel layer for multi-process WebSocket deployment.
 
@@ -46,9 +50,11 @@
 - Matching queue, restart, cancellation, stale queue cleanup, and idle room cleanup: `backend/apps/matching/services/matcher.py`.
 - Heterogeneous matching weights and candidate ranking: `backend/apps/matching/services/matching_algorithm.py`.
 - Q9 semantic embedding bridge: `backend/apps/matching/services/semantic.py`.
+- Gemini semantic-tree prompt/schema/merge service: `backend/apps/matching/services/semantic_tree.py`.
 - H-H AI assist services: `backend/apps/matching/services/hh_ai.py` and `backend/apps/matching/services/hh_analysis.py`.
+- NLP model warmup command: `backend/chat/management/commands/warm_nlp_models.py`.
 - WebSocket consumers for AI dialogue and matching room chat: `backend/api/consumers.py`.
-- Persistent models for stance profiles, queue entries, matches, AI turns, and match messages: `backend/api/models.py`.
+- Persistent models for AI session records, stance profiles, queue entries, matches, AI turns, and match messages: `backend/api/models.py`.
 
 ## Frontend
 - Run frontend commands from `frontend/`.
@@ -65,7 +71,7 @@
 - Backend smoke checks:
   - `uv run python manage.py check`
   - `DB_ENGINE=sqlite uv run python manage.py test api --keepdb --noinput`
-  - `DB_ENGINE=sqlite uv run pytest api/tests_websocket.py chat/tests.py chat/tests_filter.py`
+  - `DB_ENGINE=sqlite uv run pytest api/tests_websocket.py chat/tests*.py`
 - Frontend smoke checks:
   - `npm run lint`
   - `npm run build`
@@ -80,6 +86,12 @@
 - Matching rooms are anonymous in the UI and API payloads.
 - Matching room messages and AI dialogue turns are persisted in the database.
 - Matching rooms auto-close after `MATCH_ROOM_IDLE_TIMEOUT_SECONDS` without conversation activity.
+- AI dialogue sessions are persisted in `DialogueSessionRecord`; frontend can restore the latest active session through `GET /api/dialogue/sessions/latest/?topic_id=<topic_id>`, and direct restore is available at `GET /api/dialogue/sessions/<session_id>/`.
+- Matching rooms track participant presence in `DialogueMatch.stats["presence"]`. Frontend reloads must not call `/leave/`; manual leave still closes the room immediately, while continuous disconnection longer than `MATCH_ROOM_ABSENCE_TIMEOUT_SECONDS` closes the room on the next backend activity check.
+- Matching rooms still fetch `/api/matching/rooms/<room_id>/messages/` as a snapshot/polling fallback while WebSocket is open; repeated 200 logs here are expected.
+- The right panel uses backend Gemini semantic-tree endpoints. Matching rooms use `GET /api/matching/rooms/<room_id>/semantic-tree/` and `POST /api/matching/rooms/<room_id>/semantic-tree/analyze/`; AI dialogue uses `GET /api/dialogue/sessions/<session_id>/semantic-tree/` and `POST /api/dialogue/sessions/<session_id>/semantic-tree/analyze/`. Frontend must render backend `trees`/`treeData` and must not use keyword classification for semantic grouping.
+- Matching semantic trees are participant-scoped: `DialogueMatch.stats["semantic_tree"]` stores separate `user_a` and `user_b` thought-context trees. AI semantic trees only analyze the human user's `AIConversation.user_prompt`; AI responses are not added as graph nodes in v1.
+- If H-H AI assist is enabled before NLP models are cached, emotion analysis may time out and fail open so messages still relay. Use `warm_nlp_models` or `PRELOAD_NLP_MODELS=true` to avoid first-use downloads during chat.
 - H-H AI assist is selectively ported from `feat/benjamin`; do not directly merge `feat/benjamin` over the current `feat/Light` architecture.
 
 ## Working Rules

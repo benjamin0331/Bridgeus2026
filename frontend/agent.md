@@ -23,8 +23,9 @@
 - AI dialogue uses `POST /api/dialogue/sessions/`, `POST /reply/`, and WebSocket streaming where available.
 - Matching mode posts survey answers to `POST /api/matching/join/`.
 - Matching status is polled through `GET /api/matching/status/?topic_id=102`.
-- Matching messages are fetched/persisted through `/api/matching/rooms/<room_id>/messages/` and live updates use `WS /ws/matching/rooms/<room_id>/`.
-- Matching WebSocket can emit `match_system_prompt` and `match_ai_suggestion` when backend H-H AI assist is enabled; keep suggestion-card behavior in `TopicChat.jsx`.
+- Matching messages are fetched/persisted through `/api/matching/rooms/<room_id>/messages/`; the UI also polls this endpoint for room snapshots while live updates use `WS /ws/matching/rooms/<room_id>/`.
+- The right-side semantic tree panel is a pure renderer for backend `treeData`. `TopicChat.jsx` loads `/api/matching/rooms/<room_id>/semantic-tree/` on room entry and debounces `/semantic-tree/analyze/` after new messages. Do not reintroduce frontend keyword classification; Gemini prompt/schema/merge logic lives in the backend.
+- Matching WebSocket can emit `match_system_prompt` and `match_ai_suggestion` when backend H-H AI assist is enabled; keep suggestion-card behavior in `TopicChat.jsx`. If backend NLP inference times out, the backend should fail open and relay the original message.
 - Matching participants are anonymous in the UI.
 - Current user's own messages should render on the right.
 - Page leave/unload sends best-effort cancel/leave requests to reduce ghost matching state.
@@ -50,6 +51,7 @@ npm run build
 If checking full integration locally, also run backend ASGI from `/Users/light/code/backend`:
 
 ```bash
+uv run python manage.py warm_nlp_models
 uv run uvicorn BridgeUs_Django.asgi:application --host 0.0.0.0 --port 8005
 ```
 
