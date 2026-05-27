@@ -64,6 +64,8 @@ _INACTIVITY_GRACE_SECONDS = 180   # no trigger in first 3 minutes
 _conversation_last_active: dict[int, datetime] = {}
 _conversation_connected_at: dict[int, datetime] = {}
 _conversation_disconnected: set[int] = set()
+_conversation_char_count: dict[int, int] = {}
+_conversation_last_analysis: dict[int, datetime] = {}
 
 
 class HumanHumanConsumer(AsyncWebsocketConsumer):
@@ -105,9 +107,9 @@ class HumanHumanConsumer(AsyncWebsocketConsumer):
         anchor = self.conversation.topic_anchor_embedding
         self.topic_anchor = list(anchor) if anchor is not None else None
 
-        # Cumulative-trigger counters
-        self.char_count = 0
-        self.last_analysis_time = datetime.now(timezone.utc)
+        # Per-instance counters (only drift is per-user; char/analysis tracking is conversation-level)
+        self.char_count = 0  # kept for legacy reference, not used for triggering
+        self.last_analysis_time = datetime.now(timezone.utc)  # fallback only
 
         # Session-end state
         self._session_ended = False
@@ -361,8 +363,8 @@ class HumanHumanConsumer(AsyncWebsocketConsumer):
     # ------------------------------------------------------------------
 
     async def _relay_and_persist(self, content: str, emotion_score: float | None = None) -> None:
-        _conversation_last_active[self.conversation_id] = datetime.now(timezone.utc)
         now = datetime.now(timezone.utc)
+        _conversation_last_active[self.conversation_id] = now
         await self.channel_layer.group_send(
             self.room_group_name,
             {
@@ -389,11 +391,13 @@ class HumanHumanConsumer(AsyncWebsocketConsumer):
         if message is not None:
             asyncio.create_task(self._run_nlp_analysis(message.id, content, emotion_score))
 
-        self.char_count += len(content)
-        elapsed = (datetime.now(timezone.utc) - self.last_analysis_time).total_seconds()
-        if self.char_count >= 200 or elapsed >= 900:
-            self.char_count = 0
-            self.last_analysis_time = datetime.now(timezone.utc)
+        conv_id = self.conversation_id
+        _conversation_char_count[conv_id] = _conversation_char_count.get(conv_id, 0) + len(content)
+        last_analysis = _conversation_last_analysis.get(conv_id)
+        elapsed = (now - last_analysis).total_seconds() if last_analysis else 900
+        if _conversation_char_count[conv_id] >= 200 or elapsed >= 900:
+            _conversation_char_count[conv_id] = 0
+            _conversation_last_analysis[conv_id] = now
             asyncio.create_task(self._run_periodic_analysis())
 
     # ------------------------------------------------------------------
