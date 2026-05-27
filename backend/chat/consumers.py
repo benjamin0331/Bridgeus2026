@@ -24,6 +24,14 @@ from chat.services.topic import acheck_topic_relevance
 logger = logging.getLogger(__name__)
 User = get_user_model()
 
+_SECOND_PERSON = {"你", "您", "妳"}
+
+
+def _targets_other(text: str) -> bool:
+    """Return True if the message contains a second-person pronoun."""
+    return any(p in text for p in _SECOND_PERSON)
+
+
 CONTENT_BLOCKED_MESSAGES = [
     "這則訊息包含可能冒犯對方的用語，請修改後重新發送。",
     "請避免使用攻擊性語言，試著以更平和的方式表達你的觀點。",
@@ -193,7 +201,7 @@ class HumanHumanConsumer(AsyncWebsocketConsumer):
             logger.error("Emotion check error conv=%s: %s", self.conversation_id, exc)
             emotion = {"score": 0.0, "label": "neutral", "is_over_threshold": False}
 
-        if emotion["is_over_threshold"]:
+        if emotion["is_over_threshold"] and _targets_other(content):
             await self._handle_emotion_overflow(content, trigger_score=emotion["score"])
             return
 
@@ -341,7 +349,7 @@ class HumanHumanConsumer(AsyncWebsocketConsumer):
             logger.error("Emotion re-check failed conv=%s: %s", self.conversation_id, exc)
             emotion = {"score": 0.0, "label": "neutral", "is_over_threshold": False}
 
-        if emotion["is_over_threshold"] and self._rephrase_retry_count < _REPHRASE_MAX_INTERCEPTS:
+        if emotion["is_over_threshold"] and _targets_other(content) and self._rephrase_retry_count < _REPHRASE_MAX_INTERCEPTS:
             await self._handle_emotion_overflow(content, trigger_score=emotion["score"])
         else:
             # Force relay; update previous record with final_content.
