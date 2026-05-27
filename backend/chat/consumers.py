@@ -394,8 +394,8 @@ class HumanHumanConsumer(AsyncWebsocketConsumer):
         conv_id = self.conversation_id
         _conversation_char_count[conv_id] = _conversation_char_count.get(conv_id, 0) + len(content)
         last_analysis = _conversation_last_analysis.get(conv_id)
-        elapsed = (now - last_analysis).total_seconds() if last_analysis else 900
-        if _conversation_char_count[conv_id] >= 200 or elapsed >= 900:
+        elapsed = (now - last_analysis).total_seconds() if last_analysis else 300
+        if _conversation_char_count[conv_id] >= 200 or elapsed >= 300:
             _conversation_char_count[conv_id] = 0
             _conversation_last_analysis[conv_id] = now
             asyncio.create_task(self._run_periodic_analysis())
