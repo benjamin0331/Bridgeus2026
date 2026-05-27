@@ -14,7 +14,7 @@ import threading
 
 from asgiref.sync import sync_to_async
 
-EMOTION_THRESHOLD: float = 0.75
+EMOTION_THRESHOLD: float = 0.65
 
 _MODEL_NAME = "lxyuan/distilbert-base-multilingual-cased-sentiments-student"
 _pipeline = None
