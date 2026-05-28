@@ -19,7 +19,7 @@ from asgiref.sync import sync_to_async
 
 from chat.services.embedding import cosine_similarity, get_embedding
 
-TOPIC_RELEVANCE_THRESHOLD: float = 0.25
+TOPIC_RELEVANCE_THRESHOLD: float = 0.35
 
 
 def get_topic_anchor_embedding(topic_description: str) -> list[float]:
@@ -31,7 +31,7 @@ def check_topic_relevance(
     conversation_id: int,
     user_id: int,
     topic_anchor_embedding: list[float],
-    window: int = 5,
+    window: int = 3,
 ) -> dict:
     """
     Compare the user's recent messages against the topic anchor embedding.
