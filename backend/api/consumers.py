@@ -20,6 +20,7 @@ from apps.matching.services.hh_ai import (
     hh_ai_assist_enabled,
 )
 from apps.matching.services.hh_analysis import (
+    acalculate_ai_session_stance_drift,
     acalculate_match_stance_drift,
     acheck_match_topic_relevance,
     adetect_match_stalemate,
@@ -151,19 +152,20 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
 
         session.add_agent_message(full_response)
         session_record["session"] = session.to_dict()
+        await self._update_ai_conversation(
+            saved_turn=saved_turn,
+            ai_response=full_response,
+            dialogue_phase=session.dialogue_phase.value,
+        )
+        stance_drift = await self._update_session_stance_drift(session_record)
         await sync_to_async(cache.set)(
             cache_key,
             session_record,
             timeout=SESSION_TTL_SECONDS,
         )
         await self._persist_session_record(session_record)
-        await self._update_ai_conversation(
-            saved_turn=saved_turn,
-            ai_response=full_response,
-            dialogue_phase=session.dialogue_phase.value,
-        )
 
-        await self.send(json.dumps({"type": "agent_stream_end"}))
+        await self.send(json.dumps({"type": "agent_stream_end", "stance_drift": stance_drift}))
 
     async def _get_session_record(self):
         from api.views import _restore_dialogue_session_record_for_user
@@ -175,6 +177,17 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
             user_id=self.user.id,
         )
         return session_record
+
+    async def _update_session_stance_drift(self, session_record: dict):
+        try:
+            return await acalculate_ai_session_stance_drift(
+                session_record=session_record,
+                session_id=self.session_id,
+                user_id=self.user.id,
+            )
+        except Exception:
+            logger.exception("AI stance drift failed for session %s.", self.session_id)
+            return (session_record.get("session") or {}).get("stance_drift")
 
     async def _persist_session_record(self, session_record: dict):
         from api.views import _persist_dialogue_session_record

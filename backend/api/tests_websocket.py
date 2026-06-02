@@ -21,6 +21,10 @@ TEST_CHANNEL_LAYERS = {
 create_user = sync_to_async(User.objects.create_user, thread_sensitive=True)
 
 
+def make_test_embedding(first_value):
+    return [float(first_value), *([0.0] * 383)]
+
+
 @pytest.fixture(autouse=True)
 def disable_hh_ai_assist_env(monkeypatch):
     monkeypatch.setenv("H_H_AI_ASSIST_ENABLED", "false")
@@ -72,6 +76,7 @@ async def test_dialogue_websocket_persists_completed_turn():
             "topic_id": 102,
             "topic_title": "台灣核能議題討論",
             "collection_name": "nuclear_energy_all",
+            "survey_context": {"q9_embedding": make_test_embedding(1)},
             "session": session.to_dict(),
         },
     )
@@ -82,7 +87,10 @@ async def test_dialogue_websocket_persists_completed_turn():
         f"/ws/dialogue/{session_id}/?token={token}",
     )
 
-    with patch("api.views.get_dialogue_agent", return_value=FakeStreamingDialogueAgent()):
+    with (
+        patch("api.views.get_dialogue_agent", return_value=FakeStreamingDialogueAgent()),
+        patch("apps.matching.services.hh_analysis.get_embedding", return_value=make_test_embedding(-1)),
+    ):
         connected, _ = await communicator.connect()
         assert connected
 
@@ -96,7 +104,9 @@ async def test_dialogue_websocket_persists_completed_turn():
         "type": "agent_stream",
         "content": "AI reply to: 核能真的比較穩定嗎？",
     }
-    assert end_message == {"type": "agent_stream_end"}
+    assert end_message["type"] == "agent_stream_end"
+    assert end_message["stance_drift"]["drift_value"] == 2.0
+    assert end_message["stance_drift"]["measured_at"]
 
     saved_turn = await AIConversation.objects.aget(session_id=session_id)
     assert saved_turn.user_id == user.id

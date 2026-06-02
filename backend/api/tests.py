@@ -403,6 +403,52 @@ class DialogueSessionApiTests(APITestCase):
         self.assertEqual(saved_turn.ai_response, "AI reply to: 核能真的比其他方案更穩定嗎？")
         mocked_get_agent.assert_called_once_with("nuclear_energy_all")
 
+    @patch("apps.matching.services.hh_analysis.get_embedding", return_value=make_test_embedding(-1))
+    @patch("api.views.build_q9_embedding", return_value=make_test_embedding(1), create=True)
+    @patch("api.views.get_dialogue_agent", return_value=FakeDialogueAgent())
+    def test_ai_reply_includes_session_stance_drift_value(
+        self,
+        mocked_get_agent,
+        mocked_q9_embedding,
+        mocked_message_embedding,
+    ):
+        create_response = self.client.post(
+            "/api/dialogue/sessions/",
+            {
+                "topic_id": 102,
+                "topic_title": "核能發電在減碳中的角色",
+                "survey_answers": build_supporting_answers(),
+                "survey_open_answers": {
+                    "Q9": "我支持核電，因為它能穩定供電並協助減碳。",
+                },
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        session_id = create_response.data["session_id"]
+        session_record = cache.get(f"dialogue_session:{session_id}")
+        self.assertEqual(
+            session_record["survey_context"]["q9_embedding"],
+            make_test_embedding(1),
+        )
+
+        reply_response = self.client.post(
+            f"/api/dialogue/sessions/{session_id}/reply/",
+            {"message": "核廢料和核安風險讓我開始擔心核電。"},
+            format="json",
+        )
+
+        self.assertEqual(reply_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(reply_response.data["stance_drift"]["drift_value"], 2.0)
+        self.assertIsNotNone(reply_response.data["stance_drift"]["measured_at"])
+        self.assertEqual(
+            cache.get(f"dialogue_session:{session_id}")["session"]["stance_drift"]["drift_value"],
+            2.0,
+        )
+        mocked_q9_embedding.assert_called_once()
+        mocked_message_embedding.assert_called_once_with("核廢料和核安風險讓我開始擔心核電。")
+        mocked_get_agent.assert_called_once_with("nuclear_energy_all")
+
     @patch("api.views.get_dialogue_agent", return_value=FakeDialogueAgent())
     def test_latest_session_restores_history_after_cache_loss(self, mocked_get_agent):
         create_response = self.client.post(

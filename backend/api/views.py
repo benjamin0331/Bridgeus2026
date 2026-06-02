@@ -11,6 +11,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTStatelessUserAuthentication
 
+from apps.matching.services.semantic import build_q9_embedding
+
 from .models import (
     AIConversation,
     DialogueMatch,
@@ -154,17 +156,50 @@ def _dialogue_session_response_payload(
 ) -> dict:
     session_state = session_record.get("session") or {}
     history = session_state.get("history") or []
+    stance_drift = session_state.get("stance_drift")
+    stance_score = session_state.get("user_stance_score")
+    try:
+        stance_category = _resolve_stance_category(
+            topic_id=int(session_record.get("topic_id")),
+            user_stance_score=float(stance_score),
+        )
+    except (TypeError, ValueError):
+        stance_category = None
+
     return {
         "session_id": session_record["session_id"],
         "topic_id": session_record.get("topic_id"),
         "topic_title": session_record.get("topic_title")
         or session_state.get("topic"),
         "dialogue_phase": session_state.get("dialogue_phase", "engagement"),
+        "stance_score": stance_score,
+        "stance_category": stance_category,
+        "stance_label": session_state.get("user_stance_label", ""),
+        "stance_drift": stance_drift,
         "history": history,
         "messages": history,
         "restored_from": restored_from,
         "status": DialogueSessionRecord.Status.ACTIVE,
     }
+
+
+def _update_ai_session_stance_drift(
+    *,
+    session_record: dict,
+    session_id: str,
+    user_id: int,
+) -> dict | None:
+    from apps.matching.services.hh_analysis import calculate_ai_session_stance_drift
+
+    try:
+        return calculate_ai_session_stance_drift(
+            session_record=session_record,
+            session_id=session_id,
+            user_id=user_id,
+        )
+    except Exception:
+        logger.exception("AI stance drift failed for session %s.", session_id)
+        return (session_record.get("session") or {}).get("stance_drift")
 
 
 def _get_survey_scoring_config(topic_id: int) -> dict:
@@ -335,6 +370,12 @@ def _build_topic_config(
         resolved_open_answers.get("Q9", "")
         or user_initial_argument
     )
+    q9_embedding = None
+    if resolved_initial_argument:
+        try:
+            q9_embedding = build_q9_embedding({"Q9": resolved_initial_argument})
+        except Exception:
+            logger.exception("Failed to build AI session Q9 embedding.")
 
     return {
         "topic": topic_meta.get("title", topic_title),
@@ -355,6 +396,7 @@ def _build_topic_config(
         "user_initial_argument": resolved_initial_argument,
         "survey_open_answers": resolved_open_answers,
         "semantic_vector_interface": semantic_vector_interface,
+        "q9_embedding": q9_embedding,
     }
 
 
@@ -610,6 +652,7 @@ class DialogueSessionCreateView(APIView):
                 "semantic_vector_interface": topic_config[
                     "semantic_vector_interface"
                 ],
+                "q9_embedding": topic_config["q9_embedding"],
             },
             "session": session.to_dict(),
         }
@@ -620,6 +663,13 @@ class DialogueSessionCreateView(APIView):
             {
                 "session_id": session_id,
                 "dialogue_phase": session.dialogue_phase.value,
+                "stance_score": session.user_stance_score,
+                "stance_category": _resolve_stance_category(
+                    topic_id=validated["topic_id"],
+                    user_stance_score=session.user_stance_score,
+                ),
+                "stance_label": session.user_stance_label,
+                "stance_drift": None,
                 "history": session.to_dict()["history"],
             },
             status=status.HTTP_201_CREATED,
@@ -745,17 +795,29 @@ class DialogueSessionReplyView(APIView):
         chunks = split_into_chunks(reply)
         session.add_agent_message(reply)
         session_record["session"] = session.to_dict()
-        _cache_dialogue_session_record(session_record)
-        _persist_dialogue_session_record(session_record)
         saved_turn.ai_response = reply
         saved_turn.dialogue_phase = session.dialogue_phase.value
         saved_turn.save(update_fields=["ai_response", "dialogue_phase"])
+        stance_drift = _update_ai_session_stance_drift(
+            session_record=session_record,
+            session_id=session_id,
+            user_id=request.user.id,
+        )
+        _cache_dialogue_session_record(session_record)
+        _persist_dialogue_session_record(session_record)
 
         return Response(
             {
                 "reply": reply,
                 "chunks": chunks,
                 "dialogue_phase": session.dialogue_phase.value,
+                "stance_score": session.user_stance_score,
+                "stance_category": _resolve_stance_category(
+                    topic_id=session_record.get("topic_id"),
+                    user_stance_score=session.user_stance_score,
+                ),
+                "stance_label": session.user_stance_label,
+                "stance_drift": stance_drift,
                 "history": session_record["session"]["history"],
             }
         )

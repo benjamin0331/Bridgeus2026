@@ -144,6 +144,39 @@ function formatDriftValue(value) {
   return numericValue.toFixed(4);
 }
 
+function formatStanceScoreValue(value) {
+  if (value === null || value === undefined || value === '') {
+    return '尚未建立';
+  }
+
+  const numericValue = Number(value);
+  if (Number.isFinite(numericValue)) {
+    return numericValue.toFixed(2);
+  }
+
+  return value || '尚未建立';
+}
+
+function extractAiStanceMeta(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+
+  return {
+    stanceScore: payload.stance_score ?? null,
+    stanceCategory: payload.stance_category || null,
+    stanceLabel: payload.stance_label || '',
+  };
+}
+
+function extractStanceDrift(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+
+  return payload.stance_drift || null;
+}
+
 function mapMatchMessagesToDisplay(messages, userId) {
   const currentUserId = Number(userId);
 
@@ -182,6 +215,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const [sessionId, setSessionId] = useState(null);
   const [inputValue, setInputValue] = useState('');
   const [messages, setMessages] = useState([]);
+  const [aiStanceMeta, setAiStanceMeta] = useState(null);
+  const [aiStanceDrift, setAiStanceDrift] = useState(null);
   const [isSending, setIsSending] = useState(false);
   const [isAgentStreaming, setIsAgentStreaming] = useState(false);
   const [chatError, setChatError] = useState('');
@@ -295,6 +330,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
     resetAiSemanticTreeState();
     setSessionId(pendingRestoredSession.session_id);
     setMessages(mapHistoryToMessages(pendingRestoredSession.history || [], displayUserName));
+    setAiStanceMeta(extractAiStanceMeta(pendingRestoredSession));
+    setAiStanceDrift(extractStanceDrift(pendingRestoredSession));
     setPendingRestoredSession(null);
     setShowSurvey(false);
     setChatError('');
@@ -317,6 +354,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setPendingRestoredSession(null);
     setSessionId(null);
     setMessages([]);
+    setAiStanceMeta(null);
+    setAiStanceDrift(null);
     setSurveyAnswers({});
     setSurveyOpenAnswers({});
     setInputValue('');
@@ -519,6 +558,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setSessionId(null);
     setInputValue('');
     setMessages([]);
+    setAiStanceMeta(null);
+    setAiStanceDrift(null);
     setIsSending(false);
     setChatError('');
     setIsAgentStreaming(false);
@@ -665,6 +706,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
         });
         setSessionId(null);
         setMessages([]);
+        setAiStanceMeta(null);
+        setAiStanceDrift(null);
         setShowSurvey(false);
       } catch (error) {
         if (cancelled) {
@@ -673,6 +716,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
         setSessionId(null);
         setMessages([]);
+        setAiStanceMeta(null);
+        setAiStanceDrift(null);
         setPendingRestoredSession(null);
         setShowSurvey(true);
         if (error?.response?.status && error.response.status !== 404) {
@@ -970,7 +1015,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
           setSemanticTreeMessage(
             error?.response?.data?.message ||
               error?.response?.data?.detail ||
-              'Gemini 語意分析暫時失敗，聊天室仍可使用。',
+              '語意脈絡分析暫時失敗，聊天室仍可使用。',
           );
           semanticTreeAnalyzeSignatureRef.current = signature;
         }
@@ -1013,7 +1058,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
           setSemanticTreeMessage(
             error?.response?.data?.message ||
               error?.response?.data?.detail ||
-              'Gemini 語意分析暫時失敗，對話仍可使用。',
+              '語意脈絡分析暫時失敗，對話仍可使用。',
           );
           semanticTreeAnalyzeSignatureRef.current = signature;
         }
@@ -1132,6 +1177,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
       if (data.type === 'agent_stream_end') {
         currentAgentMsgIdRef.current = null;
+        setAiStanceDrift(extractStanceDrift(data));
         setIsAgentStreaming(false);
         setIsSending(false);
         return;
@@ -1183,6 +1229,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
     });
 
     setSessionId(response.data.session_id);
+    setAiStanceMeta(extractAiStanceMeta(response.data));
+    setAiStanceDrift(extractStanceDrift(response.data));
     return response.data.session_id;
   };
 
@@ -1193,6 +1241,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
     );
 
     setMessages(mapHistoryToMessages(response.data.history, displayUserName));
+    setAiStanceMeta(extractAiStanceMeta(response.data));
+    setAiStanceDrift(extractStanceDrift(response.data));
   };
 
 
@@ -1270,6 +1320,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
       currentAgentMsgIdRef.current = null;
       setSessionId(null);
       setMessages([]);
+      setAiStanceMeta(null);
+      setAiStanceDrift(null);
       setSemanticTreePayload(null);
       setSemanticTreeStatus('ready');
       setSemanticTreeMessage('');
@@ -1928,17 +1980,31 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const driftUpdatedAt = matchStanceDrift?.measured_at
     ? `更新：${formatTimestamp(matchStanceDrift.measured_at)}`
     : '傳送訊息後由系統計算';
+  const aiDriftUpdatedAt = aiStanceDrift?.measured_at
+    ? `更新：${formatTimestamp(aiStanceDrift.measured_at)}`
+    : '傳送訊息後由系統計算';
   const stanceScoreDisplay = isMatchingMode
-    ? matchingState?.stance_score || '尚未建立'
-    : '—';
+    ? formatStanceScoreValue(matchingState?.stance_score)
+    : formatStanceScoreValue(aiStanceMeta?.stanceScore);
+  const stanceCategoryDisplay = isMatchingMode
+    ? formatStanceCategory(matchingState?.stance_category)
+    : aiStanceMeta?.stanceLabel || formatStanceCategory(aiStanceMeta?.stanceCategory);
   const matchMessageCount = isMatchingMode && isMatchChatReady
     ? matchMessages.length
     : 0;
   const aiUserMessageCount = !isMatchingMode
     ? messages.filter((message) => message.type === 'user').length
     : 0;
+  const metricMessageCount = isMatchingMode ? matchMessageCount : messages.length;
   const semanticTreeMessageCount = isMatchingMode ? matchMessageCount : aiUserMessageCount;
   const isSemanticTreeActive = isMatchingMode ? isMatchChatReady : Boolean(sessionId);
+  const driftValueDisplay = isMatchingMode
+    ? formatDriftValue(matchStanceDrift?.drift_value)
+    : formatDriftValue(aiStanceDrift?.drift_value);
+  const driftHintDisplay = isMatchingMode
+    ? driftUpdatedAt
+    : aiDriftUpdatedAt;
+  const metricMessageHint = isMatchingMode ? '目前房間累計訊息' : '目前 AI 對話累計訊息';
 
   return (
     <div className="chat-page-container">
@@ -2116,21 +2182,21 @@ function TopicChat({ user, issues, issuesLoaded }) {
           <div className="minor-feature-box metric-card">
             <span className="metric-label">我的立場偏離度</span>
             <strong className="metric-value">
-              {isMatchingMode ? formatDriftValue(matchStanceDrift?.drift_value) : '—'}
+              {driftValueDisplay}
             </strong>
             <span className="metric-hint">
-              {isMatchingMode ? driftUpdatedAt : '真人配對後顯示'}
+              {driftHintDisplay}
             </span>
           </div>
           <div className="minor-feature-box metric-card">
             <span className="metric-label">我的立場分數</span>
             <strong className="metric-value">{stanceScoreDisplay}</strong>
-            <span className="metric-hint">{formatStanceCategory(matchingState?.stance_category)}</span>
+            <span className="metric-hint">{stanceCategoryDisplay}</span>
           </div>
           <div className="minor-feature-box metric-card">
             <span className="metric-label">對話訊息數</span>
-            <strong className="metric-value">{matchMessageCount}</strong>
-            <span className="metric-hint">目前房間累計訊息</span>
+            <strong className="metric-value">{metricMessageCount}</strong>
+            <span className="metric-hint">{metricMessageHint}</span>
           </div>
         </div>
       </aside>

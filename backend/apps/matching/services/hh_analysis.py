@@ -8,6 +8,7 @@ import re
 
 import numpy as np
 from asgiref.sync import sync_to_async
+from django.utils import timezone
 
 from chat.services.embedding import cosine_distance, cosine_similarity, get_embedding
 
@@ -126,6 +127,67 @@ def calculate_match_stance_drift(*, match_id: int, user_id: int) -> dict:
     return {"drift_value": drift_value, "direction": direction}
 
 
+def calculate_ai_session_stance_drift(
+    *,
+    session_record: dict,
+    session_id: str,
+    user_id: int,
+) -> dict | None:
+    from api.models import AIConversation
+
+    survey_context = session_record.get("survey_context") or {}
+    baseline_embedding = survey_context.get("q9_embedding")
+    if baseline_embedding is None:
+        return None
+
+    turns = list(
+        AIConversation.objects.filter(
+            user_id=user_id,
+            session_id=session_id,
+            user_prompt__gt="",
+        ).order_by("created_at", "id")
+    )
+    if not turns:
+        return None
+
+    embeddings = []
+    for turn in turns:
+        try:
+            embeddings.append(get_embedding(turn.user_prompt))
+        except Exception:
+            continue
+
+    mean_embedding = _mean_embedding(embeddings)
+    if mean_embedding is None:
+        return None
+
+    drift_value = round(float(cosine_distance(mean_embedding, baseline_embedding)), 4)
+    if not math.isfinite(drift_value):
+        return None
+
+    session_state = session_record.setdefault("session", {})
+    previous_drift = session_state.get("stance_drift") or {}
+    previous_value = previous_drift.get("drift_value")
+    if previous_value is None:
+        direction = "stable"
+    else:
+        diff = drift_value - float(previous_value)
+        if diff > DIRECTION_THRESHOLD:
+            direction = "approaching"
+        elif diff < -DIRECTION_THRESHOLD:
+            direction = "diverging"
+        else:
+            direction = "stable"
+
+    payload = {
+        "drift_value": drift_value,
+        "direction": direction,
+        "measured_at": timezone.now().isoformat(),
+    }
+    session_state["stance_drift"] = payload
+    return payload
+
+
 def detect_match_stalemate(*, match_id: int, window_size: int = 5) -> dict:
     from api.models import DialogueMatch, MatchMessage
 
@@ -187,5 +249,6 @@ def build_stalemate_prompt(keywords: list[str]) -> str:
 aget_topic_anchor_embedding = sync_to_async(get_topic_anchor_embedding, thread_sensitive=False)
 acheck_match_topic_relevance = sync_to_async(check_match_topic_relevance, thread_sensitive=False)
 acalculate_match_stance_drift = sync_to_async(calculate_match_stance_drift, thread_sensitive=False)
+acalculate_ai_session_stance_drift = sync_to_async(calculate_ai_session_stance_drift, thread_sensitive=False)
 adetect_match_stalemate = sync_to_async(detect_match_stalemate, thread_sensitive=False)
 aextract_match_opponent_keywords = sync_to_async(extract_match_opponent_keywords, thread_sensitive=False)

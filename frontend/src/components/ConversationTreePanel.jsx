@@ -12,7 +12,7 @@ import {
 } from 'd3';
 import './ConversationTreePanel.css';
 
-const EMPTY_DETAIL_TEXT = '點選語意節點後，這裡會顯示完整原始訊息、路徑與 Gemini 判斷理由。';
+const EMPTY_DETAIL_TEXT = '點選語意節點後，這裡會顯示完整原始訊息、脈絡路徑與整理理由。';
 
 function cleanText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
@@ -459,7 +459,7 @@ function appendNodeShape(nodeSelection) {
   });
 }
 
-function statusText({ isActive, isLoading, isAnalyzing, analysisStatus, analysisMessage, messageCount, mode }) {
+function statusText({ isActive, isLoading, isAnalyzing, analysisStatus, messageCount, mode }) {
   if (!isActive) {
     return mode === 'ai'
       ? { title: 'AI 對話開始後啟用', detail: '送出第一則訊息後，這裡會顯示你的個人想法脈絡樹。' }
@@ -471,19 +471,19 @@ function statusText({ isActive, isLoading, isAnalyzing, analysisStatus, analysis
   }
 
   if (analysisStatus === 'missing_gemini_api_key') {
-    return { title: 'Gemini 未設定', detail: analysisMessage || 'backend .env 需要 GEMINI_API_KEY 才能分析新訊息。' };
+    return { title: '語意分析未設定', detail: '目前無法自動整理想法脈絡，對話仍可正常進行。' };
   }
 
   if (isAnalyzing) {
-    return { title: 'Gemini 分析中', detail: '訊息已先送出，語意樹會在分析完成後更新。' };
+    return { title: '正在整理脈絡', detail: '訊息已先送出，想法脈絡圖會在整理完成後更新。' };
   }
 
   if (!messageCount) {
-    return { title: '等待對話訊息', detail: '送出訊息後會由 Gemini 歸納到個人脈絡樹；未使用的大分類會先隱藏。' };
+    return { title: '等待對話訊息', detail: '送出訊息後會自動歸納到個人脈絡樹；未使用的大分類會先隱藏。' };
   }
 
   if (analysisStatus && analysisStatus !== 'ready') {
-    return { title: '語意分析暫停', detail: analysisMessage || '目前無法更新語意樹，聊天室仍可正常使用。' };
+    return { title: '語意分析暫停', detail: '目前無法更新想法脈絡圖，對話仍可正常使用。' };
   }
 
   return null;
@@ -499,7 +499,6 @@ function ConversationTreePanel({
   isLoading = false,
   isAnalyzing = false,
   analysisStatus = 'ready',
-  analysisMessage = '',
 }) {
   const shellRef = useRef(null);
   const svgRef = useRef(null);
@@ -528,7 +527,6 @@ function ConversationTreePanel({
     isLoading,
     isAnalyzing,
     analysisStatus,
-    analysisMessage,
     messageCount,
     mode,
   });
@@ -660,7 +658,7 @@ function ConversationTreePanel({
     <section className="conversation-tree-panel" aria-label="核電語意對話樹">
       <div className="conversation-tree-header">
         <div>
-          <span className="conversation-tree-eyebrow">Gemini Semantic Tree</span>
+          <span className="conversation-tree-eyebrow">想法脈絡圖</span>
           <h2>{mode === 'ai' ? '我的想法脈絡' : '雙方想法脈絡'}</h2>
         </div>
         <span className="conversation-tree-count">{messageCount} 則訊息</span>
@@ -719,7 +717,7 @@ function ConversationTreePanel({
             })}
           </div>
         ) : (
-          <p>{selectedNode.type === 'anchor' ? `「${selectedNode.name}」目前還沒有 Gemini 套用的訊息。` : EMPTY_DETAIL_TEXT}</p>
+          <p>{selectedNode.type === 'anchor' ? `「${selectedNode.name}」目前還沒有相關訊息。` : EMPTY_DETAIL_TEXT}</p>
         )}
         <span className="conversation-tree-detail-time">滾輪可縮放，拖曳可平移</span>
       </div>
