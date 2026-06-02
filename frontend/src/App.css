@@ -1,41 +1,41 @@
 /* --- 1. 全域樣式重置與基礎設定 --- */
-* { 
-  box-sizing: border-box; 
-  margin: 0; 
-  padding: 0; 
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
 }
 
 html, body {
-  width: 100%; 
+  width: 100%;
   height: 100%;
-  background-color: #f7f3f0; 
+  background-color: #f7f3f0;
   /* 設定標準中文字體族群 */
   font-family: "Microsoft JhengHei", "Apple LiGothic Medium", sans-serif;
   /* 禁止最外層出現捲動條，改由內部區域控制捲動 */
-  overflow: hidden; 
+  overflow: hidden;
 }
 
 /* --- 2. 應用程式主容器 --- */
 .app-container {
   height: 100vh;
   width: 100vw;
-  padding: 25px 60px; 
+  padding: 25px 60px;
   display: flex;
   flex-direction: column;
 }
 
 /* --- 3. 頂部導覽列樣式 --- */
 .top-navigation {
-  display: flex; 
-  justify-content: space-between; 
+  display: flex;
+  justify-content: space-between;
   align-items: center;
-  padding-bottom: 20px; 
-  border-bottom: 2.5px solid #e0d8cf; 
-  color: #7d6e6e; 
-  font-size: 24px; 
+  padding-bottom: 20px;
+  border-bottom: 2.5px solid #e0d8cf;
+  color: #7d6e6e;
+  font-size: 19.2px;
   margin-bottom: 35px;
   /* 防止頂部導覽列在彈性佈局中被壓縮尺寸 */
-  flex-shrink: 0; 
+  flex-shrink: 0;
 }
 
 .top-navigation-actions {
@@ -45,7 +45,7 @@ html, body {
 }
 
 .user-profile-name {
-  font-size: 18px;
+  font-size: 14.4px;
 }
 
 .logout-btn {
@@ -54,7 +54,7 @@ html, body {
   padding: 10px 18px;
   background-color: #d8c3ad;
   color: #5f5045;
-  font-size: 16px;
+  font-size: 12.8px;
   font-weight: 700;
   cursor: pointer;
   transition: background-color 0.2s ease, transform 0.2s ease;
@@ -71,76 +71,87 @@ html, body {
 
 /* --- 4. 主畫面佈局區域 (包含內容區與側邊欄) --- */
 .main-layout-wrapper {
-  display: flex; 
+  display: flex;
   flex: 1;
   /* 鎖定高度為 0 是為了讓內容區的 flex: 1 與 overflow 生效 */
-  height: 0; 
-  justify-content: space-between; 
-  align-items: stretch; 
+  height: 0;
+  justify-content: space-between;
+  align-items: stretch;
   gap: 50px;
   min-height: 0;
 }
 
 /* 主要內容呈現區塊 */
-.content-area { 
+.content-area {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
-  min-height: 0; 
+  min-height: 0;
   /* 隱藏內容區溢出部分，確保內層元件的自定義捲動條能正常運作 */
-  overflow: hidden; 
+  overflow: hidden;
 }
 
 /* --- 5. 側邊工具導覽欄 --- */
 .sidebar-container {
-  width: 90px; 
-  background-color: #f1ede8; 
+  width: 90px;
+  background-color: #f1ede8;
   border-radius: 30px;
-  padding: 35px 0; 
-  display: flex; 
+  padding: 35px 0;
+  display: flex;
   flex-direction: column;
-  align-items: center; 
-  gap: 45px; 
+  align-items: center;
+  gap: 45px;
   box-shadow: 4px 4px 25px rgba(0,0,0,0.02);
   /* 固定側邊欄寬度 */
-  flex-shrink: 0; 
+  flex-shrink: 0;
 }
 
 /* 使用者大頭貼容器 */
-.avatar-frame { 
-  width: 55px; 
-  height: 55px; 
+.avatar-frame {
+  width: 55px;
+  height: 55px;
   min-width: 55px;
   min-height: 55px;
   flex-shrink: 0;
-  border-radius: 50%; 
-  overflow: hidden; 
-  background: #e8e2d9; 
+  border-radius: 50%;
+  overflow: hidden;
+  background: #e8e2d9;
 }
 
-.avatar-image { 
-  width: 100%; 
-  height: 100%; 
-  object-fit: cover; 
+.avatar-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 /* 側邊功能圖示組合 */
-.sidebar-menu-icons { 
-  display: flex; 
-  flex-direction: column; 
-  gap: 40px; 
+.sidebar-menu-icons {
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
 }
 
-.utility-icon { 
-  width: 32px; 
-  height: 32px; 
-  cursor: pointer; 
+.utility-icon {
+  width: 32px;
+  height: 32px;
+  cursor: pointer;
+}
+
+.sidebar-icon-btn {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  cursor: pointer;
 }
 
 /* 底部首頁按鈕：推至側邊欄最下方 */
-.home-navigation-btn { 
-  margin-top: auto; 
+.home-navigation-btn {
+  margin-top: auto;
 }
 
 /* --- 手機版側邊欄展開按鈕（桌機隱藏）--- */
@@ -169,18 +180,18 @@ html, body {
   }
 
   .top-navigation {
-    font-size: 16px;
+    font-size: 12.8px;
     margin-bottom: 14px;
     padding-bottom: 14px;
   }
 
   .user-profile-name {
-    font-size: 14px;
+    font-size: 11.2px;
   }
 
   .logout-btn {
     padding: 8px 14px;
-    font-size: 13px;
+    font-size: 10.4px;
   }
 
   .main-layout-wrapper {
@@ -201,12 +212,22 @@ html, body {
     right: 0;
     top: 0;
     bottom: 0;
+    max-height: 100dvh;
     z-index: 300;
     border-radius: 30px 0 0 30px;
-    padding: 60px 0 35px 0;
+    padding: 60px 0 calc(35px + env(safe-area-inset-bottom)) 0;
     width: 90px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
     transform: translateX(100%);
     transition: transform 0.3s ease;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .sidebar-container::-webkit-scrollbar {
+    display: none;
   }
 
   .sidebar-container.sidebar-open {
@@ -237,7 +258,7 @@ html, body {
     border: none;
     background-color: #d8c3ad;
     color: #5f5045;
-    font-size: 20px;
+    font-size: 16px;
     cursor: pointer;
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
   }

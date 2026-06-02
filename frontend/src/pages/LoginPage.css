@@ -34,13 +34,13 @@
 }
 
 .login-header h1 {
-  font-size: 32px;
+  font-size: 25.6px;
   margin-bottom: 5px;
 }
 
 .login-header p {
   color: #888;
-  font-size: 13px;
+  font-size: 10.4px;
 }
 
 .login-form {
@@ -51,7 +51,7 @@
 
 .input-group label {
   display: block;
-  font-size: 13px;
+  font-size: 10.4px;
   color: #666;
   margin-bottom: 8px;
   padding-left: 5px;
@@ -63,7 +63,7 @@
   border: none;
   border-radius: 15px;
   padding: 15px 20px;
-  font-size: 15px;
+  font-size: 12px;
   box-sizing: border-box;
 }
 
@@ -77,7 +77,7 @@
   border: none;
   border-radius: 30px;
   padding: 15px;
-  font-size: 16px;
+  font-size: 12.8px;
   font-weight: bold;
   cursor: pointer;
   margin-top: 10px;
@@ -88,13 +88,13 @@
 .login-footer {
   margin-top: 25px;
   text-align: center;
-  font-size: 12px;
+  font-size: 9.6px;
   color: #bbb;
 }
 
 /* --- 🔮 核心法陣：背景裝飾通用樣式 --- */
-.bg-decor { 
-  position: absolute; 
+.bg-decor {
+  position: absolute;
   /* background-color 將在下方分別定義 */
   opacity: 0.4;              /* 🔮 稍微降低透明度 (原0.5)，讓三個顏色重疊時更柔和 */
   /* filter: blur(20px); */  /* 🛡️ 備註：如果你想要它們像彩虹雲煙，可以解鎖這行 blur 咒語 */
@@ -102,19 +102,19 @@
 }
 
 
-.bg-decor-1 { 
+.bg-decor-1 {
   width: 450px; height: 450px; /* 🔮 加大體積，讓它更有存在感 */
   background-color: #bf6164; /* 💖 你的粉色 */
   border-radius: 150px;      /* 圓角同步加大 */
-  top: -150px; right: -120px; 
+  top: -150px; right: -120px;
   transform: rotate(15deg);
 }
 
-.bg-decor-2 { 
+.bg-decor-2 {
   width: 350px; height: 350px; /* 🔮 體積 */
   background-color: #ddd77e; /* 💛 你的黃色 */
-  border-radius: 80px; 
-  bottom: -100px; left: -80px; 
+  border-radius: 80px;
+  bottom: -100px; left: -80px;
   transform: rotate(-10deg);
 }
 
@@ -130,7 +130,7 @@
   }
 
   .login-header h1 {
-    font-size: 24px;
+    font-size: 19.2px;
   }
 
   .login-logo {

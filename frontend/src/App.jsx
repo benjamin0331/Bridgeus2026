@@ -8,6 +8,7 @@ import Sidebar from './components/Sidebar'
 import HomePage from './pages/HomePage'
 import TopicChat from './pages/TopicChat'
 import KnowledgeBase from './pages/KnowledgeBase'
+import HistoryPage from './pages/HistoryPage'
 import LoginPage from './pages/LoginPage'
 
 function TopicChatRoute({ user, issues, issuesLoaded }) {
@@ -176,6 +177,7 @@ function App() {
             />
 
             <Route path="/kb" element={<KnowledgeBase />} />
+            <Route path="/history" element={<HistoryPage />} />
             <Route path="/chat" element={<div className="empty-page-message">Godot還在排隊</div>} />
           </Routes>
         </div>

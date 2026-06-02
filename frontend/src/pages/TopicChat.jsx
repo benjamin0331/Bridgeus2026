@@ -1772,69 +1772,6 @@ function TopicChat({ user, issues, issuesLoaded }) {
               </button>
             </div>
           )}
-          {pendingMatchSuggestion && (
-            <div className="match-assist-card">
-              <div className="match-assist-content">
-                <span className="match-assist-label">
-                  {formatSuggestionCategory(pendingMatchSuggestion.category)}
-                </span>
-                {pendingMatchSuggestion.original_content && (
-                  <p className="match-assist-original">
-                    原文：{pendingMatchSuggestion.original_content}
-                  </p>
-                )}
-                <p className="match-assist-copy">
-                  {pendingMatchSuggestion.suggested_content}
-                </p>
-              </div>
-              <div className="match-assist-actions">
-                {pendingMatchSuggestion.actions?.includes('accept') && (
-                  <button
-                    className="match-assist-btn primary"
-                    type="button"
-                    onClick={handleAcceptMatchSuggestion}
-                  >
-                    {pendingMatchSuggestion.category === 'rephrase' ? '使用建議' : '知道了'}
-                  </button>
-                )}
-                {pendingMatchSuggestion.actions?.includes('modify') && (
-                  <button
-                    className="match-assist-btn secondary"
-                    type="button"
-                    onClick={handleEditMatchSuggestion}
-                  >
-                    放到輸入框修改
-                  </button>
-                )}
-                {pendingMatchSuggestion.actions?.includes('ignore') && (
-                  <button
-                    className="match-assist-btn ghost"
-                    type="button"
-                    onClick={handleIgnoreMatchSuggestion}
-                  >
-                    {pendingMatchSuggestion.category === 'rephrase' ? '仍送出原文' : '略過'}
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-          {matchSuggestionDraft && (
-            <div className="match-assist-card editing">
-              <div>
-                <span className="match-assist-label">正在修改 AI 建議</span>
-                <p className="match-assist-copy">
-                  編輯完成後按送出，系統會再次檢查語氣後送出。
-                </p>
-              </div>
-              <button
-                className="match-assist-btn ghost"
-                type="button"
-                onClick={handleCancelSuggestionDraft}
-              >
-                取消修改
-              </button>
-            </div>
-          )}
           {matchChatDisplayMessages.map((msg) => (
             <div key={msg.id} className={`message-row ${msg.type === 'user' ? 'user-message' : ''}`}>
               <div className="message-user-info">
@@ -2005,6 +1942,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
     ? driftUpdatedAt
     : aiDriftUpdatedAt;
   const metricMessageHint = isMatchingMode ? '目前房間累計訊息' : '目前 AI 對話累計訊息';
+  const hasFloatingMatchSuggestion = isMatchingMode
+    && isMatchChatReady
+    && Boolean(pendingMatchSuggestion || matchSuggestionDraft);
 
   return (
     <div className="chat-page-container">
@@ -2046,7 +1986,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
         <div
           ref={messagesContainerRef}
-          className="chat-messages-display"
+          className={`chat-messages-display${hasFloatingMatchSuggestion ? ' has-floating-match-assist' : ''}`}
           onScroll={handleMessagesScroll}
         >
           {isMatchingMode ? (
@@ -2122,6 +2062,74 @@ function TopicChat({ user, issues, issuesLoaded }) {
           </button>
         )}
 
+        {hasFloatingMatchSuggestion && (
+          <div className="match-assist-floating-panel" aria-live="polite">
+            {pendingMatchSuggestion && (
+              <div className="match-assist-card floating">
+                <div className="match-assist-content">
+                  <span className="match-assist-label">
+                    {formatSuggestionCategory(pendingMatchSuggestion.category)}
+                  </span>
+                  {pendingMatchSuggestion.original_content && (
+                    <p className="match-assist-original">
+                      原文：{pendingMatchSuggestion.original_content}
+                    </p>
+                  )}
+                  <p className="match-assist-copy">
+                    {pendingMatchSuggestion.suggested_content}
+                  </p>
+                </div>
+                <div className="match-assist-actions">
+                  {pendingMatchSuggestion.actions?.includes('accept') && (
+                    <button
+                      className="match-assist-btn primary"
+                      type="button"
+                      onClick={handleAcceptMatchSuggestion}
+                    >
+                      {pendingMatchSuggestion.category === 'rephrase' ? '使用建議' : '知道了'}
+                    </button>
+                  )}
+                  {pendingMatchSuggestion.actions?.includes('modify') && (
+                    <button
+                      className="match-assist-btn secondary"
+                      type="button"
+                      onClick={handleEditMatchSuggestion}
+                    >
+                      放到輸入框修改
+                    </button>
+                  )}
+                  {pendingMatchSuggestion.actions?.includes('ignore') && (
+                    <button
+                      className="match-assist-btn ghost"
+                      type="button"
+                      onClick={handleIgnoreMatchSuggestion}
+                    >
+                      {pendingMatchSuggestion.category === 'rephrase' ? '仍送出原文' : '略過'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+            {matchSuggestionDraft && (
+              <div className="match-assist-card floating editing">
+                <div>
+                  <span className="match-assist-label">正在修改 AI 建議</span>
+                  <p className="match-assist-copy">
+                    編輯完成後按送出，系統會再次檢查語氣後送出。
+                  </p>
+                </div>
+                <button
+                  className="match-assist-btn ghost"
+                  type="button"
+                  onClick={handleCancelSuggestionDraft}
+                >
+                  取消修改
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="chat-input-area">
           <div className={`chat-input-wrapper ${isMatchingMode && !isMatchChatReady ? 'is-disabled' : ''}`}>
             <textarea
@@ -2155,7 +2163,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
             </button>
           </div>
           {activeChatError && (
-            <p style={{ color: '#b42318', fontSize: '14px', marginTop: '8px' }}>
+            <p style={{ color: '#b42318', fontSize: '11.2px', marginTop: '8px' }}>
               {activeChatError}
             </p>
           )}

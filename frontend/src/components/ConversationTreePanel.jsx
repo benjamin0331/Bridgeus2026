@@ -463,7 +463,7 @@ function statusText({ isActive, isLoading, isAnalyzing, analysisStatus, messageC
   if (!isActive) {
     return mode === 'ai'
       ? { title: 'AI 對話開始後啟用', detail: '送出第一則訊息後，這裡會顯示你的個人想法脈絡樹。' }
-      : { title: '真人配對後啟用', detail: '進入配對房間後，這裡會分開顯示雙方各自的想法脈絡。' };
+      : { title: '真人配對後啟用', detail: '進入配對房間後，這裡會顯示你的個人想法脈絡樹。' };
   }
 
   if (isLoading) {
@@ -503,10 +503,26 @@ function ConversationTreePanel({
   const shellRef = useRef(null);
   const svgRef = useRef(null);
   const zoomTransformRef = useRef(null);
-  const treeEntries = useMemo(
+  const allTreeEntries = useMemo(
     () => normalizeTreeEntries(trees, treeData, topicTitle),
     [topicTitle, treeData, trees],
   );
+  const treeEntries = useMemo(() => {
+    if (mode !== 'matching') {
+      return allTreeEntries;
+    }
+
+    const currentUserTrees = allTreeEntries.filter((entry) => entry.isCurrentUser);
+    if (currentUserTrees.length) {
+      return currentUserTrees;
+    }
+
+    return allTreeEntries.slice(0, 1).map((entry) => ({
+      ...entry,
+      label: '我的脈絡',
+      isCurrentUser: true,
+    }));
+  }, [allTreeEntries, mode]);
   const preferredOwnerKey = treeEntries.find((entry) => entry.isCurrentUser)?.ownerKey || treeEntries[0]?.ownerKey || 'default';
   const [requestedOwnerKey, setRequestedOwnerKey] = useState('');
   const activeOwnerKey = treeEntries.some((entry) => entry.ownerKey === requestedOwnerKey)
@@ -659,7 +675,7 @@ function ConversationTreePanel({
       <div className="conversation-tree-header">
         <div>
           <span className="conversation-tree-eyebrow">想法脈絡圖</span>
-          <h2>{mode === 'ai' ? '我的想法脈絡' : '雙方想法脈絡'}</h2>
+          <h2>我的想法脈絡</h2>
         </div>
         <span className="conversation-tree-count">{messageCount} 則訊息</span>
       </div>

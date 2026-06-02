@@ -13,6 +13,7 @@ from api.dialogue_topics import SURVEY_CONFIGS, TOPIC_CONFIGS
 from api.models import (
     AIConversation,
     DialogueMatch,
+    DialogueSessionRecord,
     MatchMessage,
     MatchQueueEntry,
     MatchStanceDrift,
@@ -580,6 +581,185 @@ class DialogueSessionApiTests(APITestCase):
         self.assertIsNotNone(cache.get(f"dialogue_session:{session_id}"))
 
 
+class HistoryApiTests(APITestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = get_user_model().objects.create_user(
+            username="alice",
+            password="secret123",
+        )
+        self.other_user = get_user_model().objects.create_user(
+            username="bob",
+            password="secret123",
+        )
+        self.third_user = get_user_model().objects.create_user(
+            username="mallory",
+            password="secret123",
+        )
+        self.client.force_authenticate(user=self.user)
+        self.other_client = APIClient()
+        self.other_client.force_authenticate(user=self.other_user)
+
+    def _create_ai_history(self, *, user=None, session_id="session-alice"):
+        user = user or self.user
+        record = DialogueSessionRecord.objects.create(
+            user=user,
+            session_id=session_id,
+            topic_id=102,
+            topic_title="台灣核能議題討論",
+            collection_name="nuclear_energy_all",
+            session_state={
+                "topic": "台灣核能議題討論",
+                "history": [
+                    {"role": "user", "content": "核能可以補足再生能源不穩定"},
+                    {"role": "agent", "content": "AI 回覆"},
+                ],
+                "dialogue_phase": "engagement",
+            },
+            last_activity_at=timezone.now(),
+        )
+        turn = AIConversation.objects.create(
+            user=user,
+            session_id=session_id,
+            topic_id=102,
+            user_prompt="核能可以補足再生能源不穩定",
+            ai_response="AI 回覆",
+        )
+        return record, turn
+
+    def _create_match_history(self, *, room_id="history-room", with_messages=True):
+        match = DialogueMatch.objects.create(
+            topic_id=102,
+            user_a=self.user,
+            user_b=self.other_user,
+            user_a_score=7,
+            user_b_score=1,
+            likert_distance=6,
+            semantic_distance=0,
+            match_score=1,
+            room_id=room_id,
+            status=DialogueMatch.Status.CLOSED,
+            closed_at=timezone.now(),
+        )
+        if with_messages:
+            own_message = MatchMessage.objects.create(
+                match=match,
+                sender=self.user,
+                content="核廢料處理會帶來長期負擔",
+            )
+            partner_message = MatchMessage.objects.create(
+                match=match,
+                sender=self.other_user,
+                content="核電除役與維護成本會增加負擔",
+            )
+            return match, own_message, partner_message
+        return match, None, None
+
+    def test_history_list_returns_own_ai_and_match_conversations(self):
+        ai_record, _ = self._create_ai_history()
+        self._create_ai_history(user=self.third_user, session_id="session-mallory")
+        match, _, _ = self._create_match_history()
+        self._create_match_history(room_id="empty-room", with_messages=False)
+
+        response = self.client.get("/api/history/conversations/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 2)
+        ids = {item["id"] for item in response.data["results"]}
+        self.assertEqual(ids, {ai_record.session_id, match.room_id})
+        self.assertNotIn("session-mallory", ids)
+        ai_item = next(item for item in response.data["results"] if item["kind"] == "ai")
+        match_item = next(item for item in response.data["results"] if item["kind"] == "match")
+        self.assertEqual(ai_item["message_count"], 2)
+        self.assertEqual(match_item["message_count"], 2)
+        self.assertIn("核能可以", ai_item["last_message_preview"])
+        self.assertIn("核電除役", match_item["last_message_preview"])
+
+    def test_history_detail_returns_ai_messages_and_semantic_tree(self):
+        ai_record, turn = self._create_ai_history()
+
+        response = self.client.get(
+            f"/api/history/conversations/ai/{ai_record.session_id}/"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["kind"], "ai")
+        self.assertEqual(response.data["id"], ai_record.session_id)
+        self.assertEqual(len(response.data["messages"]), 2)
+        self.assertEqual(response.data["messages"][0]["role"], "user")
+        self.assertEqual(response.data["messages"][0]["source_id"], str(turn.id))
+        self.assertEqual(response.data["messages"][1]["role"], "agent")
+        self.assertEqual(response.data["semantic_tree"]["trees"][0]["label"], "我的脈絡")
+
+        other_response = self.other_client.get(
+            f"/api/history/conversations/ai/{ai_record.session_id}/"
+        )
+        self.assertEqual(other_response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_history_detail_returns_match_messages_without_partner_tree(self):
+        match, own_message, partner_message = self._create_match_history()
+
+        response = self.client.get(
+            f"/api/history/conversations/match/{match.room_id}/"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["kind"], "match")
+        self.assertEqual(response.data["id"], match.room_id)
+        self.assertEqual(len(response.data["messages"]), 2)
+        self.assertEqual(response.data["messages"][0]["role"], "user")
+        self.assertEqual(response.data["messages"][0]["source_id"], str(own_message.id))
+        self.assertEqual(response.data["messages"][1]["role"], "partner")
+        self.assertEqual(response.data["messages"][1]["source_id"], str(partner_message.id))
+        self.assertEqual(len(response.data["semantic_tree"]["trees"]), 1)
+        self.assertEqual(response.data["semantic_tree"]["trees"][0]["label"], "我的脈絡")
+        self.assertNotIn("匿名對話者", str(response.data["semantic_tree"]))
+
+    def test_history_analyze_match_only_processes_current_user_messages(self):
+        match, own_message, partner_message = self._create_match_history()
+        analyzed_texts = []
+
+        def fake_analyze(*, text, tree, anchors=None, api_key=None, model=None):
+            analyzed_texts.append(text)
+            if "核廢料" in text:
+                return fake_gemini_items_response()
+            return fake_economy_items_response()
+
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}), patch(
+            "apps.matching.services.semantic_tree.analyze_with_gemini",
+            side_effect=fake_analyze,
+        ):
+            response = self.client.post(
+                f"/api/history/conversations/match/{match.room_id}/semantic-tree/analyze/"
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(analyzed_texts, ["核廢料處理會帶來長期負擔"])
+        self.assertEqual(response.data["semantic_tree"]["analyzedCount"], 1)
+        tree = response.data["semantic_tree"]["trees"][0]
+        self.assertIn(str(own_message.id), tree["analyzedSourceIds"])
+        self.assertNotIn(str(partner_message.id), tree["analyzedSourceIds"])
+        self.assertIn("核廢長期負擔", str(tree["treeData"]))
+        self.assertNotIn("除役維護成本", str(tree["treeData"]))
+
+    def test_history_analyze_missing_key_does_not_block_detail(self):
+        ai_record, _ = self._create_ai_history()
+
+        with patch.dict("os.environ", {"GEMINI_API_KEY": ""}):
+            response = self.client.post(
+                f"/api/history/conversations/ai/{ai_record.session_id}/semantic-tree/analyze/"
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(response.data["error"], "missing_gemini_api_key")
+
+        detail_response = self.client.get(
+            f"/api/history/conversations/ai/{ai_record.session_id}/"
+        )
+        self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(detail_response.data["messages"]), 2)
+
+
 class MatchingApiTests(APITestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user(
@@ -1061,10 +1241,10 @@ class MatchingApiTests(APITestCase):
             ["核能安全", "經濟成本", "能源問題", "環境保護", "民主治理", "核廢處理"],
         )
         self.assertEqual(response.data["analysisHistory"], [])
-        self.assertEqual(len(response.data["trees"]), 2)
+        self.assertEqual(len(response.data["trees"]), 1)
         self.assertEqual(response.data["trees"][0]["label"], "我的脈絡")
-        self.assertEqual(response.data["trees"][1]["label"], "匿名對話者")
         self.assertTrue(response.data["trees"][0]["isCurrentUser"])
+        self.assertNotIn("匿名對話者", str(response.data))
 
     def test_semantic_tree_analyze_requires_gemini_key_without_blocking_messages(self):
         match, room_id = self._create_match()
@@ -1113,7 +1293,7 @@ class MatchingApiTests(APITestCase):
         self.assertEqual(waste_anchor["children"][0]["name"], "長期處置")
         self.assertEqual(waste_anchor["children"][0]["children"][0]["name"], "核廢長期負擔")
 
-    def test_semantic_tree_analyze_keeps_two_participants_in_separate_trees(self):
+    def test_semantic_tree_analyze_only_returns_and_updates_current_user_tree(self):
         match, room_id = self._create_match()
         own_message = MatchMessage.objects.create(
             match=match,
@@ -1138,20 +1318,30 @@ class MatchingApiTests(APITestCase):
             side_effect=fake_analyze,
         ) as mocked_analyze:
             response = self.client.post(f"/api/matching/rooms/{room_id}/semantic-tree/analyze/")
+            partner_response = self.other_client.post(
+                f"/api/matching/rooms/{room_id}/semantic-tree/analyze/"
+            )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(partner_response.status_code, status.HTTP_200_OK)
         self.assertEqual(mocked_analyze.call_count, 2)
         self.assertNotIn("核廢長期負擔", str(tree_snapshots[1]))
-        self.assertEqual(response.data["analyzedCount"], 2)
-        self.assertEqual(len(response.data["trees"]), 2)
-        own_tree = next(tree for tree in response.data["trees"] if tree["isCurrentUser"])
-        partner_tree = next(tree for tree in response.data["trees"] if not tree["isCurrentUser"])
+        self.assertEqual(response.data["analyzedCount"], 1)
+        self.assertEqual(partner_response.data["analyzedCount"], 1)
+        self.assertEqual(len(response.data["trees"]), 1)
+        self.assertEqual(len(partner_response.data["trees"]), 1)
+        own_tree = response.data["trees"][0]
+        partner_tree = partner_response.data["trees"][0]
         self.assertIn(str(own_message.id), own_tree["analyzedSourceIds"])
         self.assertNotIn(str(partner_message.id), own_tree["analyzedSourceIds"])
+        self.assertNotIn("匿名對話者", str(response.data))
         self.assertIn(str(partner_message.id), partner_tree["analyzedSourceIds"])
+        self.assertNotIn(str(own_message.id), partner_tree["analyzedSourceIds"])
+        self.assertNotIn("匿名對話者", str(partner_response.data))
         self.assertIn("核廢長期負擔", str(own_tree["treeData"]))
         self.assertNotIn("除役維護成本", str(own_tree["treeData"]))
         self.assertIn("除役維護成本", str(partner_tree["treeData"]))
+        self.assertNotIn("核廢長期負擔", str(partner_tree["treeData"]))
 
     def test_room_messages_reject_blank_content(self):
         _, room_id = self._create_match()

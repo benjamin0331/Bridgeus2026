@@ -772,12 +772,6 @@ def _owner_key_for_message(match: DialogueMatch, sender_id: int | None) -> str |
     return None
 
 
-def _ordered_match_owner_keys(match: DialogueMatch, current_user_id: int | None) -> list[str]:
-    current_owner_key = _owner_key_for_user(match, current_user_id)
-    other_owner_key = OWNER_USER_B if current_owner_key == OWNER_USER_A else OWNER_USER_A
-    return [current_owner_key, other_owner_key]
-
-
 def _owner_payload(
     owner_state: dict[str, Any],
     *,
@@ -801,17 +795,14 @@ def _match_tree_payloads(
     current_user_id: int | None,
 ) -> list[dict[str, Any]]:
     current_owner_key = _owner_key_for_user(match, current_user_id)
-    payloads = []
-    for owner_key in _ordered_match_owner_keys(match, current_user_id):
-        owner_state = state["participants"][owner_key]
-        payloads.append(
-            _owner_payload(
-                owner_state,
-                label="我的脈絡" if owner_key == current_owner_key else "匿名對話者",
-                is_current_user=owner_key == current_owner_key,
-            )
+    owner_state = state["participants"][current_owner_key]
+    return [
+        _owner_payload(
+            owner_state,
+            label="我的脈絡",
+            is_current_user=True,
         )
-    return payloads
+    ]
 
 
 def _active_tree_payload(trees: list[dict[str, Any]]) -> dict[str, Any]:
@@ -901,11 +892,13 @@ def analyze_pending_room_messages(
     with transaction.atomic():
         locked_match = DialogueMatch.objects.select_for_update().get(pk=match.pk)
         state = get_semantic_tree_state(locked_match, root_name=root_name)
+        current_owner_key = _owner_key_for_user(locked_match, current_user_id)
         pending_messages = [
             (message, owner_key)
             for message in locked_match.messages.order_by("created_at", "id")
             for owner_key in [_owner_key_for_message(locked_match, message.sender_id)]
             if owner_key
+            and owner_key == current_owner_key
             and clean_text(message.id)
             not in set(state["participants"][owner_key]["analyzedSourceIds"])
         ][: semantic_tree_batch_size()]

@@ -90,7 +90,7 @@ function LoginPage({ setUser, authMessage = '' }) {
           </div>
 
           {displayErrorMessage && (
-            <p style={{ color: 'red', fontSize: '14px', marginBottom: '10px' }}>
+            <p style={{ color: 'red', fontSize: '11.2px', marginBottom: '10px' }}>
               {displayErrorMessage}
             </p>
           )}
