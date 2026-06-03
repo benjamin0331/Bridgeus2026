@@ -404,7 +404,7 @@ class DialogueSessionApiTests(APITestCase):
         self.assertEqual(saved_turn.ai_response, "AI reply to: 核能真的比其他方案更穩定嗎？")
         mocked_get_agent.assert_called_once_with("nuclear_energy_all")
 
-    @patch("apps.matching.services.hh_analysis.get_embedding", return_value=make_test_embedding(-1))
+    @patch("chat.services.embedding.get_embedding", return_value=make_test_embedding(-1))
     @patch("api.views.build_q9_embedding", return_value=make_test_embedding(1), create=True)
     @patch("api.views.get_dialogue_agent", return_value=FakeDialogueAgent())
     def test_ai_reply_includes_session_stance_drift_value(

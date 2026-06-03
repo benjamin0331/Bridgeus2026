@@ -210,6 +210,16 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
     ):
         from api.models import AIConversation
 
+        embedding = None
+        try:
+            embedding = await aget_embedding(user_message)
+        except Exception:
+            logger.exception(
+                "Embedding failed for AI dialogue prompt session=%s user=%s.",
+                self.session_id,
+                self.user.id,
+            )
+
         try:
             return await AIConversation.objects.acreate(
                 user=self.user,
@@ -217,6 +227,7 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
                 topic_id=session_record.get("topic_id"),
                 user_prompt=user_message,
                 dialogue_phase=dialogue_phase,
+                embedding=embedding,
             )
         except Exception:
             logger.exception(

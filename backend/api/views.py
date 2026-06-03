@@ -898,12 +898,26 @@ class DialogueSessionReplyView(APIView):
         session = DialogueSession.from_dict(session_record["session"])
         session.add_user_message(user_message)
         session.dialogue_phase = DialoguePhase.from_turn_count(session.turn_count)
+
+        prompt_embedding = None
+        try:
+            from chat.services.embedding import get_embedding
+
+            prompt_embedding = get_embedding(user_message)
+        except Exception:
+            logger.exception(
+                "Embedding failed for AI dialogue prompt session=%s user=%s.",
+                session_id,
+                request.user.id,
+            )
+
         saved_turn = AIConversation.objects.create(
             user=request.user,
             session_id=session_id,
             topic_id=session_record.get("topic_id"),
             user_prompt=user_message,
             dialogue_phase=session.dialogue_phase.value,
+            embedding=prompt_embedding,
         )
 
         try:

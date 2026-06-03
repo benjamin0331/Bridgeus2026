@@ -140,24 +140,14 @@ def calculate_ai_session_stance_drift(
     if baseline_embedding is None:
         return None
 
-    turns = list(
-        AIConversation.objects.filter(
-            user_id=user_id,
-            session_id=session_id,
-            user_prompt__gt="",
-        ).order_by("created_at", "id")
-    )
-    if not turns:
-        return None
+    turns = AIConversation.objects.filter(
+        user_id=user_id,
+        session_id=session_id,
+        user_prompt__gt="",
+        embedding__isnull=False,
+    ).order_by("created_at", "id")
 
-    embeddings = []
-    for turn in turns:
-        try:
-            embeddings.append(get_embedding(turn.user_prompt))
-        except Exception:
-            continue
-
-    mean_embedding = _mean_embedding(embeddings)
+    mean_embedding = _mean_embedding(turn.embedding for turn in turns)
     if mean_embedding is None:
         return None
 
