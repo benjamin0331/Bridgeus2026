@@ -2,7 +2,6 @@ import json
 import os
 import re
 import urllib.error
-import urllib.parse
 import urllib.request
 from copy import deepcopy
 from typing import Any
@@ -13,9 +12,14 @@ from django.utils import timezone
 from api.models import AIConversation, DialogueMatch
 
 
-DEFAULT_MODEL = "gemini-2.5-flash"
-MAX_ANALYSIS_ITEMS = 3
-MAX_PATH_DEPTH = 2
+DEFAULT_MODEL = "gpt-5.4-mini"
+DEFAULT_OPENAI_TIMEOUT_SECONDS = 20.0
+# Research-validated on human-human dialogue (api_matchmessage_li): each message
+# carries at most 2 distinct anchors, and a single anchor only ever needs 1
+# mid-level category to stay readable (max 4 visual layers). See
+# prompt_experiments/li-depth-recommendation.md in the CCND prototype.
+MAX_ANALYSIS_ITEMS = 2
+MAX_PATH_DEPTH = 1
 MIN_CONFIDENCE = 0.55
 SEMANTIC_TREE_STATS_KEY = "semantic_tree"
 SEMANTIC_TREE_STATE_VERSION = 2
@@ -33,6 +37,18 @@ FIXED_ANCHORS = [
     {"id": "anchor_governance", "name": "民主治理"},
     {"id": "anchor_waste", "name": "核廢處理"},
 ]
+
+ANCHOR_DESCRIPTIONS = {
+    "anchor_safety": "事故風險、老舊延役、地震帶、反應爐技術、輻射外洩、安全審查。",
+    "anchor_economy": "發電成本、維護成本、除役成本、補貼、電價、投資效益。",
+    "anchor_energy": "供電穩定、缺電風險、基載、能源配置、再生能源互補。",
+    "anchor_environment": "減碳、空污、生態衝擊、土地使用、氣候風險。",
+    "anchor_governance": "資訊公開、民意溝通、政府信任、程序正義、決策透明、主權與責任。",
+    "anchor_waste": "核廢料處置、最終儲存、地方承擔、長期管理、處置場風險。",
+}
+
+# Internal node ids the model must never emit as a human-readable path segment.
+_INTERNAL_ID_RE = re.compile(r"^(anchor|agent|category|point|virtual)_[a-z0-9_-]+$", re.IGNORECASE)
 
 ANALYSIS_RESPONSE_SCHEMA = {
     "type": "object",
@@ -100,14 +116,14 @@ class SemanticTreeError(Exception):
     code = "semantic_tree_failed"
 
 
-class MissingGeminiApiKey(SemanticTreeError):
+class MissingOpenAIApiKey(SemanticTreeError):
     status_code = 503
-    code = "missing_gemini_api_key"
+    code = "missing_openai_api_key"
 
 
-class GeminiApiError(SemanticTreeError):
+class OpenAIApiError(SemanticTreeError):
     status_code = 502
-    code = "gemini_api_failed"
+    code = "openai_api_failed"
 
 
 def clean_text(value: Any) -> str:
@@ -349,14 +365,48 @@ def compact_tree_for_prompt(
     }
 
 
-def build_gemini_request(
+def _looks_like_internal_id(value: Any) -> bool:
+    return bool(_INTERNAL_ID_RE.match(clean_text(value)))
+
+
+def list_existing_node_names(tree: dict[str, Any] | None) -> str:
+    """Flatten each anchor's existing child names so the model can reuse the
+    exact string and merge synonymous claims instead of spawning near-duplicates.
+    """
+    lines = []
+    for anchor in (tree or {}).get("children") or []:
+        if not isinstance(anchor, dict):
+            continue
+        names: list[str] = []
+
+        def collect(node: dict[str, Any]) -> None:
+            for child in node.get("children") or []:
+                if not isinstance(child, dict):
+                    continue
+                name = clean_text(child.get("name"))
+                if name:
+                    names.append(name)
+                collect(child)
+
+        collect(anchor)
+        if names:
+            unique_names = list(dict.fromkeys(names))
+            lines.append(f"{anchor.get('name')}：{'、'.join(unique_names)}")
+    return "\n".join(lines) if lines else "（目前各分類底下還沒有任何節點）"
+
+
+def build_openai_request(
     *,
     text: str,
     tree: dict[str, Any],
     anchors: list[dict[str, str]] | None = None,
+    model: str | None = None,
 ) -> dict[str, Any]:
     resolved_anchors = anchors or FIXED_ANCHORS
-    anchor_list = "\n".join(f"{anchor['id']}: {anchor['name']}" for anchor in resolved_anchors)
+    anchor_list = "\n".join(
+        f"{anchor['id']}: {anchor['name']} - {ANCHOR_DESCRIPTIONS.get(anchor['id'], '核能議題分類。')}"
+        for anchor in resolved_anchors
+    )
     tree_summary = json.dumps(compact_tree_for_prompt(tree), ensure_ascii=False, indent=2)
 
     prompt_text = "\n".join(
@@ -373,11 +423,20 @@ def build_gemini_request(
             "",
             "核心原則：",
             f"1. 每次輸入最多輸出 {MAX_ANALYSIS_ITEMS} 個 items。",
-            "2. 優先輸出 1 到 2 個 items；只有當輸入明確包含不同議題時才輸出第 3 個。",
+            "2. 優先輸出 1 個 item；只有當輸入明確橫跨兩個不同固定分類時才輸出第 2 個。",
             "3. 不要因為一句話裡有「例如、等等、包含、以及」就拆成很多節點。",
             "4. 相近意思要合併成同一個 claim。",
             "5. 不要把原因、例子、補充說明拆成獨立節點，除非它本身是另一個明確議題。",
             "6. 若使用者只是在表達單一立場，請產生一個總結型節點。",
+            "7. 若訊息只是問候、確認、追問、附和，或沒有新的核能議題主張，輸出 items: []。",
+            "",
+            "合併規則（最重要，務必避免近義節點）：",
+            "- 產生 pointName 與 path 前，先看「現有節點清單」裡，同一個 anchor（以及同一個中層分類）底下已經存在的節點名稱。",
+            "- 只要既有節點的『核心主張』和你要表達的相同或高度重疊，就直接輸出『與該既有節點完全相同的 pointName 與 path』，讓系統把它合併到同一個節點，不要另開一個近義節點。",
+            "- 判斷是否同義，看的是『核心主張是否一致』，不是字面用詞是否一樣。",
+            "- 範例：「核能較低污染」「核電減少空污排放」「核電比火力乾淨」核心主張都是『核電污染較低』，必須合併成同一個節點，不可變成三個。",
+            "- 範例：「核電風險不可控」「核能事故後果嚴重」核心主張都是『核安風險高』，應合併。",
+            "- 寧可掛到既有節點，也不要為了細微差異新增節點；同一則訊息內也不要同時輸出兩個意思相近的 items。",
             "",
             "分類規則：",
             "- anchorId 必須是最主要的議題分類。",
@@ -386,11 +445,17 @@ def build_gemini_request(
             "  - 可輸出「核能經濟效益偏低」到 anchor_economy。",
             "  - 可輸出「核廢處理增加長期負擔」到 anchor_waste。",
             "  - 不要再拆出「維護成本」、「處理成本」、「長期成本」等重複節點。",
+            "- 技術規格、老舊核電廠、延役安全、地震風險、事故後果，優先歸到 anchor_safety。",
+            "- 資訊公開、政府說明、信任、民意、公投、程序正義、主權與責任，優先歸到 anchor_governance。",
+            "- 核廢料最終處置、儲存地點、長期管理，優先歸到 anchor_waste；只有在重點明確是價格或財務負擔時才放 anchor_economy。",
             "",
             "path 規則：",
             "- path 不包含 anchor 本身，只描述 anchor 底下的子分類路徑。",
             f"- path 最多 {MAX_PATH_DEPTH} 層。",
+            "- path 每一段都必須是可讀的中文分類名稱，不可使用任何內部 id，例如 anchor_*、agent_*、category_*、point_*。",
+            "- path 不可和 anchor 名稱相同；例如 anchor_governance 底下不要再建立「民主治理」。",
             "- 優先使用目前這位說話者樹中已有的相近節點名稱。",
+            "- 如果沒有穩定、可重複使用的中層分類，path 請用空陣列。",
             "- 只有當現有節點完全不適合時，才建立新的子分類。",
             "- 新子分類名稱必須抽象、可容納未來類似討論，不要太細。",
             "- 不要為單一小例子建立新子分類。",
@@ -417,6 +482,10 @@ def build_gemini_request(
             "- 請避免過深 path。",
             "- 請讓結果適合視覺化，而不是適合文章摘要。",
             "",
+            "現有節點清單（最重要的合併依據）：",
+            "若你的主張與下列某個名稱相同或高度重疊，請直接輸出『完全相同的名稱』讓它合併，不要改寫成新名稱。",
+            list_existing_node_names(tree),
+            "",
             "目前樹狀資料摘要：",
             tree_summary,
             "",
@@ -426,15 +495,20 @@ def build_gemini_request(
     )
 
     return {
-        "contents": [
+        "model": model or get_openai_model(),
+        "input": [
             {
                 "role": "user",
-                "parts": [{"text": prompt_text}],
+                "content": prompt_text,
             }
         ],
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "responseJsonSchema": ANALYSIS_RESPONSE_SCHEMA,
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "semantic_tree_analysis",
+                "strict": True,
+                "schema": ANALYSIS_RESPONSE_SCHEMA,
+            }
         },
     }
 
@@ -450,7 +524,9 @@ def validate_analysis_items(
     tree: dict[str, Any],
     anchors: list[dict[str, str]] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    anchor_map = {anchor["id"]: anchor for anchor in (anchors or FIXED_ANCHORS)}
+    resolved_anchors = anchors or FIXED_ANCHORS
+    anchor_map = {anchor["id"]: anchor for anchor in resolved_anchors}
+    anchor_names = {anchor["name"] for anchor in resolved_anchors}
     items = []
     invalid_items = []
 
@@ -492,6 +568,14 @@ def validate_analysis_items(
             continue
         if len(path) > MAX_PATH_DEPTH:
             invalid_items.append(_item_error(raw_item, f"path too deep: maximum {MAX_PATH_DEPTH}"))
+            continue
+        internal_id_segment = next((segment for segment in path if _looks_like_internal_id(segment)), None)
+        if internal_id_segment:
+            invalid_items.append(_item_error(raw_item, f"path contains internal id: {internal_id_segment}"))
+            continue
+        anchor_name_segment = next((segment for segment in path if segment in anchor_names), None)
+        if anchor_name_segment:
+            invalid_items.append(_item_error(raw_item, f"path contains anchor name: {anchor_name_segment}"))
             continue
         if len(items) >= MAX_ANALYSIS_ITEMS:
             invalid_items.append(_item_error(raw_item, f"maximum of {MAX_ANALYSIS_ITEMS} items exceeded"))
@@ -617,7 +701,7 @@ def apply_analysis_items_to_tree(
                 counter,
                 {
                     "semanticRole": "category",
-                    "generatedBy": "gemini",
+                    "generatedBy": "openai",
                     "sourceClaim": item.get("claimText"),
                 },
             )
@@ -637,7 +721,7 @@ def apply_analysis_items_to_tree(
                 item.get("pointName"),
                 counter,
                 {
-                    "generatedBy": "gemini",
+                    "generatedBy": "openai",
                     "stance": item.get("stance"),
                     "confidence": item.get("confidence"),
                     "rationale": item.get("rationale"),
@@ -666,26 +750,39 @@ def strip_json_fence(value: str) -> str:
     return match.group(1).strip() if match else text
 
 
-def parse_gemini_response(response_body: dict[str, Any]) -> dict[str, Any]:
-    parts = response_body.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-    text = "".join(part.get("text", "") for part in parts).strip()
+def parse_openai_response(response_body: dict[str, Any]) -> dict[str, Any]:
+    text = clean_text(response_body.get("output_text"))
     if not text:
-        raise GeminiApiError("Gemini response did not include JSON text.")
+        parts = []
+        for item in response_body.get("output") or []:
+            for content in item.get("content") or []:
+                if isinstance(content, dict):
+                    parts.append(content.get("text") or "")
+        text = "".join(parts).strip()
+    if not text:
+        raise OpenAIApiError("OpenAI response did not include JSON text.")
     try:
         return json.loads(strip_json_fence(text))
     except json.JSONDecodeError as exc:
-        raise GeminiApiError(f"Gemini response JSON parse failed: {exc}") from exc
+        raise OpenAIApiError(f"OpenAI response JSON parse failed: {exc}") from exc
 
 
-def get_gemini_api_key() -> str:
-    return clean_text(os.getenv("GEMINI_API_KEY"))
+def get_openai_api_key() -> str:
+    return clean_text(os.getenv("OPENAI_API_KEY"))
 
 
-def get_gemini_model() -> str:
-    return clean_text(os.getenv("GEMINI_MODEL")) or DEFAULT_MODEL
+def get_openai_model() -> str:
+    return clean_text(os.getenv("OPENAI_MODEL")) or DEFAULT_MODEL
 
 
-def analyze_with_gemini(
+def _openai_timeout_seconds() -> float:
+    try:
+        return float(os.getenv("OPENAI_API_TIMEOUT_SECONDS", "20"))
+    except (TypeError, ValueError):
+        return DEFAULT_OPENAI_TIMEOUT_SECONDS
+
+
+def analyze_with_openai(
     *,
     text: str,
     tree: dict[str, Any],
@@ -694,40 +791,42 @@ def analyze_with_gemini(
     model: str | None = None,
 ) -> dict[str, Any]:
     cleaned_text = clean_text(text)
+    resolved_model = model or get_openai_model()
     if not cleaned_text:
-        return {"items": [], "invalidItems": [], "model": model or get_gemini_model()}
+        return {"items": [], "invalidItems": [], "model": resolved_model}
 
-    resolved_api_key = api_key if api_key is not None else get_gemini_api_key()
+    resolved_api_key = api_key if api_key is not None else get_openai_api_key()
     if not resolved_api_key:
-        raise MissingGeminiApiKey("server 缺少 GEMINI_API_KEY，無法呼叫 Gemini。")
+        raise MissingOpenAIApiKey("server 缺少 OPENAI_API_KEY，無法呼叫 OpenAI。")
 
-    resolved_model = model or get_gemini_model()
-    request_body = build_gemini_request(text=cleaned_text, tree=tree, anchors=anchors or FIXED_ANCHORS)
-    endpoint = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{urllib.parse.quote(resolved_model, safe='')}:generateContent"
+    request_body = build_openai_request(
+        text=cleaned_text,
+        tree=tree,
+        anchors=anchors or FIXED_ANCHORS,
+        model=resolved_model,
     )
+    endpoint = "https://api.openai.com/v1/responses"
     request = urllib.request.Request(
         endpoint,
         data=json.dumps(request_body, ensure_ascii=False).encode("utf-8"),
         method="POST",
         headers={
             "Content-Type": "application/json",
-            "x-goog-api-key": resolved_api_key,
+            "Authorization": f"Bearer {resolved_api_key}",
         },
     )
 
+    timeout = _openai_timeout_seconds()
     try:
-        timeout = float(os.getenv("GEMINI_API_TIMEOUT_SECONDS", "20"))
         with urllib.request.urlopen(request, timeout=timeout) as response:
             response_body = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         response_text = exc.read().decode("utf-8", errors="replace")
-        raise GeminiApiError(f"Gemini API error {exc.code}: {response_text}") from exc
+        raise OpenAIApiError(f"OpenAI API error {exc.code}: {response_text}") from exc
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-        raise GeminiApiError(f"Gemini API request failed: {exc}") from exc
+        raise OpenAIApiError(f"OpenAI API request failed: {exc}") from exc
 
-    parsed = parse_gemini_response(response_body)
+    parsed = parse_openai_response(response_body)
     return {
         **validate_analysis_items(parsed, tree, anchors or FIXED_ANCHORS),
         "model": resolved_model,
@@ -903,14 +1002,14 @@ def analyze_pending_room_messages(
             not in set(state["participants"][owner_key]["analyzedSourceIds"])
         ][: semantic_tree_batch_size()]
 
-        if pending_messages and not get_gemini_api_key():
-            raise MissingGeminiApiKey("server 缺少 GEMINI_API_KEY，無法呼叫 Gemini。")
+        if pending_messages and not get_openai_api_key():
+            raise MissingOpenAIApiKey("server 缺少 OPENAI_API_KEY，無法呼叫 OpenAI。")
 
         analyzed_count = 0
         for message, owner_key in pending_messages:
             owner_state = state["participants"][owner_key]
             source_message = _message_to_source(message)
-            result = analyze_with_gemini(
+            result = analyze_with_openai(
                 text=message.content,
                 tree=owner_state["treeData"],
                 anchors=state["anchors"],
@@ -925,7 +1024,7 @@ def analyze_pending_room_messages(
                     "sourceId": clean_text(message.id),
                     "sourceType": "match_message",
                     "analyzedAt": timezone.now().isoformat(),
-                    "model": result.get("model") or get_gemini_model(),
+                    "model": result.get("model") or get_openai_model(),
                     "sourceText": message.content,
                     "appliedItems": apply_result["appliedItems"],
                     "invalidItems": result.get("invalidItems", []),
@@ -963,13 +1062,13 @@ def analyze_pending_ai_conversations(
         if clean_text(turn.user_prompt) and clean_text(turn.id) not in analyzed_ids
     ][: semantic_tree_batch_size()]
 
-    if pending_turns and not get_gemini_api_key():
-        raise MissingGeminiApiKey("server 缺少 GEMINI_API_KEY，無法呼叫 Gemini。")
+    if pending_turns and not get_openai_api_key():
+        raise MissingOpenAIApiKey("server 缺少 OPENAI_API_KEY，無法呼叫 OpenAI。")
 
     analyzed_count = 0
     for turn in pending_turns:
         source_message = _ai_turn_to_source(turn)
-        result = analyze_with_gemini(
+        result = analyze_with_openai(
             text=turn.user_prompt,
             tree=owner_state["treeData"],
             anchors=state["anchors"],
@@ -984,7 +1083,7 @@ def analyze_pending_ai_conversations(
                 "sourceId": clean_text(turn.id),
                 "sourceType": "ai_user_prompt",
                 "analyzedAt": timezone.now().isoformat(),
-                "model": result.get("model") or get_gemini_model(),
+                "model": result.get("model") or get_openai_model(),
                 "sourceText": turn.user_prompt,
                 "appliedItems": apply_result["appliedItems"],
                 "invalidItems": result.get("invalidItems", []),
