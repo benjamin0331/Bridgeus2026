@@ -32,7 +32,7 @@ html, body {
   padding-bottom: 20px;
   border-bottom: 2.5px solid #e0d8cf;
   color: #7d6e6e;
-  font-size: 19.2px;
+  font-size: 24px;
   margin-bottom: 35px;
   /* 防止頂部導覽列在彈性佈局中被壓縮尺寸 */
   flex-shrink: 0;
@@ -45,7 +45,7 @@ html, body {
 }
 
 .user-profile-name {
-  font-size: 14.4px;
+  font-size: 18px;
 }
 
 .logout-btn {
@@ -54,7 +54,7 @@ html, body {
   padding: 10px 18px;
   background-color: #d8c3ad;
   color: #5f5045;
-  font-size: 12.8px;
+  font-size: 16px;
   font-weight: 700;
   cursor: pointer;
   transition: background-color 0.2s ease, transform 0.2s ease;
@@ -77,7 +77,7 @@ html, body {
   height: 0;
   justify-content: space-between;
   align-items: stretch;
-  gap: 50px;
+  gap: 10px;
   min-height: 0;
 }
 
@@ -145,6 +145,7 @@ html, body {
   align-items: center;
   justify-content: center;
   border: none;
+  padding: 0;
   background: transparent;
   cursor: pointer;
 }
@@ -180,18 +181,18 @@ html, body {
   }
 
   .top-navigation {
-    font-size: 12.8px;
+    font-size: 16px;
     margin-bottom: 14px;
     padding-bottom: 14px;
   }
 
   .user-profile-name {
-    font-size: 11.2px;
+    font-size: 14px;
   }
 
   .logout-btn {
     padding: 8px 14px;
-    font-size: 10.4px;
+    font-size: 13px;
   }
 
   .main-layout-wrapper {
@@ -212,22 +213,12 @@ html, body {
     right: 0;
     top: 0;
     bottom: 0;
-    max-height: 100dvh;
     z-index: 300;
     border-radius: 30px 0 0 30px;
-    padding: 60px 0 calc(35px + env(safe-area-inset-bottom)) 0;
+    padding: 60px 0 35px 0;
     width: 90px;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    touch-action: pan-y;
     transform: translateX(100%);
     transition: transform 0.3s ease;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-  }
-
-  .sidebar-container::-webkit-scrollbar {
-    display: none;
   }
 
   .sidebar-container.sidebar-open {
@@ -258,7 +249,7 @@ html, body {
     border: none;
     background-color: #d8c3ad;
     color: #5f5045;
-    font-size: 16px;
+    font-size: 20px;
     cursor: pointer;
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
   }

@@ -3,7 +3,7 @@
   height: 100%;
   min-height: 0;
   flex-direction: column;
-  gap: 14px;
+  gap: 6px;
   padding: 18px;
   color: #2f2722;
   background:
@@ -17,24 +17,25 @@
 
 .conversation-tree-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex: 0 0 auto;
 }
 
 .conversation-tree-header h2 {
   margin: 2px 0 0;
   color: #2b211b;
-  font-size: 16px;
+  font-size: 20px;
   line-height: 1.15;
 }
 
 .conversation-tree-eyebrow {
-  color: #8a735e;
-  font-size: 8.8px;
+  color: #2b211b;
+  font-size: 15px;
   font-weight: 900;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  text-transform: none;
 }
 
 .conversation-tree-count {
@@ -44,7 +45,7 @@
   background: rgba(255, 255, 255, 0.72);
   border: 1px solid rgba(143, 117, 92, 0.25);
   border-radius: 999px;
-  font-size: 9.6px;
+  font-size: 12px;
   font-weight: 800;
 }
 
@@ -83,14 +84,14 @@
 }
 
 .conversation-tree-tab span {
-  font-size: 10.4px;
+  font-size: 13px;
   font-weight: 900;
 }
 
 .conversation-tree-tab small {
   flex: 0 0 auto;
   color: #8d8075;
-  font-size: 8.8px;
+  font-size: 11px;
   font-weight: 800;
 }
 
@@ -99,11 +100,7 @@
   flex: 1;
   min-height: 310px;
   overflow: hidden;
-  background:
-    linear-gradient(rgba(93, 74, 58, 0.06) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(93, 74, 58, 0.06) 1px, transparent 1px),
-    rgba(255, 252, 246, 0.68);
-  background-size: 26px 26px;
+  background: rgba(255, 252, 246, 0.68);
   border: 1px solid rgba(137, 110, 86, 0.2);
   border-radius: 18px;
 }
@@ -139,20 +136,20 @@
 
 .conversation-tree-empty strong {
   color: #3a2d25;
-  font-size: 11.2px;
+  font-size: 14px;
 }
 
 .conversation-tree-empty span {
-  font-size: 9.6px;
+  font-size: 12px;
   line-height: 1.45;
 }
 
 .conversation-tree-link {
   fill: none;
-  stroke: #7b7167;
+  stroke: #c4b5a5;
   stroke-linecap: round;
-  stroke-opacity: 0.68;
-  stroke-width: 1.35px;
+  stroke-opacity: 0.8;
+  stroke-width: 1.5px;
 }
 
 .conversation-tree-node {
@@ -160,31 +157,35 @@
 }
 
 .conversation-tree-node-shape {
-  stroke: #1f2937;
-  stroke-width: 1.25px;
+  stroke: rgba(93, 74, 58, 0.18);
+  stroke-width: 1.5px;
   vector-effect: non-scaling-stroke;
 }
 
 .node-root .conversation-tree-node-shape {
-  fill: #050505;
+  fill: #3d2e24;
+  stroke: rgba(93, 74, 58, 0.35);
 }
 
 .node-anchor .conversation-tree-node-shape {
-  fill: #f6a23a;
+  fill: #c49a6c;
+  stroke: rgba(140, 100, 60, 0.3);
 }
 
 .node-point .conversation-tree-node-shape {
-  fill: #9be1e4;
+  fill: #f0e8dc;
+  stroke: rgba(140, 110, 80, 0.28);
 }
 
 .conversation-tree-node.is-selected .conversation-tree-node-shape {
-  stroke: #2563eb;
-  stroke-width: 3px;
+  stroke: #9b6f47;
+  stroke-width: 2.5px;
+  filter: drop-shadow(0 0 5px rgba(155, 111, 71, 0.45));
 }
 
 .conversation-tree-node-label {
   dominant-baseline: middle;
-  fill: #10202b;
+  fill: #2f2722;
   font-weight: 800;
   letter-spacing: 0;
   pointer-events: none;
@@ -192,33 +193,49 @@
 }
 
 .root-label {
-  fill: #ffffff;
-  font-size: 9.6px;
+  fill: #f7f3ee;
+  font-size: 12px;
 }
 
 .anchor-label {
-  font-size: 8.8px;
+  fill: #fff8f2;
+  font-size: 11px;
 }
 
 .point-label {
-  fill: #10202b;
-  font-size: 7.6px;
+  fill: #4a3728;
+  font-size: 9.5px;
 }
 
 .conversation-tree-detail {
-  min-height: 128px;
-  max-height: 176px;
-  padding: 13px 14px;
+  min-height: 72px;
+  max-height: 110px;
+  padding: 10px 12px;
   overflow-y: auto;
   background: rgba(255, 255, 255, 0.68);
   border: 1px solid rgba(127, 101, 78, 0.2);
   border-radius: 16px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.1) transparent;
+}
+
+.conversation-tree-detail::-webkit-scrollbar {
+  width: 6px;
+}
+
+.conversation-tree-detail::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.conversation-tree-detail::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 10px;
 }
 
 .conversation-tree-detail-label {
   display: block;
   color: #8a735e;
-  font-size: 9.6px;
+  font-size: 12px;
   font-weight: 900;
   letter-spacing: 0.06em;
 }
@@ -226,7 +243,7 @@
 .conversation-tree-detail p {
   margin: 7px 0 8px;
   color: #2f2722;
-  font-size: 11.2px;
+  font-size: 14px;
   line-height: 1.45;
 }
 
@@ -252,7 +269,7 @@
 .conversation-tree-message small {
   display: block;
   color: #8d8075;
-  font-size: 9.6px;
+  font-size: 12px;
   line-height: 1.45;
 }
 
@@ -263,7 +280,7 @@
 
 .conversation-tree-detail-time {
   color: #8d8075;
-  font-size: 9.6px;
+  font-size: 12px;
 }
 
 @media (max-width: 768px) {
@@ -278,7 +295,7 @@
   }
 
   .conversation-tree-header h2 {
-    font-size: 14.4px;
+    font-size: 18px;
   }
 
   .conversation-tree-tabs {

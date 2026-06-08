@@ -12,7 +12,7 @@ import {
 } from 'd3';
 import './ConversationTreePanel.css';
 
-const EMPTY_DETAIL_TEXT = '點選語意節點後，這裡會顯示完整原始訊息、脈絡路徑與整理理由。';
+const EMPTY_DETAIL_TEXT = '點選語意節點後，這裡會顯示完整原始訊息、路徑與整理理由。';
 
 function cleanText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
@@ -459,23 +459,26 @@ function appendNodeShape(nodeSelection) {
   });
 }
 
-function statusText({ isActive, isLoading, isAnalyzing, analysisStatus, messageCount, mode }) {
+function statusText({ isActive, isLoading, isAnalyzing, analysisStatus, analysisMessage, messageCount, mode }) {
   if (!isActive) {
     return mode === 'ai'
       ? { title: 'AI 對話開始後啟用', detail: '送出第一則訊息後，這裡會顯示你的個人想法脈絡樹。' }
-      : { title: '真人配對後啟用', detail: '進入配對房間後，這裡會顯示你的個人想法脈絡樹。' };
+      : { title: '真人配對後啟用', detail: '進入配對房間後，這裡會顯示想法脈絡樹。' };
   }
 
   if (isLoading) {
     return { title: '載入語意樹中', detail: '正在讀取目前房間的語意樹狀態。' };
   }
 
-  if (analysisStatus === 'missing_gemini_api_key') {
-    return { title: '語意分析未設定', detail: '目前無法自動整理想法脈絡，對話仍可正常進行。' };
+  if (analysisStatus === 'missing_openai_api_key' || analysisStatus === 'missing_gemini_api_key') {
+    return {
+      title: '語意分析未設定',
+      detail: analysisMessage || '目前無法自動整理想法脈絡，對話仍可正常進行。',
+    };
   }
 
   if (isAnalyzing) {
-    return { title: '正在整理脈絡', detail: '訊息已先送出，想法脈絡圖會在整理完成後更新。' };
+    return { title: '正在整理脈絡', detail: '訊息已先送出，語意樹會在整理完成後更新。' };
   }
 
   if (!messageCount) {
@@ -483,7 +486,10 @@ function statusText({ isActive, isLoading, isAnalyzing, analysisStatus, messageC
   }
 
   if (analysisStatus && analysisStatus !== 'ready') {
-    return { title: '語意分析暫停', detail: '目前無法更新想法脈絡圖，對話仍可正常使用。' };
+    return {
+      title: '語意分析暫停',
+      detail: analysisMessage || '目前無法更新語意樹，對話仍可正常使用。',
+    };
   }
 
   return null;
@@ -499,30 +505,15 @@ function ConversationTreePanel({
   isLoading = false,
   isAnalyzing = false,
   analysisStatus = 'ready',
+  analysisMessage = '',
 }) {
   const shellRef = useRef(null);
   const svgRef = useRef(null);
   const zoomTransformRef = useRef(null);
-  const allTreeEntries = useMemo(
+  const treeEntries = useMemo(
     () => normalizeTreeEntries(trees, treeData, topicTitle),
     [topicTitle, treeData, trees],
   );
-  const treeEntries = useMemo(() => {
-    if (mode !== 'matching') {
-      return allTreeEntries;
-    }
-
-    const currentUserTrees = allTreeEntries.filter((entry) => entry.isCurrentUser);
-    if (currentUserTrees.length) {
-      return currentUserTrees;
-    }
-
-    return allTreeEntries.slice(0, 1).map((entry) => ({
-      ...entry,
-      label: '我的脈絡',
-      isCurrentUser: true,
-    }));
-  }, [allTreeEntries, mode]);
   const preferredOwnerKey = treeEntries.find((entry) => entry.isCurrentUser)?.ownerKey || treeEntries[0]?.ownerKey || 'default';
   const [requestedOwnerKey, setRequestedOwnerKey] = useState('');
   const activeOwnerKey = treeEntries.some((entry) => entry.ownerKey === requestedOwnerKey)
@@ -543,9 +534,13 @@ function ConversationTreePanel({
     isLoading,
     isAnalyzing,
     analysisStatus,
+    analysisMessage,
     messageCount,
     mode,
   });
+  const panelTitle = mode === 'matching' && treeEntries.length > 1
+    ? '雙方想法脈絡'
+    : '我的想法脈絡';
 
   useEffect(() => {
     const svgNode = svgRef.current;
@@ -576,6 +571,28 @@ function ConversationTreePanel({
         .append('g')
         .attr('transform', `translate(${centerX},${centerY})`);
       const zoomLayer = viewportLayer.append('g').attr('class', 'conversation-tree-zoom-layer');
+
+      const defs = svg.append('defs');
+      defs.append('pattern')
+        .attr('id', 'tree-grid')
+        .attr('patternUnits', 'userSpaceOnUse')
+        .attr('width', 26)
+        .attr('height', 26)
+        .call((pattern) => {
+          pattern.append('path')
+            .attr('d', 'M 26 0 L 0 0 0 26')
+            .attr('fill', 'none')
+            .attr('stroke', 'rgba(93,74,58,0.09)')
+            .attr('stroke-width', 1);
+        });
+
+      zoomLayer.insert('rect', ':first-child')
+        .attr('x', -5000)
+        .attr('y', -5000)
+        .attr('width', 10000)
+        .attr('height', 10000)
+        .attr('fill', 'url(#tree-grid)');
+
       const radialLink = linkRadial()
         .angle((node) => node.angle)
         .radius((node) => node.radius);
@@ -674,8 +691,7 @@ function ConversationTreePanel({
     <section className="conversation-tree-panel" aria-label="核電語意對話樹">
       <div className="conversation-tree-header">
         <div>
-          <span className="conversation-tree-eyebrow">想法脈絡圖</span>
-          <h2>我的想法脈絡</h2>
+          <span className="conversation-tree-eyebrow">{panelTitle}</span>
         </div>
         <span className="conversation-tree-count">{messageCount} 則訊息</span>
       </div>
@@ -733,7 +749,7 @@ function ConversationTreePanel({
             })}
           </div>
         ) : (
-          <p>{selectedNode.type === 'anchor' ? `「${selectedNode.name}」目前還沒有相關訊息。` : EMPTY_DETAIL_TEXT}</p>
+          <p>{selectedNode.type === 'anchor' ? `「${selectedNode.name}」目前還沒有套用的訊息。` : EMPTY_DETAIL_TEXT}</p>
         )}
         <span className="conversation-tree-detail-time">滾輪可縮放，拖曳可平移</span>
       </div>
