@@ -336,6 +336,13 @@ def _build_topic_config(
         or user_initial_argument
     )
 
+    from apps.matching.services.ai_agent import infer_reasoning_mode
+    user_reasoning_mode = infer_reasoning_mode(
+        user_stance_score=user_stance_score,
+        user_initial_argument=resolved_initial_argument,
+        opponent_view_text=resolved_open_answers.get("Q10", ""),
+    )
+
     return {
         "topic": topic_meta.get("title", topic_title),
         "topic_description": (
@@ -353,6 +360,7 @@ def _build_topic_config(
         "agent_stance": agent_stance,
         "agent_stance_summary": agent_stance_summary,
         "user_initial_argument": resolved_initial_argument,
+        "user_reasoning_mode": user_reasoning_mode,
         "survey_open_answers": resolved_open_answers,
         "semantic_vector_interface": semantic_vector_interface,
     }
@@ -595,6 +603,7 @@ class DialogueSessionCreateView(APIView):
             user_stance_label=topic_config["user_stance_label"],
             user_stance_score=topic_config["user_stance_score"],
             user_initial_argument=topic_config["user_initial_argument"],
+            user_reasoning_mode=topic_config["user_reasoning_mode"],
         )
 
         session_id = uuid4().hex
