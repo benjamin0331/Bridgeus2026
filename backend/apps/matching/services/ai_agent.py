@@ -183,6 +183,10 @@ class DialogueSession:
     user_stance_label: str = ""
     user_stance_score: float = 4.0
     user_initial_argument: str = ""
+    # collaborative / polarized / unknown — inferred from the questionnaire at
+    # session creation (see reasoning_mode.infer_user_reasoning_mode). Tunes the
+    # agent's baseline intervention intensity in the system prompt.
+    user_reasoning_mode: str = "unknown"
     dialogue_phase: DialoguePhase = DialoguePhase.ENGAGEMENT
     history: list[DialogueMessage] = field(default_factory=list)
 
@@ -196,6 +200,7 @@ class DialogueSession:
             "user_stance_label": self.user_stance_label,
             "user_stance_score": self.user_stance_score,
             "user_initial_argument": self.user_initial_argument,
+            "user_reasoning_mode": self.user_reasoning_mode,
             "dialogue_phase": self.dialogue_phase.value,
             "history": [m.to_dict() for m in self.history],
         }
@@ -211,6 +216,7 @@ class DialogueSession:
             user_stance_label=data.get("user_stance_label", ""),
             user_stance_score=data.get("user_stance_score", 4.0),
             user_initial_argument=data.get("user_initial_argument", ""),
+            user_reasoning_mode=data.get("user_reasoning_mode", "unknown"),
             dialogue_phase=DialoguePhase(
                 data.get("dialogue_phase", DialoguePhase.ENGAGEMENT.value)
             ),
@@ -265,6 +271,48 @@ class DialogueSession:
             label = "使用者" if msg.role == "user" else "對話者"
             lines.append(f"{label}：{msg.content}")
         return "\n\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════
+# Reasoning Mode Inference
+# ═══════════════════════════════════════════════════════════
+
+_COLLABORATIVE_MARKERS = frozenset({
+    "雖然", "但", "另一方面", "不確定", "難說", "也許", "可能",
+    "複雜", "搞不清楚", "兩難", "理解", "然而", "不過", "折衷",
+    "既然", "畢竟", "或許", "感覺", "說實話",
+})
+_POLARIZED_MARKERS = frozenset({
+    "絕對", "一定要", "完全反對", "完全支持", "堅決",
+    "絕不", "必須廢核", "必須重啟", "不可能接受",
+    "強烈反對", "強烈支持", "根本不",
+})
+
+
+def infer_reasoning_mode(
+    user_stance_score: float,
+    user_initial_argument: str,
+    opponent_view_text: str = "",
+) -> str:
+    """
+    Heuristic classification of a user's argumentation style.
+
+    collaborative — builds arguments collaboratively, shows nuance, articulates opponent view
+    polarized     — entrenched stance, repeats same point, needs perspective-flip prompts
+    unknown       — default; AI internally downgrades to collaborative after 2 focus signals
+    """
+    combined = f"{user_initial_argument} {opponent_view_text}"
+    hedge_count = sum(1 for w in _COLLABORATIVE_MARKERS if w in combined)
+    certainty_count = sum(1 for w in _POLARIZED_MARKERS if w in combined)
+    is_extreme = user_stance_score <= 2.0 or user_stance_score >= 6.0
+
+    if is_extreme and certainty_count >= 1:
+        return "polarized"
+    if hedge_count >= 2 and not is_extreme:
+        return "collaborative"
+    if len(opponent_view_text) >= 50 and certainty_count == 0 and not is_extreme:
+        return "collaborative"
+    return "unknown"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -388,6 +436,7 @@ class DialogueAgent:
             ),
             "turn_count": str(session.turn_count),
             "dialogue_phase": session.dialogue_phase.value,
+            "user_reasoning_mode": session.user_reasoning_mode,
             "user_message": latest_msg,
         }
 
@@ -428,6 +477,7 @@ class DialogueAgent:
             ),
             "turn_count": str(session.turn_count),
             "dialogue_phase": session.dialogue_phase.value,
+            "user_reasoning_mode": session.user_reasoning_mode,
         }
 
         system_text = self._system_prompt_raw

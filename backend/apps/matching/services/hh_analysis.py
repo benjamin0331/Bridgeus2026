@@ -12,7 +12,7 @@ from django.utils import timezone
 
 from chat.services.embedding import cosine_distance, cosine_similarity, get_embedding
 
-TOPIC_RELEVANCE_THRESHOLD = 0.25
+TOPIC_RELEVANCE_THRESHOLD = 0.35
 STALEMATE_THRESHOLD = 0.05
 DIRECTION_THRESHOLD = 0.02
 
@@ -49,7 +49,7 @@ def check_match_topic_relevance(
     match_id: int,
     user_id: int,
     topic_anchor_embedding,
-    window: int = 5,
+    window: int = 3,
 ) -> dict:
     from api.models import MatchMessage
 

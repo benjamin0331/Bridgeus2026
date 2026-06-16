@@ -258,6 +258,40 @@ async def test_match_room_ai_assist_sends_rephrase_suggestion_without_relay():
 @pytest.mark.asyncio
 @pytest.mark.django_db(transaction=True)
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_match_room_high_emotion_without_second_person_is_not_intercepted():
+    """High-arousal factual venting (no 你/您/妳) should relay, not trigger rephrase."""
+    from BridgeUs_Django.asgi import application
+
+    alice = await create_user(username="vent_alice", password="secret123")
+    bob = await create_user(username="vent_bob", password="secret123")
+    match = await _make_active_match(alice, bob)
+
+    alice_token = await _access_token_for(alice)
+    bob_token = await _access_token_for(bob)
+    comm_a = WebsocketCommunicator(application, f"/ws/matching/rooms/{match.room_id}/?token={alice_token}")
+    comm_b = WebsocketCommunicator(application, f"/ws/matching/rooms/{match.room_id}/?token={bob_token}")
+    assert (await comm_a.connect())[0]
+    assert (await comm_b.connect())[0]
+
+    high_emotion = {"score": 0.95, "label": "negative", "is_over_threshold": True}
+    with patch("api.consumers.hh_ai_assist_enabled", return_value=True), \
+         patch("api.consumers.aget_analyze_emotion", new=AsyncMock(return_value=high_emotion)):
+        await comm_a.send_json_to({"type": "match_message", "content": "核電根本就是一場騙局"})
+        relayed = await comm_a.receive_json_from(timeout=3)
+
+    # No rephrase suggestion — the message is broadcast as-is to both participants.
+    assert relayed["type"] == "match_message"
+    assert relayed["message"]["content"] == "核電根本就是一場騙局"
+    assert (await comm_b.receive_json_from(timeout=3))["message"]["content"] == "核電根本就是一場騙局"
+    assert await MatchMessage.objects.filter(match=match).acount() == 1
+
+    await comm_a.disconnect()
+    await comm_b.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_match_room_ai_assist_accepts_suggestion_and_relays_suggested_content():
     from BridgeUs_Django.asgi import application
     from api.models import MatchAISuggestion
