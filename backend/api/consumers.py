@@ -120,6 +120,11 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
         session = DialogueSession.from_dict(session_record["session"])
         session.add_user_message(user_message)
         session.dialogue_phase = DialoguePhase.from_turn_count(session.turn_count)
+
+        if session.user_reasoning_mode == "unknown":
+            from apps.matching.services.ai_agent import detect_focus_signal
+            if detect_focus_signal(user_message):
+                session.focus_signal_count += 1
         saved_turn = await self._create_ai_conversation(
             session_record=session_record,
             user_message=user_message,

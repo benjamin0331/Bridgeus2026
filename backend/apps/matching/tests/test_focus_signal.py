@@ -1,0 +1,141 @@
+"""
+pytest tests for detect_focus_signal() and DialogueSession focus signal integration.
+
+These tests are pure unit tests — no Django DB, no LLM, no embedding model.
+Run from backend/:
+    pytest apps/matching/tests/test_focus_signal.py -v
+"""
+
+import pytest
+
+from apps.matching.services.ai_agent import (
+    DialogueSession,
+    detect_focus_signal,
+)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# detect_focus_signal — positive cases
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestDetectFocusSignalPositive:
+    """每個 case 都應 return True（命中至少一條規則）。"""
+
+    def test_rejection_of_hypothetical_decision_maker(self):
+        # Rule 2: 拒絕假設 — 不是決策者 + 不做 + 假設
+        assert detect_focus_signal("我不是決策者，不做此假設") is True
+
+    def test_rejection_of_hypothetical_assumption(self):
+        # Rule 2: 拒絕假設 — 我不是 + 假設
+        assert detect_focus_signal("我不是在做假設，我說的是現實狀況") is True
+
+    def test_explicit_anchor_with_followup(self):
+        # Rule 3: 明確指認 — 我想表示
+        assert detect_focus_signal("我想表示的是這個，那麼？") is True
+
+    def test_explicit_anchor_just_is_this(self):
+        # Rule 3: 明確指認 — 就是這個
+        assert detect_focus_signal("對，就是這個，這才是核心問題") is True
+
+    def test_premise_anchoring(self):
+        # Rule 3: 明確指認 — 先說清楚
+        assert detect_focus_signal("先說清楚是前提，不然討論沒有意義") is True
+
+    def test_confirmation_seeking_bu_shi_ma(self):
+        # Rule 1: 確認尋求 — 不是嗎
+        assert detect_focus_signal("對，台灣就是困在這裡不是嗎？") is True
+
+    def test_confirmation_seeking_dui_ba(self):
+        # Rule 1: 確認尋求 — 對吧
+        assert detect_focus_signal("缺電問題根本是產業問題，對吧？") is True
+
+    def test_confirmation_seeking_shi_ma(self):
+        # Rule 1: 確認尋求 — 是嗎
+        assert detect_focus_signal("你說的成本優勢其實也有前提，是嗎？") is True
+
+    def test_explicit_my_point_is(self):
+        # Rule 3: 明確指認 — 我的重點是
+        assert detect_focus_signal("我的重點是核廢料才是真正的問題，其他都是次要的") is True
+
+    def test_rejection_bu_zuo_jia_she(self):
+        # Rule 2: 拒絕假設 — 不做 + 假設
+        assert detect_focus_signal("我不做這個假設，請用實際情境來討論") is True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# detect_focus_signal — negative cases
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestDetectFocusSignalNegative:
+    """每個 case 都應 return False（一般論述或開啟新方向的提問）。"""
+
+    def test_general_policy_statement(self):
+        # 一般論述句，無確認/拒絕/指認
+        assert detect_focus_signal("我認為台灣的能源政策需要從多個角度考量") is False
+
+    def test_open_new_direction_question(self):
+        # 開啟新方向的提問，不是聚焦信號
+        assert detect_focus_signal("核能在經濟上有哪些具體優勢？") is False
+
+    def test_topic_redirect_question(self):
+        # 開啟新話題，不是確認
+        assert detect_focus_signal("那德國廢核的經驗你怎麼看？") is False
+
+    def test_factual_assertion(self):
+        # 事實陳述，沒有確認尋求
+        assert detect_focus_signal("台灣目前的備用容量率大約是 15%") is False
+
+    def test_new_question_with_ni_juede(self):
+        # 含「你覺得」但非「你覺得呢」（連續字串不match）
+        assert detect_focus_signal("你覺得核廢料最終處置場要放哪裡比較好？") is False
+
+    def test_genuine_exploration(self):
+        # 邀請新探索，非確認舊論點
+        assert detect_focus_signal("如果台灣的地震風險可以透過技術降低，情況會不會不同？") is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DialogueSession integration — focus_signal_count & effective_reasoning_mode
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestDialogueSessionFocusSignalIntegration:
+
+    def test_initial_count_is_zero(self):
+        session = DialogueSession()
+        assert session.focus_signal_count == 0
+
+    def test_effective_mode_unknown_below_threshold(self):
+        session = DialogueSession(user_reasoning_mode="unknown", focus_signal_count=1)
+        assert session.effective_reasoning_mode == "unknown"
+
+    def test_effective_mode_upgrades_at_threshold(self):
+        session = DialogueSession(user_reasoning_mode="unknown", focus_signal_count=2)
+        assert session.effective_reasoning_mode == "collaborative"
+
+    def test_effective_mode_upgrades_above_threshold(self):
+        session = DialogueSession(user_reasoning_mode="unknown", focus_signal_count=5)
+        assert session.effective_reasoning_mode == "collaborative"
+
+    def test_polarized_mode_not_affected_by_count(self):
+        # polarized 模式不受 focus_signal_count 影響
+        session = DialogueSession(user_reasoning_mode="polarized", focus_signal_count=10)
+        assert session.effective_reasoning_mode == "polarized"
+
+    def test_collaborative_mode_not_affected_by_count(self):
+        # 已是 collaborative，count 不改變它
+        session = DialogueSession(user_reasoning_mode="collaborative", focus_signal_count=0)
+        assert session.effective_reasoning_mode == "collaborative"
+
+    def test_serialization_roundtrip_preserves_count(self):
+        session = DialogueSession(user_reasoning_mode="unknown", focus_signal_count=2)
+        restored = DialogueSession.from_dict(session.to_dict())
+        assert restored.focus_signal_count == 2
+        assert restored.user_reasoning_mode == "unknown"
+        assert restored.effective_reasoning_mode == "collaborative"
+
+    def test_serialization_missing_count_defaults_to_zero(self):
+        # 舊版 session dict 沒有 focus_signal_count，應向後兼容
+        old_dict = DialogueSession(user_reasoning_mode="unknown").to_dict()
+        del old_dict["focus_signal_count"]
+        restored = DialogueSession.from_dict(old_dict)
+        assert restored.focus_signal_count == 0
