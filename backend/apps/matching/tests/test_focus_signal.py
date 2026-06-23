@@ -38,7 +38,8 @@ class TestDetectFocusSignalPositive:
         assert detect_focus_signal("對，就是這個，這才是核心問題") is True
 
     def test_premise_anchoring(self):
-        # Rule 3: 明確指認 — 先說清楚
+        # Caught via hardcoded "先說清楚" in _FOCUS_EXPLICIT (not a generalizable
+        # scope-narrowing rule — see TODO Rule 4 in detect_focus_signal docstring).
         assert detect_focus_signal("先說清楚是前提，不然討論沒有意義") is True
 
     def test_confirmation_seeking_bu_shi_ma(self):
@@ -93,6 +94,11 @@ class TestDetectFocusSignalNegative:
         # 邀請新探索，非確認舊論點
         assert detect_focus_signal("如果台灣的地震風險可以透過技術降低，情況會不會不同？") is False
 
+    def test_pure_scope_narrowing_no_markers(self):
+        # 收窄語義，但無任何 marker → 預期 false negative（Rule 4 TODO）
+        # 這句話語義上是聚焦信號，但三條規則無法捕捉
+        assert detect_focus_signal("我只是在說核廢料這一件事") is False
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DialogueSession integration — focus_signal_count & effective_reasoning_mode
@@ -131,6 +137,20 @@ class TestDialogueSessionFocusSignalIntegration:
         restored = DialogueSession.from_dict(session.to_dict())
         assert restored.focus_signal_count == 2
         assert restored.user_reasoning_mode == "unknown"
+        assert restored.effective_reasoning_mode == "collaborative"
+
+    def test_lock_on_upgrade(self):
+        # 升級那輪直接寫死 user_reasoning_mode，不再靠 property 即時推導
+        # 模擬 consumers._stream_response 的鎖定邏輯
+        session = DialogueSession(user_reasoning_mode="unknown", focus_signal_count=1)
+        # 第 2 次 focus signal 到達，鎖定
+        session.focus_signal_count += 1
+        if session.focus_signal_count >= 2:
+            session.user_reasoning_mode = "collaborative"
+        assert session.user_reasoning_mode == "collaborative"
+        # 序列化後 mode 是 collaborative，不再是 unknown
+        restored = DialogueSession.from_dict(session.to_dict())
+        assert restored.user_reasoning_mode == "collaborative"
         assert restored.effective_reasoning_mode == "collaborative"
 
     def test_serialization_missing_count_defaults_to_zero(self):

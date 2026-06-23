@@ -138,6 +138,8 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
             from apps.matching.services.ai_agent import detect_focus_signal
             if detect_focus_signal(user_message):
                 session.focus_signal_count += 1
+                if session.focus_signal_count >= 2:
+                    session.user_reasoning_mode = "collaborative"
         saved_turn = await self._create_ai_conversation(
             session_record=session_record,
             user_message=user_message,
