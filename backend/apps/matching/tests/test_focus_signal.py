@@ -11,6 +11,7 @@ import pytest
 from apps.matching.services.ai_agent import (
     DialogueSession,
     detect_focus_signal,
+    infer_reasoning_mode,
 )
 
 
@@ -159,3 +160,41 @@ class TestDialogueSessionFocusSignalIntegration:
         del old_dict["focus_signal_count"]
         restored = DialogueSession.from_dict(old_dict)
         assert restored.focus_signal_count == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# infer_reasoning_mode — _POLARIZED_MARKERS regression tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestInferReasoningModeMarkers:
+    """確認 "根本不" 移除後不誤判，且其他確定性 marker 仍正常觸發 polarized。"""
+
+    def test_genben_bu_does_not_trigger_polarized(self):
+        # "根本不" 是強調副詞，不應在 score=1.5 的強反核使用者造成 polarized 誤判
+        # 典型句式：「核廢料根本不是問題」「政府根本不重視安全」
+        result = infer_reasoning_mode(
+            user_stance_score=1.5,
+            user_initial_argument="核廢料根本不是問題，政府根本不重視安全。",
+        )
+        assert result != "polarized", (
+            '"根本不" should not trigger polarized; got polarized which would lock '
+            "the session and block focus-signal detection for the entire dialogue."
+        )
+
+    def test_jue_dui_still_triggers_polarized(self):
+        # 移除 "根本不" 後，真正的確定性 marker（「絕對」）仍應觸發 polarized
+        result = infer_reasoning_mode(
+            user_stance_score=1.5,
+            user_initial_argument="我絕對反對重啟核電，這是不可動搖的立場。",
+        )
+        assert result == "polarized", (
+            '"絕對" is a genuine certainty marker and should still produce polarized.'
+        )
+
+    def test_bu_ke_neng_jie_shou_still_triggers_polarized(self):
+        # 另一個確定性 marker「不可能接受」+ 極端分數 → 仍 polarized
+        result = infer_reasoning_mode(
+            user_stance_score=1.5,
+            user_initial_argument="核電的風險我不可能接受，任何理由都不夠。",
+        )
+        assert result == "polarized"

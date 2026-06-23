@@ -293,7 +293,7 @@ _COLLABORATIVE_MARKERS = frozenset({
 _POLARIZED_MARKERS = frozenset({
     "絕對", "一定要", "完全反對", "完全支持", "堅決",
     "絕不", "必須廢核", "必須重啟", "不可能接受",
-    "強烈反對", "強烈支持", "根本不",
+    "強烈反對", "強烈支持",
 })
 
 # ── Focus signal detection (real-time, per-turn) ─────────────────────────────
