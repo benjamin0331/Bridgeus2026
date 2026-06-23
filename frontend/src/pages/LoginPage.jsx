@@ -105,7 +105,7 @@ function LoginPage({ setUser, authMessage = '' }) {
           <p>請使用管理員帳號登入</p>
         </div>
       </div>
-      
+
       {/* 背景裝飾元素 */}
       <div className="bg-decor bg-decor-1"></div>
       <div className="bg-decor bg-decor-2"></div>

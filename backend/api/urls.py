@@ -4,6 +4,18 @@ from . import views
 urlpatterns = [
     path('conversations/', views.AIConversationListCreate.as_view()),
     path('conversations/<int:pk>/', views.AIConversationDetail.as_view()),
+    path(
+        'history/conversations/',
+        views.HistoryConversationListView.as_view(),
+    ),
+    path(
+        'history/conversations/<str:kind>/<str:conversation_id>/',
+        views.HistoryConversationDetailView.as_view(),
+    ),
+    path(
+        'history/conversations/<str:kind>/<str:conversation_id>/semantic-tree/analyze/',
+        views.HistoryConversationSemanticTreeAnalyzeView.as_view(),
+    ),
     path('dialogue/topics/', views.DialogueTopicListView.as_view()),
     path(
         'dialogue/topics/<int:topic_id>/survey/',

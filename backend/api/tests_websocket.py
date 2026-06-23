@@ -21,6 +21,10 @@ TEST_CHANNEL_LAYERS = {
 create_user = sync_to_async(User.objects.create_user, thread_sensitive=True)
 
 
+def make_test_embedding(first_value):
+    return [float(first_value), *([0.0] * 383)]
+
+
 @pytest.fixture(autouse=True)
 def disable_hh_ai_assist_env(monkeypatch):
     monkeypatch.setenv("H_H_AI_ASSIST_ENABLED", "false")
@@ -72,6 +76,7 @@ async def test_dialogue_websocket_persists_completed_turn():
             "topic_id": 102,
             "topic_title": "台灣核能議題討論",
             "collection_name": "nuclear_energy_all",
+            "survey_context": {"q9_embedding": make_test_embedding(1)},
             "session": session.to_dict(),
         },
     )
@@ -82,7 +87,10 @@ async def test_dialogue_websocket_persists_completed_turn():
         f"/ws/dialogue/{session_id}/?token={token}",
     )
 
-    with patch("api.views.get_dialogue_agent", return_value=FakeStreamingDialogueAgent()):
+    with (
+        patch("api.views.get_dialogue_agent", return_value=FakeStreamingDialogueAgent()),
+        patch("api.consumers.aget_embedding", new=AsyncMock(return_value=make_test_embedding(-1))),
+    ):
         connected, _ = await communicator.connect()
         assert connected
 
@@ -96,7 +104,9 @@ async def test_dialogue_websocket_persists_completed_turn():
         "type": "agent_stream",
         "content": "AI reply to: 核能真的比較穩定嗎？",
     }
-    assert end_message == {"type": "agent_stream_end"}
+    assert end_message["type"] == "agent_stream_end"
+    assert end_message["stance_drift"]["drift_value"] == 2.0
+    assert end_message["stance_drift"]["measured_at"]
 
     saved_turn = await AIConversation.objects.aget(session_id=session_id)
     assert saved_turn.user_id == user.id
@@ -240,6 +250,40 @@ async def test_match_room_ai_assist_sends_rephrase_suggestion_without_relay():
     saved = await MatchAISuggestion.objects.aget(id=suggestion["suggestion_id"])
     assert saved.trigger_score == 0.91
     assert saved.user_action is None
+
+    await comm_a.disconnect()
+    await comm_b.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_match_room_high_emotion_without_second_person_is_not_intercepted():
+    """High-arousal factual venting (no 你/您/妳) should relay, not trigger rephrase."""
+    from BridgeUs_Django.asgi import application
+
+    alice = await create_user(username="vent_alice", password="secret123")
+    bob = await create_user(username="vent_bob", password="secret123")
+    match = await _make_active_match(alice, bob)
+
+    alice_token = await _access_token_for(alice)
+    bob_token = await _access_token_for(bob)
+    comm_a = WebsocketCommunicator(application, f"/ws/matching/rooms/{match.room_id}/?token={alice_token}")
+    comm_b = WebsocketCommunicator(application, f"/ws/matching/rooms/{match.room_id}/?token={bob_token}")
+    assert (await comm_a.connect())[0]
+    assert (await comm_b.connect())[0]
+
+    high_emotion = {"score": 0.95, "label": "negative", "is_over_threshold": True}
+    with patch("api.consumers.hh_ai_assist_enabled", return_value=True), \
+         patch("api.consumers.aget_analyze_emotion", new=AsyncMock(return_value=high_emotion)):
+        await comm_a.send_json_to({"type": "match_message", "content": "核電根本就是一場騙局"})
+        relayed = await comm_a.receive_json_from(timeout=3)
+
+    # No rephrase suggestion — the message is broadcast as-is to both participants.
+    assert relayed["type"] == "match_message"
+    assert relayed["message"]["content"] == "核電根本就是一場騙局"
+    assert (await comm_b.receive_json_from(timeout=3))["message"]["content"] == "核電根本就是一場騙局"
+    assert await MatchMessage.objects.filter(match=match).acount() == 1
 
     await comm_a.disconnect()
     await comm_b.disconnect()

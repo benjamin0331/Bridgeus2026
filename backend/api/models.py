@@ -17,6 +17,10 @@ class AIConversation(models.Model):
     user_prompt = models.TextField(help_text="使用者的提問")
     ai_response = models.TextField(blank=True, null=True, help_text="AI 的回覆")
     dialogue_phase = models.CharField(max_length=32, blank=True)
+    # 384-dim embedding of user_prompt (paraphrase-multilingual-MiniLM-L12-v2);
+    # populated at write time so stance-drift can read it instead of re-encoding
+    # every turn on each message. Mirrors MatchMessage.embedding.
+    embedding = VectorField(dimensions=384, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, help_text="建立時間")
 
     class Meta:

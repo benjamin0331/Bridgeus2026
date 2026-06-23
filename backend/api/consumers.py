@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from urllib.parse import parse_qs
 
 from asgiref.sync import sync_to_async
@@ -20,6 +21,7 @@ from apps.matching.services.hh_ai import (
     hh_ai_assist_enabled,
 )
 from apps.matching.services.hh_analysis import (
+    acalculate_ai_session_stance_drift,
     acalculate_match_stance_drift,
     acheck_match_topic_relevance,
     adetect_match_stalemate,
@@ -35,6 +37,17 @@ User = get_user_model()
 SESSION_TTL_SECONDS = 60 * 60 * 12
 DEFAULT_AI_ASSIST_TIMEOUT_SECONDS = 2.0
 logger = logging.getLogger(__name__)
+
+# Emotion interception only fires when the message is aimed at the other person.
+# A high-arousal statement of fact ("核電其實很危險") should not be intercepted;
+# an attack ("你根本不懂") should. Gating on a second-person pronoun keeps recall
+# on genuine attacks while excluding factual venting.
+_SECOND_PERSON = {"你", "您", "妳"}
+
+
+def _targets_other(text: str) -> bool:
+    """Return True if the message contains a second-person pronoun."""
+    return any(pronoun in text for pronoun in _SECOND_PERSON)
 
 
 def ai_assist_timeout_seconds() -> float:
@@ -156,19 +169,20 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
 
         session.add_agent_message(full_response)
         session_record["session"] = session.to_dict()
+        await self._update_ai_conversation(
+            saved_turn=saved_turn,
+            ai_response=full_response,
+            dialogue_phase=session.dialogue_phase.value,
+        )
+        stance_drift = await self._update_session_stance_drift(session_record)
         await sync_to_async(cache.set)(
             cache_key,
             session_record,
             timeout=SESSION_TTL_SECONDS,
         )
         await self._persist_session_record(session_record)
-        await self._update_ai_conversation(
-            saved_turn=saved_turn,
-            ai_response=full_response,
-            dialogue_phase=session.dialogue_phase.value,
-        )
 
-        await self.send(json.dumps({"type": "agent_stream_end"}))
+        await self.send(json.dumps({"type": "agent_stream_end", "stance_drift": stance_drift}))
 
     async def _get_session_record(self):
         from api.views import _restore_dialogue_session_record_for_user
@@ -180,6 +194,17 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
             user_id=self.user.id,
         )
         return session_record
+
+    async def _update_session_stance_drift(self, session_record: dict):
+        try:
+            return await acalculate_ai_session_stance_drift(
+                session_record=session_record,
+                session_id=self.session_id,
+                user_id=self.user.id,
+            )
+        except Exception:
+            logger.exception("AI stance drift failed for session %s.", self.session_id)
+            return (session_record.get("session") or {}).get("stance_drift")
 
     async def _persist_session_record(self, session_record: dict):
         from api.views import _persist_dialogue_session_record
@@ -202,6 +227,16 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
     ):
         from api.models import AIConversation
 
+        embedding = None
+        try:
+            embedding = await aget_embedding(user_message)
+        except Exception:
+            logger.exception(
+                "Embedding failed for AI dialogue prompt session=%s user=%s.",
+                self.session_id,
+                self.user.id,
+            )
+
         try:
             return await AIConversation.objects.acreate(
                 user=self.user,
@@ -209,6 +244,7 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
                 topic_id=session_record.get("topic_id"),
                 user_prompt=user_message,
                 dialogue_phase=dialogue_phase,
+                embedding=embedding,
             )
         except Exception:
             logger.exception(
@@ -250,6 +286,19 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
         )
 
 
+# Topic relevance is checked per message (a single off-topic line should surface
+# immediately), but drift + stalemate need accumulated context and are heavier, so
+# they run at most once per _ANALYSIS_CHAR_THRESHOLD chars or _ANALYSIS_INTERVAL_SECONDS,
+# whichever comes first. The counters are shared across both users in a match so the
+# window reflects the conversation, not one speaker.
+_ANALYSIS_CHAR_THRESHOLD = 200
+_ANALYSIS_INTERVAL_SECONDS = 300
+
+# Shared per-match throttle state (single-process only).
+_match_char_count: dict[int, int] = {}
+_match_last_analysis: dict[int, float] = {}
+
+
 class MatchRoomConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.room_id = self.scope["url_route"]["kwargs"]["room_id"]
@@ -275,6 +324,8 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
     async def disconnect(self, close_code):
         if hasattr(self, "match") and self.match:
             await self._mark_current_user_disconnected()
+            _match_char_count.pop(self.match.id, None)
+            _match_last_analysis.pop(self.match.id, None)
         if hasattr(self, "room_group_name"):
             await self.channel_layer.group_discard(
                 self.room_group_name,
@@ -333,7 +384,7 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
             return
 
         emotion = await self._safe_analyze_emotion(content)
-        if emotion.get("is_over_threshold"):
+        if emotion.get("is_over_threshold") and _targets_other(content):
             await self._send_rephrase_suggestion(
                 content,
                 trigger_score=emotion.get("score"),
@@ -395,7 +446,7 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
         )
 
         emotion = await self._safe_analyze_emotion(modified_content)
-        if emotion.get("is_over_threshold"):
+        if emotion.get("is_over_threshold") and _targets_other(modified_content):
             await self._send_rephrase_suggestion(
                 modified_content,
                 trigger_score=emotion.get("score"),
@@ -543,6 +594,23 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
             asyncio.create_task(
                 self._run_message_analysis(message.id, content, emotion_score=emotion_score)
             )
+            self._maybe_run_periodic_analysis(content)
+
+    def _maybe_run_periodic_analysis(self, content: str) -> None:
+        """Run drift + stalemate at most once per _ANALYSIS_CHAR_THRESHOLD chars or
+        _ANALYSIS_INTERVAL_SECONDS, shared across both users in the match."""
+        match_id = self.match.id
+        _match_char_count[match_id] = _match_char_count.get(match_id, 0) + len(content)
+        last = _match_last_analysis.get(match_id)
+        now = time.monotonic()
+        elapsed = (now - last) if last is not None else _ANALYSIS_INTERVAL_SECONDS
+        if (
+            _match_char_count[match_id] >= _ANALYSIS_CHAR_THRESHOLD
+            or elapsed >= _ANALYSIS_INTERVAL_SECONDS
+        ):
+            _match_char_count[match_id] = 0
+            _match_last_analysis[match_id] = now
+            asyncio.create_task(self._run_drift_and_stalemate_checks())
 
     async def _run_message_analysis(self, message_id: int, content: str, *, emotion_score=None):
         from api.models import MatchMessage
@@ -565,8 +633,9 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
         if embedding is None:
             return
 
+        # Topic relevance runs every message; drift + stalemate are throttled
+        # separately via _maybe_run_periodic_analysis.
         await self._run_topic_check()
-        await self._run_drift_and_stalemate_checks()
 
     async def _run_topic_check(self):
         anchor = await self._ensure_topic_anchor_embedding()

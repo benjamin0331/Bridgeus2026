@@ -1,8 +1,7 @@
 """AI assistance helpers for human-to-human matching rooms.
 
-These helpers are intentionally independent from the legacy ``chat.Conversation``
-stack on feat/benjamin.  They operate on the current matching-room models via
-callers in ``api.consumers``.
+They operate on the current matching-room models (``api.DialogueMatch`` /
+``api.MatchMessage``) via callers in ``api.consumers``.
 """
 
 from __future__ import annotations
