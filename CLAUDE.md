@@ -1,5 +1,11 @@
 # CLAUDE.md — BridgeUs (橋得攏) Project Context
 
+## 每次對話開始時的必要步驟
+
+**每次新對話開始時，必須先閱讀 `CONTEXT.md`（位於專案根目錄 `h:\P_BridgeUS\CONTEXT.md`）以確認上次的進度、當前任務狀態與待辦事項，再開始任何工作。**
+
+---
+
 ## Project Overview
 
 BridgeUs (橋得攏) is an **heterogeneous-viewpoint dialogue platform** designed to combat echo chambers and social polarization. It matches users with opposing stances on public issues, facilitating structured depolarization dialogue through both human-human and human-AI agent interactions.
@@ -301,3 +307,8 @@ bridgeus/
 - **去極化指標**：立場偏移量（向量距離變化）、情緒分數變化、攻擊性詞彙減少、CCND 拓撲結構變化
 - **準即時分析觸發**：每 90 分鐘 或 累積 200 字
 - **關鍵文獻**：Combs et al. (2023) Nature Human Behaviour — DiscussIt platform; Argyle et al. (2023) PNAS — AI chat interventions
+
+## H-H 對話模組
+架構文件：./docs/HH_Architecture.md
+目前進度：尚未開始
+當前任務：建立 NLP Pipeline 基礎模組

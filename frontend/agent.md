@@ -1,96 +1,62 @@
-# BridgeUs Agent Handoff
+# BridgeUs Frontend Agent Handoff
 
-## Project Snapshot
+## Current Snapshot
 
-- Current project path: `/Users/light/code/BridgeUs`
-- Stack: Vite 8 + React 19 frontend, axios for API calls, React Router 7
-- This workspace is **not** a normal git repo. There is a `.git.local-backup`, but no active `.git` directory.
-- Current JS toolchain in this workspace:
-  - `node v22.22.2`
-  - `npm 10.9.7`
-- `node_modules` and `package-lock.json` exist in the current path.
-- `.venv` has already been rebuilt for the current path and no longer points to the old location.
+- Frontend path: `/Users/light/code/frontend`.
+- Active git repo: parent monorepo `/Users/light/code`.
+- Main branch used by the user: `feat/Light`.
+- Stack: Vite 8, React 19, React Router 7, axios.
+- Backend default target: `http://127.0.0.1:8005`.
 
 ## Important Files
 
-- App shell and auth state: `src/App.jsx`
-- API client and auth interceptor: `src/api/client.js`
-- Login flow: `src/pages/LoginPage.jsx`
-- Topic chat flow: `src/pages/TopicChat.jsx`
-- Navbar logout UI: `src/components/Navbar.jsx`
+- `src/App.jsx`: app shell, routes, auth state.
+- `src/api/client.js`: axios client and JWT/session cleanup.
+- `src/pages/LoginPage.jsx`: login UX.
+- `src/pages/TopicChat.jsx`: AI dialogue mode, matching mode, survey modal, chat UI, WebSocket and polling lifecycle.
+- `src/pages/TopicChat.css`: TopicChat styling and mobile responsive behavior.
+- `vite.config.js`: `/api` and `/ws` proxy configuration.
 
-## What Was Already Changed
+## Current Behavior
 
-### Auth / logout behavior
+- Topic list and survey questions come from backend endpoints.
+- AI dialogue uses `POST /api/dialogue/sessions/`, `POST /reply/`, and WebSocket streaming where available.
+- Matching mode posts survey answers to `POST /api/matching/join/`.
+- Matching status is polled through `GET /api/matching/status/?topic_id=102`.
+- Matching messages are fetched/persisted through `/api/matching/rooms/<room_id>/messages/`; the UI also polls this endpoint for room snapshots while live updates use `WS /ws/matching/rooms/<room_id>/`.
+- The right-side semantic tree panel is a pure renderer for backend `treeData`. `TopicChat.jsx` loads `/api/matching/rooms/<room_id>/semantic-tree/` on room entry and debounces `/semantic-tree/analyze/` after new messages. Do not reintroduce frontend keyword classification; Gemini prompt/schema/merge logic lives in the backend.
+- Matching WebSocket can emit `match_system_prompt` and `match_ai_suggestion` when backend H-H AI assist is enabled; keep suggestion-card behavior in `TopicChat.jsx`. If backend NLP inference times out, the backend should fail open and relay the original message.
+- Matching participants are anonymous in the UI.
+- Current user's own messages should render on the right.
+- Page leave/unload sends best-effort cancel/leave requests to reduce ghost matching state.
+- Backend also closes idle matching rooms after 10 minutes with no conversation activity.
 
-Recent work already added a usable logout path:
+## Backend Assumptions
 
-- Manual logout button in the navbar
-- Shared auth cleanup that removes:
-  - `access`
-  - `refresh`
-  - `bridgeus_user`
-- Auto logout when JWT `exp` is reached
-- Auto logout when protected API requests return `401`
-- Login page error handling now distinguishes:
-  - `401` wrong credentials
-  - `5xx` backend unavailable
-  - network / other failures
+- Backend runs on port `8005`.
+- Vite proxy defaults to `http://127.0.0.1:8005`.
+- Deployed backend host may be `https://dev.bridgeus.work`.
+- JWT endpoints are `/api/token/` and `/api/token/refresh/`.
+- Matching neutral state can return `ai_recommended`.
 
-Implementation lives mainly in:
+## Verification
 
-- `src/App.jsx`
-- `src/api/client.js`
-- `src/components/Navbar.jsx`
-- `src/pages/LoginPage.jsx`
+Run from `/Users/light/code/frontend`:
 
-## Known Outstanding Findings
+```bash
+npm run lint
+npm run build
+```
 
-These are the main items still worth continuing from the previous review:
+If checking full integration locally, also run backend ASGI from `/Users/light/code/backend`:
 
-1. `src/pages/TopicChat.jsx`
-   First message may be sent twice.
-   Current flow sends the first text into session creation as `user_initial_argument`, then immediately sends the same text again to `/reply/`.
-   If backend persists `user_initial_argument`, the first user message and/or first assistant response can duplicate.
+```bash
+uv run python manage.py warm_nlp_models
+uv run uvicorn BridgeUs_Django.asgi:application --host 0.0.0.0 --port 8005
+```
 
-2. `src/pages/TopicChat.jsx`
-   IME handling is still incomplete.
-   The input currently sends on plain `Enter` and does not guard against composition state, so Chinese input method selection can accidentally send half-finished text.
+## Git Notes
 
-3. `src/api/client.js`
-   The app now auto-logs out on `401`, but refresh-token retry logic is **not** implemented.
-   Current behavior is deliberate fallback: expired auth leads to logout instead of silent refresh.
-
-4. `src/pages/TopicChat.jsx`
-   `mapHistoryToMessages()` assumes backend uses role `'agent'`.
-   If backend returns `'assistant'` or `'system'`, UI mapping may be wrong.
-
-## Current Behavioral Notes
-
-- Topic list in `src/App.jsx` is still mocked in the frontend.
-- Login expects backend token endpoint at `/api/token/`.
-- Dialogue flow expects:
-  - `POST /api/dialogue/sessions/`
-  - `POST /api/dialogue/sessions/:id/reply/`
-- Vite proxy config is in `vite.config.js`.
-
-## Suggested Next Steps
-
-Recommended order for the next agent:
-
-1. Fix the duplicate first-message flow in `src/pages/TopicChat.jsx`.
-2. Fix IME-safe Enter handling in the same chat input.
-3. Confirm backend response contract for chat history roles.
-4. Decide whether product wants:
-   - explicit logout-on-expiry only, or
-   - full refresh-token retry flow
-5. Run verification after any change:
-   - `npm run dev`
-   - `npm run build`
-   - `npm run lint`
-
-## Environment Notes
-
-- If the project is moved again, recreate `.venv` rather than copying old path-bound scripts.
-- IDE metadata under `.idea/` is local-machine state and can be ignored or regenerated.
-- Because this is not an active git repo, do not rely on `git diff` for change tracking.
+- Do not run git commands from an assumed standalone frontend repo.
+- Use `/Users/light/code` as the git root.
+- Before staging, inspect `git status -sb` from the root because backend and frontend changes often ship together.

@@ -12,12 +12,14 @@ services:
       CSRF_TRUSTED_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080,https://dev.bridgeus.work"
       REDIS_URL: "redis://redis:6379/1"
       USE_REDIS_CACHE: "true"
+      USE_REDIS_CHANNEL: "true"
+      DB_CONN_MAX_AGE: "0"
       SQLITE_PATH: "/data/db.sqlite3"
       CHROMA_PERSIST_DIR: "/data/chroma"
       HF_HOME: "/data/huggingface"
       PORT: "8005"
-      GUNICORN_WORKERS: "2"
-      GUNICORN_TIMEOUT: "180"
+      UVICORN_WORKERS: "1"
+      UVICORN_TIMEOUT_KEEP_ALIVE: "180"
     ports:
       - "8005:8005"
     depends_on:

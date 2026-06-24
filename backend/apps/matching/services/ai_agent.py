@@ -27,6 +27,7 @@ from langchain_chroma import Chroma
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
+from core.chroma_utils import ensure_chroma_dir_writable
 from core.llm_provider import get_embeddings, get_llm
 
 
@@ -34,17 +35,15 @@ from core.llm_provider import get_embeddings, get_llm
 # Response Chunking & Streaming
 # ═══════════════════════════════════════════════════════════
 
-_SENTENCE_END_RE = re.compile(r'(?<=[。！？…])\s*')
+_SENTENCE_END_RE = re.compile(r"(?<=[。！？…])\s*")
 
 
 def split_into_chunks(text: str, max_chars: int = 30) -> list[str]:
-    """
-    按中文句末標點切分回應，每段不超過 max_chars 字。
-    若單句本身超過 max_chars，整句仍作為一個 chunk 傳出，不強制截斷語意。
-    """
-    sentences = [s for s in _SENTENCE_END_RE.split(text) if s.strip()]
+    """Split Chinese replies into display chunks without cutting sentences."""
+    sentences = [sentence for sentence in _SENTENCE_END_RE.split(text) if sentence.strip()]
     chunks: list[str] = []
     current = ""
+
     for sentence in sentences:
         if not current:
             current = sentence
@@ -53,8 +52,10 @@ def split_into_chunks(text: str, max_chars: int = 30) -> list[str]:
         else:
             chunks.append(current)
             current = sentence
+
     if current:
         chunks.append(current)
+
     return chunks
 
 
@@ -65,37 +66,12 @@ async def stream_chunks(
     min_delay: float = 2.0,
     max_delay: float = 3.0,
 ) -> None:
-    """
-    逐一傳送回應分段，模擬打字節奏。
-
-    每段流程：觸發打字動畫 → 等待 2-3 秒 → 送出訊息。
-
-    Args:
-        chunks:       split_into_chunks() 的輸出
-        send_message: async (content: str) -> None，傳送一段訊息
-        send_typing:  async () -> None，觸發前端打字動畫（可為 None）
-        min_delay:    打字動畫持續的最短秒數
-        max_delay:    打字動畫持續的最長秒數
-
-    M4 Django Channels consumer 呼叫範例：
-        response = agent.respond(session)
-        chunks = split_into_chunks(response)
-        await stream_chunks(
-            chunks,
-            send_message=lambda c: self.send(json.dumps({
-                "type": "agent_message", "content": c
-            })),
-            send_typing=lambda: self.send(json.dumps({
-                "type": "agent_typing"
-            })),
-        )
-    """
+    """Send pre-split chunks with a small typing delay between chunks."""
     for chunk in chunks:
         if send_typing:
             await send_typing()
         await asyncio.sleep(random.uniform(min_delay, max_delay))
         await send_message(chunk)
-
 
 # ═══════════════════════════════════════════════════════════
 # Prompt Loading
@@ -205,8 +181,10 @@ class DialogueSession:
     agent_stance: str = ""
     agent_stance_summary: str = ""
     user_stance_label: str = ""
-    user_stance_score: float = 0.5
+    user_stance_score: float = 4.0
     user_initial_argument: str = ""
+    user_reasoning_mode: str = "unknown"
+    focus_signal_count: int = 0
     dialogue_phase: DialoguePhase = DialoguePhase.ENGAGEMENT
     history: list[DialogueMessage] = field(default_factory=list)
 
@@ -220,6 +198,8 @@ class DialogueSession:
             "user_stance_label": self.user_stance_label,
             "user_stance_score": self.user_stance_score,
             "user_initial_argument": self.user_initial_argument,
+            "user_reasoning_mode": self.user_reasoning_mode,
+            "focus_signal_count": self.focus_signal_count,
             "dialogue_phase": self.dialogue_phase.value,
             "history": [m.to_dict() for m in self.history],
         }
@@ -233,8 +213,10 @@ class DialogueSession:
             agent_stance=data.get("agent_stance", ""),
             agent_stance_summary=data.get("agent_stance_summary", ""),
             user_stance_label=data.get("user_stance_label", ""),
-            user_stance_score=data.get("user_stance_score", 0.5),
+            user_stance_score=data.get("user_stance_score", 4.0),
             user_initial_argument=data.get("user_initial_argument", ""),
+            user_reasoning_mode=data.get("user_reasoning_mode", "unknown"),
+            focus_signal_count=data.get("focus_signal_count", 0),
             dialogue_phase=DialoguePhase(
                 data.get("dialogue_phase", DialoguePhase.ENGAGEMENT.value)
             ),
@@ -242,6 +224,14 @@ class DialogueSession:
                 DialogueMessage.from_dict(m) for m in data.get("history", [])
             ],
         )
+
+    @property
+    def effective_reasoning_mode(self) -> str:
+        """Resolved mode injected into the prompt.
+        unknown + focus_signal_count >= 2 → upgrade to collaborative."""
+        if self.user_reasoning_mode == "unknown" and self.focus_signal_count >= 2:
+            return "collaborative"
+        return self.user_reasoning_mode
 
     @property
     def turn_count(self) -> int:
@@ -292,6 +282,92 @@ class DialogueSession:
 
 
 # ═══════════════════════════════════════════════════════════
+# Reasoning Mode Inference
+# ═══════════════════════════════════════════════════════════
+
+_COLLABORATIVE_MARKERS = frozenset({
+    "雖然", "但", "另一方面", "不確定", "難說", "也許", "可能",
+    "複雜", "搞不清楚", "兩難", "理解", "然而", "不過", "折衷",
+    "既然", "畢竟", "或許", "感覺", "說實話",
+})
+_POLARIZED_MARKERS = frozenset({
+    "絕對", "一定要", "完全反對", "完全支持", "堅決",
+    "絕不", "必須廢核", "必須重啟", "不可能接受",
+    "強烈反對", "強烈支持",
+})
+
+# ── Focus signal detection (real-time, per-turn) ─────────────────────────────
+_FOCUS_CONFIRMATION = frozenset({
+    "不是嗎", "對嗎", "是嗎", "對吧", "是吧",
+    "認同嗎", "你覺得呢", "你說呢", "對不對",
+    "是這樣嗎", "這樣對吧", "是這樣吧", "你認為呢",
+    "你認同", "說得對嗎", "沒錯吧", "沒問題吧",
+})
+_FOCUS_EXPLICIT = frozenset({
+    "我想表示", "我要說的是", "就是這個", "我想講的",
+    "我的意思是", "說的就是", "我想說的就是",
+    "正是這樣", "我想強調的是", "我的重點是",
+    "我說的是", "講的就是", "我說的就是",
+    "先說清楚", "是前提", "必須先確認",
+})
+_FOCUS_REJECTION_NEGATION = frozenset({
+    "不做", "不是決策者", "我不是", "我沒辦法",
+    "不想做", "不接受", "不做此",
+})
+_FOCUS_REJECTION_HYPOTHETICAL = frozenset({
+    "假設", "決策者", "假設你是", "假設我是",
+})
+
+
+def detect_focus_signal(message: str) -> bool:
+    """
+    Rule-based detector: returns True if the message is a convergence/focus signal.
+
+    Rules (any one triggers True):
+    1. 確認尋求 — contains a confirmation-seeking phrase (嗎/吧/呢 in confirmatory context)
+    2. 拒絕假設 — negation word + hypothetical-framing word co-occur in same message
+    3. 明確指認 — explicit anchoring phrase ("就是這個", "先說清楚" …)
+    4. [收窄]    — TODO: scope-narrowing requires structural analysis; skipped for now
+    """
+    if any(phrase in message for phrase in _FOCUS_EXPLICIT):
+        return True
+    if any(phrase in message for phrase in _FOCUS_CONFIRMATION):
+        return True
+    if (
+        any(neg in message for neg in _FOCUS_REJECTION_NEGATION)
+        and any(hyp in message for hyp in _FOCUS_REJECTION_HYPOTHETICAL)
+    ):
+        return True
+    return False
+
+
+def infer_reasoning_mode(
+    user_stance_score: float,
+    user_initial_argument: str,
+    opponent_view_text: str = "",
+) -> str:
+    """
+    Heuristic classification of a user's argumentation style.
+
+    collaborative — builds arguments collaboratively, shows nuance, articulates opponent view
+    polarized     — entrenched stance, repeats same point, needs perspective-flip prompts
+    unknown       — default; AI internally downgrades to collaborative after 2 focus signals
+    """
+    combined = f"{user_initial_argument} {opponent_view_text}"
+    hedge_count = sum(1 for w in _COLLABORATIVE_MARKERS if w in combined)
+    certainty_count = sum(1 for w in _POLARIZED_MARKERS if w in combined)
+    is_extreme = user_stance_score <= 2.0 or user_stance_score >= 6.0
+
+    if is_extreme and certainty_count >= 1:
+        return "polarized"
+    if hedge_count >= 2 and not is_extreme:
+        return "collaborative"
+    if len(opponent_view_text) >= 50 and certainty_count == 0 and not is_extreme:
+        return "collaborative"
+    return "unknown"
+
+
+# ═══════════════════════════════════════════════════════════
 # DialogueAgent
 # ═══════════════════════════════════════════════════════════
 
@@ -308,7 +384,7 @@ class DialogueAgent:
             agent_stance="支持重啟核電",
             agent_stance_summary="核電是兼顧減碳與穩定供電的務實選擇",
             user_stance_label="反對核電",
-            user_stance_score=0.75,
+            user_stance_score=2.0,
         )
 
         # 建立 agent（可指定不同 prompt 檔案）
@@ -329,9 +405,7 @@ class DialogueAgent:
         prompt_file: str = _DEFAULT_PROMPT_FILE,
         max_history_turns: int = 20,
     ):
-        self._chroma_dir = chroma_dir or os.getenv(
-            "CHROMA_PERSIST_DIR", "./chroma_data"
-        )
+        self._chroma_dir = ensure_chroma_dir_writable(chroma_dir)
         self._collection_name = collection_name
         self._retriever_k = retriever_k
         self._temperature = temperature
@@ -349,11 +423,18 @@ class DialogueAgent:
 
         # Initialize retriever
         embeddings = get_embeddings()
-        vectorstore = Chroma(
-            persist_directory=self._chroma_dir,
-            collection_name=self._collection_name,
-            embedding_function=embeddings,
-        )
+        try:
+            vectorstore = Chroma(
+                persist_directory=self._chroma_dir,
+                collection_name=self._collection_name,
+                embedding_function=embeddings,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "無法初始化 Chroma 知識庫。"
+                f" collection={self._collection_name}, path={self._chroma_dir}。"
+                " 請確認該目錄存在且目前執行帳號有讀寫權限。"
+            ) from exc
         self._retriever = vectorstore.as_retriever(
             search_kwargs={"k": self._retriever_k}
         )
@@ -407,6 +488,7 @@ class DialogueAgent:
             ),
             "turn_count": str(session.turn_count),
             "dialogue_phase": session.dialogue_phase.value,
+            "user_reasoning_mode": session.effective_reasoning_mode,
             "user_message": latest_msg,
         }
 
@@ -421,17 +503,8 @@ class DialogueAgent:
                 f"DialogueAgent LLM 呼叫失敗（輪次 {session.turn_count}）：{exc}"
             ) from exc
 
-    async def astream_respond(self, session: "DialogueSession"):
-        """
-        Async streaming version of respond() for Django Channels consumers.
-
-        Yields text chunks as they arrive from the Anthropic API.
-        Uses prompt caching on the system prompt to reduce cost and latency.
-
-        Usage (in AsyncWebsocketConsumer):
-            async for chunk in agent.astream_respond(session):
-                await self.send(json.dumps({"type": "agent_stream", "content": chunk}))
-        """
+    async def astream_respond(self, session: DialogueSession):
+        """Stream an AI reply for Django Channels while preserving session semantics."""
         import anthropic
         from asgiref.sync import sync_to_async
 
@@ -442,7 +515,7 @@ class DialogueAgent:
 
         rag_context = await sync_to_async(self._retrieve_context)(latest_msg)
 
-        replacements = {
+        prompt_vars = {
             "topic": session.topic,
             "topic_description": session.topic_description,
             "agent_stance": session.agent_stance,
@@ -456,15 +529,18 @@ class DialogueAgent:
             ),
             "turn_count": str(session.turn_count),
             "dialogue_phase": session.dialogue_phase.value,
+            "user_reasoning_mode": session.effective_reasoning_mode,
         }
+
         system_text = self._system_prompt_raw
-        for key, value in replacements.items():
+        for key, value in prompt_vars.items():
             system_text = system_text.replace("{" + key + "}", value)
 
         client = anthropic.AsyncAnthropic()
         async with client.messages.stream(
             model=os.getenv("CLAUDE_CHAT_MODEL", "claude-sonnet-4-6"),
-            max_tokens=1024,
+            max_tokens=int(os.getenv("CLAUDE_CHAT_MAX_TOKENS", "1024")),
+            temperature=self._temperature,
             system=[
                 {
                     "type": "text",
@@ -489,7 +565,7 @@ class DialogueAgent:
             agent_stance="對立立場",
             agent_stance_summary="與使用者持相反觀點",
             user_stance_label="使用者立場",
-            user_stance_score=0.5,
+            user_stance_score=4.0,
         )
         session.add_user_message(user_message)
         return self.respond(session)
@@ -511,11 +587,10 @@ if __name__ == "__main__":
     import os
     from pathlib import Path as _Path
 
-    # 載入 .env
+    # 載入專案根目錄 .env
     try:
         from dotenv import load_dotenv as _load_dotenv
-        for _p in [_Path(__file__).resolve().parents[3] / ".env",
-                   _Path(__file__).resolve().parents[4] / ".env"]:
+        for _p in [_Path(__file__).resolve().parents[3] / ".env"]:
             if _p.exists():
                 _load_dotenv(_p)
                 break
@@ -536,18 +611,42 @@ if __name__ == "__main__":
     print("🚀 初始化 DialogueAgent...")
     agent = DialogueAgent(collection_name="nuclear_energy_all")
 
+    print("\n═" * 25)
+    print("使用者推理模式（決定 AI 的對話策略）")
+    print("  1  collaborative  — 協作探索型，AI 以共同思考者角色，視角翻轉最多 1 次")
+    print("  2  polarized      — 立場鞏固型，AI 採完整三階段策略，正常頻率視角翻轉")
+    print("  3  unknown        — 預設值，先以 polarized 為準，偵測 2 次聚焦信號後自動降級")
+    mode_input = input("選擇 [1/2/3，直接 Enter = unknown]：").strip()
+    reasoning_mode_map = {"1": "collaborative", "2": "polarized", "3": "unknown"}
+    chosen_mode = reasoning_mode_map.get(mode_input, "unknown")
+    print(f"→ 使用模式：{chosen_mode}\n")
+
+    print("使用者立場（決定 AI 對立的方向）")
+    print("  1  反對核電（stance_score=2.0）")
+    print("  2  支持核電（stance_score=6.0）")
+    print("  3  中立（stance_score=4.0）")
+    stance_input = input("選擇 [1/2/3，直接 Enter = 反對核電]：").strip()
+    stance_map = {
+        "1": ("反對核電", 2.0, "支持重啟核電", "核電是兼顧減碳與穩定供電的務實選擇"),
+        "2": ("支持核電", 6.0, "反對重啟核電", "核廢料與地震風險使核電不符台灣國情"),
+        "3": ("中立",     4.0, "鼓勵深入辯論", "希望你能從多角度探索這個議題的核心矛盾"),
+    }
+    user_stance_label, user_stance_score, agent_stance, agent_stance_summary = \
+        stance_map.get(stance_input, stance_map["1"])
+    print(f"→ 使用者立場：{user_stance_label}，AI 採對立角色：{agent_stance}\n")
+    print("═" * 25)
+
     session = DialogueSession(
         topic="核能政策",
         topic_description="台灣是否應重啟核電廠以應對能源轉型與減碳需求",
-        agent_stance="支持重啟核電",
-        agent_stance_summary=(
-            "在確保安全的前提下，核電是兼顧減碳與穩定供電的務實選擇，"
-            "不應因恐懼而放棄"
-        ),
-        user_stance_label="反對核電",
-        user_stance_score=0.75,
+        agent_stance=agent_stance,
+        agent_stance_summary=agent_stance_summary,
+        user_stance_label=user_stance_label,
+        user_stance_score=user_stance_score,
+        user_reasoning_mode=chosen_mode,
     )
 
+    print(f"[模式：{chosen_mode} | 使用者：{user_stance_label} | AI：{agent_stance}]")
     print("輸入 'exit' 或按 Ctrl+C 結束對話\n")
 
     while True:
@@ -570,4 +669,4 @@ if __name__ == "__main__":
         response = agent.respond(session)
         session.add_agent_message(response)
         print(response)
-        print(f"\n[第 {session.turn_count} 輪 | 階段：{session.dialogue_phase.value}]\n")
+        print(f"\n[第 {session.turn_count} 輪 | 階段：{session.dialogue_phase.value} | 模式：{session.user_reasoning_mode}]\n")

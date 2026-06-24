@@ -1,0 +1,360 @@
+/* Page wrapper — fills the content-area exactly, no page-level scroll */
+.pq-page {
+  height: 100%;
+  overflow: hidden;
+  background-color: #ede8e3;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 32px 16px;
+  box-sizing: border-box;
+}
+
+/* Card — takes full available height so footer is always visible */
+.pq-container {
+  width: 100%;
+  max-width: 580px;
+  height: 100%;
+  background-color: #f7f3f0;
+  border-radius: 40px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+  padding: 40px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Header — fixed inside the card */
+.pq-header {
+  flex-shrink: 0;
+  margin-bottom: 20px;
+}
+
+.pq-header h2 {
+  font-size: 26px;
+  font-weight: bold;
+  margin-bottom: 6px;
+  color: #1a1a1a;
+}
+
+.pq-subtitle {
+  color: #888;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.pq-step-badge {
+  display: inline-block;
+  background-color: #e0d8cf;
+  color: #555;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 14px;
+  border-radius: 20px;
+  margin-bottom: 12px;
+}
+
+/* Step indicator */
+.pq-step-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pq-step-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: #ddd;
+  transition: background-color 0.2s;
+}
+
+.pq-step-dot.done {
+  background-color: #aaa;
+}
+
+.pq-step-dot.active {
+  background-color: #555;
+}
+
+.pq-step-label {
+  font-size: 12px;
+  color: #999;
+  margin-left: 4px;
+}
+
+/* Body — scrollable, fills remaining card height */
+.pq-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 10px;
+  margin-right: -10px;
+}
+
+.pq-body::-webkit-scrollbar {
+  width: 5px;
+}
+
+.pq-body::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 10px;
+}
+
+.pq-step-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 4px;
+}
+
+.pq-part-header {
+  margin-bottom: 4px;
+}
+
+.pq-part-header h3 {
+  font-size: 18px;
+  font-weight: bold;
+  color: #1a1a1a;
+  margin-bottom: 6px;
+}
+
+.pq-part-header p {
+  color: #666;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Survey item */
+.pq-survey-item {
+  background-color: #eeeeee;
+  padding: 20px;
+  border-radius: 12px;
+  flex-shrink: 0;
+}
+
+.pq-survey-item h4 {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: #1a1a1a;
+}
+
+.pq-survey-item p {
+  font-size: 13px;
+  color: #555;
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+
+.pq-tag {
+  margin-left: 8px;
+  font-size: 11px;
+  color: #999;
+  font-weight: 400;
+}
+
+/* Likert */
+.pq-likert-scale {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: relative;
+  padding: 0 10px;
+}
+
+.pq-likert-line {
+  position: absolute;
+  top: 50%;
+  left: 10px;
+  right: 10px;
+  height: 2px;
+  background-color: #ccc;
+  z-index: 1;
+}
+
+.pq-likert-dot {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #333;
+  border-radius: 50%;
+  background-color: white;
+  z-index: 2;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.pq-likert-dot.selected {
+  background-color: #676767;
+}
+
+.pq-likert-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 10px;
+  font-size: 11px;
+  color: #999;
+}
+
+/* Radio group */
+.pq-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pq-radio-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: #333;
+  cursor: pointer;
+}
+
+.pq-radio-label input[type='radio'] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  accent-color: #555;
+}
+
+/* Open textarea */
+.pq-survey-item-open {
+  display: flex;
+  flex-direction: column;
+}
+
+.pq-open-textarea {
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid #d1c9c0;
+  border-radius: 12px;
+  background-color: #fbfaf8;
+  color: #2d2d2d;
+  font-size: 14px;
+  line-height: 1.6;
+  resize: vertical;
+  box-sizing: border-box;
+  font-family: inherit;
+  transition: border-color 0.15s;
+}
+
+.pq-open-textarea:focus {
+  outline: none;
+  border-color: #9c8f81;
+  box-shadow: 0 0 0 3px rgba(156, 143, 129, 0.18);
+}
+
+.pq-open-textarea.invalid {
+  border-color: #b42318;
+}
+
+.pq-char-count {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.pq-char-count.ok {
+  color: #3a7a3a;
+}
+
+.pq-char-count.warn {
+  color: #b42318;
+}
+
+/* Discomfort detail */
+.pq-discomfort-detail {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pq-discomfort-hint {
+  font-size: 13px;
+  color: #666;
+  margin-bottom: 4px;
+}
+
+/* Footer — fixed at bottom of card, never scrolls away */
+.pq-footer {
+  flex-shrink: 0;
+  padding-top: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pq-nav-buttons {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.pq-btn {
+  padding: 13px 32px;
+  border-radius: 30px;
+  border: none;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.pq-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.pq-btn-secondary {
+  background-color: #e8e2d9;
+  color: #555;
+}
+
+.pq-btn-primary {
+  background-color: #676767;
+  color: white;
+}
+
+.pq-btn-submit {
+  background-color: #3a5a3a;
+  color: white;
+}
+
+.pq-error {
+  color: #b42318;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+@media (max-width: 640px) {
+  .pq-page {
+    padding: 0;
+    align-items: flex-end;
+  }
+
+  .pq-container {
+    border-radius: 28px 28px 0 0;
+    padding: 28px 20px 20px 20px;
+  }
+
+  .pq-header h2 {
+    font-size: 22px;
+  }
+
+  .pq-btn {
+    padding: 13px 20px;
+    font-size: 14px;
+  }
+
+  .pq-nav-buttons {
+    flex-direction: column-reverse;
+  }
+
+  .pq-btn {
+    width: 100%;
+    text-align: center;
+  }
+}
