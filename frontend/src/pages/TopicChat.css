@@ -786,3 +786,30 @@
   background: rgba(0, 0, 0, 0.1);
   border-radius: 10px;
 }
+
+.ai-end-dialogue-bar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 6px 0 4px 0;
+}
+
+.ai-end-dialogue-btn {
+  background: none;
+  border: 1px solid #c8bfb5;
+  color: #888;
+  font-size: 12px;
+  padding: 6px 16px;
+  border-radius: 20px;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.ai-end-dialogue-btn:hover:not(:disabled) {
+  background-color: #e8e2d9;
+  color: #444;
+}
+
+.ai-end-dialogue-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

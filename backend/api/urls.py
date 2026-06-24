@@ -61,4 +61,12 @@ urlpatterns = [
         'matching/rooms/<str:room_id>/leave/',
         views.MatchingRoomLeaveView.as_view(),
     ),
+    path(
+        'post-questionnaire/',
+        views.PostDialogueResponseView.as_view(),
+    ),
+    path(
+        'post-questionnaire/<int:response_id>/consent/',
+        views.PostDialogueResponseConsentView.as_view(),
+    ),
 ]

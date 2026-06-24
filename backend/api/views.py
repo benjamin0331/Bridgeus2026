@@ -17,7 +17,9 @@ from .models import (
     AIConversation,
     DialogueMatch,
     DialogueSessionRecord,
+    DiscomfortReport,
     MatchStanceDrift,
+    PostDialogueResponse,
 )
 from .dialogue_topics import (
     TOPIC_CONFIGS,
@@ -37,6 +39,9 @@ from .serializers import (
     MatchingRoomSemanticTreeSerializer,
     MatchingStateSerializer,
     MatchingTopicSerializer,
+    PostDialogueResponseConsentSerializer,
+    PostDialogueResponseOutputSerializer,
+    PostDialogueResponseSerializer,
 )
 
 SESSION_TTL_SECONDS = 60 * 60 * 12
@@ -1467,4 +1472,93 @@ class MatchingRoomLeaveView(APIView):
                 state=state,
                 user_id=request.user.id,
             )
+        )
+
+
+class PostDialogueResponseView(APIView):
+    """POST /api/post-questionnaire/ — submit post-dialogue questionnaire."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        serializer = PostDialogueResponseSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        validated = serializer.validated_data
+
+        discomfort_detail = validated.pop("discomfort_detail", "") or ""
+
+        response_obj = PostDialogueResponse.objects.create(
+            user=request.user,
+            topic_id=validated["topic_id"],
+            session_id=validated.get("session_id") or None,
+            room_id=validated.get("room_id") or None,
+            experiment_condition=validated["experiment_condition"],
+            post_likert_1=validated["post_likert_1"],
+            post_likert_2=validated["post_likert_2"],
+            post_likert_3=validated["post_likert_3"],
+            post_likert_4=validated["post_likert_4"],
+            post_likert_5=validated["post_likert_5"],
+            post_likert_6=validated["post_likert_6"],
+            post_likert_7=validated["post_likert_7"],
+            post_likert_8=validated["post_likert_8"],
+            exp_stance_change_1=validated["exp_stance_change_1"],
+            exp_stance_change_2=validated["exp_stance_change_2"],
+            exp_quality_1=validated["exp_quality_1"],
+            exp_quality_2=validated["exp_quality_2"],
+            exp_reflection_1=validated["exp_reflection_1"],
+            exp_reflection_2=validated["exp_reflection_2"],
+            ccnd_attention=validated["ccnd_attention"],
+            ccnd_awareness=validated["ccnd_awareness"],
+            ccnd_influence=validated["ccnd_influence"],
+            opponent_judgment=validated.get("opponent_judgment"),
+            post_open_comprehension=validated["post_open_comprehension"],
+            post_open_feedback=validated.get("post_open_feedback", ""),
+            discomfort_flag=validated.get("discomfort_flag", False),
+        )
+
+        if response_obj.discomfort_flag and discomfort_detail.strip():
+            DiscomfortReport.objects.create(
+                response=response_obj,
+                detail=discomfort_detail.strip(),
+            )
+
+        out = PostDialogueResponseOutputSerializer(response_obj)
+        return Response(out.data, status=status.HTTP_201_CREATED)
+
+
+class PostDialogueResponseConsentView(APIView):
+    """PATCH /api/post-questionnaire/<id>/consent/ — record debriefing consent."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, response_id: int):
+        try:
+            response_obj = PostDialogueResponse.objects.get(
+                id=response_id,
+                user=request.user,
+            )
+        except PostDialogueResponse.DoesNotExist:
+            return Response(
+                {"detail": "找不到這筆問卷紀錄。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = PostDialogueResponseConsentSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        response_obj.consent_confirmed = serializer.validated_data["consent_confirmed"]
+        response_obj.save(update_fields=["consent_confirmed", "updated_at"])
+
+        withdrawn = not response_obj.consent_confirmed
+        return Response(
+            {
+                "id": response_obj.id,
+                "consent_confirmed": response_obj.consent_confirmed,
+                "withdrawn": withdrawn,
+                "message": (
+                    "你的資料已標記為撤回，不會被納入研究分析。感謝你的參與。"
+                    if withdrawn
+                    else "感謝你同意繼續參與本研究。"
+                ),
+            }
         )

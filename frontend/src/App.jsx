@@ -10,6 +10,8 @@ import TopicChat from './pages/TopicChat'
 import KnowledgeBase from './pages/KnowledgeBase'
 import HistoryPage from './pages/HistoryPage'
 import LoginPage from './pages/LoginPage'
+import PostQuestionnairePage from './pages/PostQuestionnairePage'
+import DebriefingPage from './pages/DebriefingPage'
 
 function TopicChatRoute({ user, issues, issuesLoaded }) {
   const { id } = useParams();
@@ -178,6 +180,8 @@ function App() {
 
             <Route path="/kb" element={<KnowledgeBase />} />
             <Route path="/history" element={<HistoryPage />} />
+            <Route path="/post-questionnaire" element={<PostQuestionnairePage />} />
+            <Route path="/debriefing" element={<DebriefingPage />} />
             <Route path="/chat" element={<div className="empty-page-message">Godot還在排隊</div>} />
           </Routes>
         </div>

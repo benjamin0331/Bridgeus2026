@@ -1,0 +1,172 @@
+.db-page {
+  min-height: 100vh;
+  background-color: #f7f3f0;
+  display: flex;
+  justify-content: center;
+  padding: 48px 16px;
+}
+
+.db-container {
+  width: 100%;
+  max-width: 600px;
+}
+
+.db-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.db-content h2 {
+  font-size: 26px;
+  font-weight: bold;
+  color: #1a1a1a;
+  margin-bottom: 24px;
+}
+
+.db-section {
+  margin-bottom: 20px;
+  padding: 20px;
+  background-color: #eeeeee;
+  border-radius: 12px;
+}
+
+.db-section h3 {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1a1a1a;
+  margin-bottom: 10px;
+}
+
+.db-section p {
+  font-size: 14px;
+  color: #555;
+  line-height: 1.65;
+  margin-bottom: 8px;
+}
+
+.db-section p:last-child {
+  margin-bottom: 0;
+}
+
+/* Consent */
+.db-consent-section {
+  margin-top: 8px;
+  margin-bottom: 20px;
+  padding: 20px;
+  background-color: #e8e2d9;
+  border-radius: 12px;
+}
+
+.db-consent-prompt {
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 16px;
+}
+
+.db-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.db-radio-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  font-size: 14px;
+  color: #333;
+  cursor: pointer;
+  line-height: 1.5;
+}
+
+.db-radio-label input[type='radio'] {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  flex-shrink: 0;
+  cursor: pointer;
+  accent-color: #555;
+}
+
+/* Footer */
+.db-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.db-btn {
+  padding: 13px 40px;
+  border-radius: 30px;
+  border: none;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.db-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.db-btn-primary {
+  background-color: #3a5a3a;
+  color: white;
+}
+
+/* Thank you state */
+.db-thank-you {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 40px;
+  background-color: #eeeeee;
+  border-radius: 20px;
+  text-align: center;
+}
+
+.db-thank-you h2 {
+  font-size: 26px;
+  font-weight: bold;
+  color: #1a1a1a;
+  margin-bottom: 0;
+}
+
+.db-thank-you p {
+  font-size: 15px;
+  color: #555;
+  line-height: 1.65;
+}
+
+.db-withdrawn-note {
+  color: #7a5a3a;
+}
+
+.db-error {
+  color: #b42318;
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+
+@media (max-width: 640px) {
+  .db-page {
+    padding: 24px 12px;
+  }
+
+  .db-content h2 {
+    font-size: 22px;
+  }
+
+  .db-btn {
+    width: 100%;
+    padding: 13px;
+  }
+
+  .db-footer {
+    justify-content: stretch;
+  }
+}

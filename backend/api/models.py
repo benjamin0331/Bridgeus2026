@@ -346,3 +346,142 @@ class MatchStanceDrift(models.Model):
             f"drift match={self.match_id} user={self.user_id} "
             f"value={self.drift_value:.4f}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Post-dialogue questionnaire
+# ---------------------------------------------------------------------------
+
+# C1 reversed items: C1-2→Q5, C1-6→Q4, C1-7→Q6, C1-8→Q2
+_POST_LIKERT_REVERSED = {2, 6, 7, 8}
+# (post_index, pre_question_id) — needed for research cross-referencing
+POST_LIKERT_TO_PRE_QUESTION = {1: 8, 2: 5, 3: 3, 4: 7, 5: 1, 6: 4, 7: 6, 8: 2}
+
+
+def _likert_field(verbose_name):
+    return models.PositiveSmallIntegerField(
+        verbose_name=verbose_name,
+        help_text="1–7 Likert scale",
+    )
+
+
+class PostDialogueResponse(models.Model):
+    class ExperimentCondition(models.TextChoices):
+        AI = "ai", "H-AI"
+        HH = "hh", "H-H"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="post_dialogue_responses",
+    )
+    topic_id = models.PositiveIntegerField(db_index=True)
+    session_id = models.CharField(max_length=64, blank=True, null=True, db_index=True)
+    room_id = models.CharField(max_length=64, blank=True, null=True, db_index=True)
+    experiment_condition = models.CharField(
+        max_length=4,
+        choices=ExperimentCondition.choices,
+        db_index=True,
+    )
+
+    # Part C-1: Post stance Likert (8 items, scrambled order mirrors pre-test Q1-Q8)
+    post_likert_1 = _likert_field("C1-1 (pre=Q8, positive)")
+    post_likert_2 = _likert_field("C1-2 (pre=Q5, reverse)")
+    post_likert_3 = _likert_field("C1-3 (pre=Q3, positive)")
+    post_likert_4 = _likert_field("C1-4 (pre=Q7, positive)")
+    post_likert_5 = _likert_field("C1-5 (pre=Q1, positive)")
+    post_likert_6 = _likert_field("C1-6 (pre=Q4, reverse)")
+    post_likert_7 = _likert_field("C1-7 (pre=Q6, reverse)")
+    post_likert_8 = _likert_field("C1-8 (pre=Q2, reverse)")
+
+    # Part C-2: Experience scale
+    exp_stance_change_1 = _likert_field("C2-1 主觀立場改變自覺")
+    exp_stance_change_2 = _likert_field("C2-2 主觀立場改變自覺")
+    exp_quality_1 = _likert_field("C2-3 對話品質感知")
+    exp_quality_2 = _likert_field("C2-4 對話品質感知")
+    exp_reflection_1 = _likert_field("C2-5 自我反思/元認知")
+    exp_reflection_2 = _likert_field("C2-6 自我反思/元認知")
+
+    # Part C-3: CCND assessment
+    ccnd_attention = _likert_field("C3-1 注意力門檻")
+    ccnd_awareness = _likert_field("C3-2 認知差異覺察")
+    ccnd_influence = _likert_field("C3-3 表達/思考調整")
+
+    # Part C-4: Opponent judgment (H-AI only; NULL for H-H)
+    # 1=human, 2=AI, 3=uncertain
+    opponent_judgment = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="1=真人, 2=AI, 3=不確定；H-H 組為 NULL",
+    )
+
+    # Part D: Open questions
+    post_open_comprehension = models.TextField(
+        help_text="D1 — 對立觀點陳述（最低 50 字）；與前測 Q10 同題幹，向量化後存 pgvector"
+    )
+    post_open_feedback = models.TextField(
+        blank=True,
+        help_text="D2 — 自由回饋，無字數限制",
+    )
+
+    # Part E: Discomfort flag (detail stored in DiscomfortReport)
+    discomfort_flag = models.BooleanField(default=False)
+
+    # Debriefing consent: NULL=pending, True=consent, False=withdrawn
+    consent_confirmed = models.BooleanField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(opponent_judgment__isnull=True)
+                | Q(opponent_judgment__in=[1, 2, 3]),
+                name="post_opponent_judgment_valid",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["user", "topic_id", "created_at"],
+                name="post_response_user_topic_idx",
+            ),
+        ]
+
+    # --- Scoring methods ---
+
+    def _adjusted_c1_scores(self) -> list[float]:
+        scores = []
+        for i in range(1, 9):
+            raw = getattr(self, f"post_likert_{i}")
+            scores.append(8 - raw if i in _POST_LIKERT_REVERSED else float(raw))
+        return scores
+
+    def s_post(self) -> float:
+        return round(sum(self._adjusted_c1_scores()) / 8, 4)
+
+    def delta_s(self, s_pre: float) -> float:
+        return round(self.s_post() - float(s_pre), 4)
+
+    def stance_centrism(self, s_pre: float) -> float:
+        """< 0 = depolarized, > 0 = polarized further, = 0 = unchanged."""
+        return round(abs(self.s_post() - 4) - abs(float(s_pre) - 4), 4)
+
+    def __str__(self):
+        return (
+            f"PostResponse user={self.user_id} topic={self.topic_id} "
+            f"cond={self.experiment_condition}"
+        )
+
+
+class DiscomfortReport(models.Model):
+    response = models.OneToOneField(
+        PostDialogueResponse,
+        on_delete=models.CASCADE,
+        related_name="discomfort_report",
+    )
+    detail = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"DiscomfortReport response={self.response_id}"

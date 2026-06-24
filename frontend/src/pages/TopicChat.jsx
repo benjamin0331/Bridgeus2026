@@ -1579,6 +1579,13 @@ function TopicChat({ user, issues, issuesLoaded }) {
       setMatchAssistNotice(null);
       setPendingMatchSuggestion(null);
       setMatchSuggestionDraft(null);
+      navigate('/post-questionnaire', {
+        state: {
+          topicId: Number(id),
+          roomId: matchingState.room_id,
+          condition: 'hh',
+        },
+      });
     } catch (error) {
       leaveRequestSentRef.current = false;
       setMatchChatError(
@@ -2120,6 +2127,27 @@ function TopicChat({ user, issues, issuesLoaded }) {
           >
             回到底部
           </button>
+        )}
+
+        {!isMatchingMode && sessionId && messages.length > 0 && (
+          <div className="ai-end-dialogue-bar">
+            <button
+              className="ai-end-dialogue-btn"
+              type="button"
+              disabled={isSending || isAgentStreaming}
+              onClick={() =>
+                navigate('/post-questionnaire', {
+                  state: {
+                    topicId: Number(id),
+                    sessionId,
+                    condition: 'ai',
+                  },
+                })
+              }
+            >
+              結束對話 &amp; 填寫後測問卷
+            </button>
+          </div>
         )}
 
         <div className="chat-input-area">
