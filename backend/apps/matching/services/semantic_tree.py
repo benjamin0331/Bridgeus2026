@@ -47,68 +47,79 @@ ANCHOR_DESCRIPTIONS = {
     "anchor_waste": "核廢料處置、最終儲存、地方承擔、長期管理、處置場風險。",
 }
 
+
+def get_topic_anchors(topic_id: int | None) -> list[dict[str, str]]:
+    from api.dialogue_topics import TOPIC_CONFIGS
+    return TOPIC_CONFIGS.get(topic_id or 0, {}).get("anchors") or FIXED_ANCHORS
+
+
+def get_topic_anchor_descriptions(topic_id: int | None) -> dict[str, str]:
+    from api.dialogue_topics import TOPIC_CONFIGS
+    return TOPIC_CONFIGS.get(topic_id or 0, {}).get("anchor_descriptions") or ANCHOR_DESCRIPTIONS
+
 # Internal node ids the model must never emit as a human-readable path segment.
 _INTERNAL_ID_RE = re.compile(r"^(anchor|agent|category|point|virtual)_[a-z0-9_-]+$", re.IGNORECASE)
 
-ANALYSIS_RESPONSE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "items": {
-            "type": "array",
-            "maxItems": MAX_ANALYSIS_ITEMS,
+def _analysis_response_schema(anchors: list[dict[str, str]]) -> dict:
+    return {
+        "type": "object",
+        "properties": {
             "items": {
-                "type": "object",
-                "properties": {
-                    "claimText": {
-                        "type": "string",
-                        "description": "從使用者輸入拆出的單一語意重點。",
+                "type": "array",
+                "maxItems": MAX_ANALYSIS_ITEMS,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "claimText": {
+                            "type": "string",
+                            "description": "從使用者輸入拆出的單一語意重點。",
+                        },
+                        "anchorId": {
+                            "type": "string",
+                            "enum": [anchor["id"] for anchor in anchors],
+                            "description": "最適合的固定第二層分類 id。",
+                        },
+                        "path": {
+                            "type": "array",
+                            "maxItems": MAX_PATH_DEPTH,
+                            "items": {"type": "string"},
+                            "description": "anchor 底下的子分類路徑，不包含 anchor 名稱。可為空陣列。",
+                        },
+                        "pointName": {
+                            "type": "string",
+                            "description": "要顯示在圖上的短節點名稱。",
+                        },
+                        "stance": {
+                            "type": "string",
+                            "description": "支持、反對、中立或混合。",
+                        },
+                        "confidence": {
+                            "type": "number",
+                            "minimum": MIN_CONFIDENCE,
+                            "maximum": 1,
+                            "description": "分類信心，0.55 到 1。低於 0.55 不要輸出。",
+                        },
+                        "rationale": {
+                            "type": "string",
+                            "description": "簡短說明為什麼這樣分類。",
+                        },
                     },
-                    "anchorId": {
-                        "type": "string",
-                        "enum": [anchor["id"] for anchor in FIXED_ANCHORS],
-                        "description": "最適合的固定第二層分類 id。",
-                    },
-                    "path": {
-                        "type": "array",
-                        "maxItems": MAX_PATH_DEPTH,
-                        "items": {"type": "string"},
-                        "description": "anchor 底下的子分類路徑，不包含 anchor 名稱。可為空陣列。",
-                    },
-                    "pointName": {
-                        "type": "string",
-                        "description": "要顯示在圖上的短節點名稱。",
-                    },
-                    "stance": {
-                        "type": "string",
-                        "description": "支持、反對、中立或混合。",
-                    },
-                    "confidence": {
-                        "type": "number",
-                        "minimum": MIN_CONFIDENCE,
-                        "maximum": 1,
-                        "description": "分類信心，0.55 到 1。低於 0.55 不要輸出。",
-                    },
-                    "rationale": {
-                        "type": "string",
-                        "description": "簡短說明為什麼這樣分類。",
-                    },
+                    "required": [
+                        "claimText",
+                        "anchorId",
+                        "path",
+                        "pointName",
+                        "stance",
+                        "confidence",
+                        "rationale",
+                    ],
+                    "additionalProperties": False,
                 },
-                "required": [
-                    "claimText",
-                    "anchorId",
-                    "path",
-                    "pointName",
-                    "stance",
-                    "confidence",
-                    "rationale",
-                ],
-                "additionalProperties": False,
-            },
-        }
-    },
-    "required": ["items"],
-    "additionalProperties": False,
-}
+            }
+        },
+        "required": ["items"],
+        "additionalProperties": False,
+    }
 
 
 class SemanticTreeError(Exception):
@@ -140,43 +151,46 @@ def create_anchor_node(anchor: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def create_initial_tree(root_name: str = "核電") -> dict[str, Any]:
+def create_initial_tree(root_name: str = "核電", anchors: list | None = None) -> dict[str, Any]:
+    resolved = anchors or FIXED_ANCHORS
     return {
         "id": "root",
         "name": root_name or "核電",
         "type": "root",
-        "children": [create_anchor_node(anchor) for anchor in FIXED_ANCHORS],
+        "children": [create_anchor_node(anchor) for anchor in resolved],
     }
 
 
-def create_owner_tree_state(owner_key: str, root_name: str) -> dict[str, Any]:
+def create_owner_tree_state(owner_key: str, root_name: str, anchors: list | None = None) -> dict[str, Any]:
     return {
         "ownerKey": owner_key,
-        "treeData": create_initial_tree(root_name),
+        "treeData": create_initial_tree(root_name, anchors),
         "analyzedSourceIds": [],
         "analysisHistory": [],
     }
 
 
-def _empty_match_state(root_name: str) -> dict[str, Any]:
+def _empty_match_state(root_name: str, anchors: list | None = None) -> dict[str, Any]:
+    resolved = anchors or FIXED_ANCHORS
     return {
         "version": SEMANTIC_TREE_STATE_VERSION,
         "mode": MATCH_TREE_MODE,
-        "anchors": deepcopy(FIXED_ANCHORS),
+        "anchors": deepcopy(resolved),
         "participants": {
-            OWNER_USER_A: create_owner_tree_state(OWNER_USER_A, root_name),
-            OWNER_USER_B: create_owner_tree_state(OWNER_USER_B, root_name),
+            OWNER_USER_A: create_owner_tree_state(OWNER_USER_A, root_name, resolved),
+            OWNER_USER_B: create_owner_tree_state(OWNER_USER_B, root_name, resolved),
         },
     }
 
 
-def _empty_ai_state(root_name: str) -> dict[str, Any]:
+def _empty_ai_state(root_name: str, anchors: list | None = None) -> dict[str, Any]:
+    resolved = anchors or FIXED_ANCHORS
     return {
         "version": SEMANTIC_TREE_STATE_VERSION,
         "mode": AI_TREE_MODE,
-        "anchors": deepcopy(FIXED_ANCHORS),
+        "anchors": deepcopy(resolved),
         "participants": {
-            OWNER_AI_USER: create_owner_tree_state(OWNER_AI_USER, root_name),
+            OWNER_AI_USER: create_owner_tree_state(OWNER_AI_USER, root_name, resolved),
         },
     }
 
@@ -196,14 +210,15 @@ def _ensure_owner_tree_state(
     *,
     owner_key: str,
     root_name: str,
+    anchors: list | None = None,
 ) -> dict[str, Any]:
     if not isinstance(owner_state, dict):
-        owner_state = create_owner_tree_state(owner_key, root_name)
+        owner_state = create_owner_tree_state(owner_key, root_name, anchors)
 
     owner_state["ownerKey"] = owner_key
     tree_data = owner_state.get("treeData")
     if not isinstance(tree_data, dict) or not isinstance(tree_data.get("children"), list):
-        tree_data = create_initial_tree(root_name)
+        tree_data = create_initial_tree(root_name, anchors)
         owner_state["treeData"] = tree_data
 
     if root_name and tree_data.get("name") in {None, "", "核電"}:
@@ -217,11 +232,12 @@ def _ensure_owner_tree_state(
         owner_state["analysisHistory"] = []
 
     _normalize_tree_node_types(tree_data)
-    _ensure_fixed_anchors(tree_data)
+    _ensure_fixed_anchors(tree_data, anchors)
     return owner_state
 
 
 def get_semantic_tree_state(match: DialogueMatch, *, root_name: str) -> dict[str, Any]:
+    anchors = get_topic_anchors(match.topic_id)
     stats = _stats_dict(match)
     state = stats.get(SEMANTIC_TREE_STATS_KEY)
 
@@ -233,19 +249,21 @@ def get_semantic_tree_state(match: DialogueMatch, *, root_name: str) -> dict[str
         or state.get("mode") != MATCH_TREE_MODE
         or not isinstance(state.get("participants"), dict)
     ):
-        return _empty_match_state(root_name)
+        return _empty_match_state(root_name, anchors)
 
-    state["anchors"] = deepcopy(FIXED_ANCHORS)
+    state["anchors"] = deepcopy(anchors)
     participants = state.setdefault("participants", {})
     participants[OWNER_USER_A] = _ensure_owner_tree_state(
         participants.get(OWNER_USER_A),
         owner_key=OWNER_USER_A,
         root_name=root_name,
+        anchors=anchors,
     )
     participants[OWNER_USER_B] = _ensure_owner_tree_state(
         participants.get(OWNER_USER_B),
         owner_key=OWNER_USER_B,
         root_name=root_name,
+        anchors=anchors,
     )
     return state
 
@@ -255,6 +273,7 @@ def get_ai_semantic_tree_state(
     *,
     root_name: str,
 ) -> dict[str, Any]:
+    anchors = get_topic_anchors(session_record.get("topic_id"))
     state = session_record.get(SEMANTIC_TREE_STATS_KEY)
     if (
         not isinstance(state, dict)
@@ -262,14 +281,15 @@ def get_ai_semantic_tree_state(
         or state.get("mode") != AI_TREE_MODE
         or not isinstance(state.get("participants"), dict)
     ):
-        return _empty_ai_state(root_name)
+        return _empty_ai_state(root_name, anchors)
 
-    state["anchors"] = deepcopy(FIXED_ANCHORS)
+    state["anchors"] = deepcopy(anchors)
     participants = state.setdefault("participants", {})
     participants[OWNER_AI_USER] = _ensure_owner_tree_state(
         participants.get(OWNER_AI_USER),
         owner_key=OWNER_AI_USER,
         root_name=root_name,
+        anchors=anchors,
     )
     return state
 
@@ -301,12 +321,13 @@ def _normalize_tree_node_types(node: dict[str, Any], depth: int = 0) -> None:
             _normalize_tree_node_types(child, depth + 1)
 
 
-def _ensure_fixed_anchors(tree_data: dict[str, Any]) -> None:
+def _ensure_fixed_anchors(tree_data: dict[str, Any], anchors: list | None = None) -> None:
+    resolved = anchors or FIXED_ANCHORS
     children = [child for child in tree_data.get("children", []) if isinstance(child, dict)]
     child_by_id = {child.get("id"): child for child in children}
     ordered_children = []
 
-    for anchor in FIXED_ANCHORS:
+    for anchor in resolved:
         node = child_by_id.get(anchor["id"]) or create_anchor_node(anchor)
         node["id"] = anchor["id"]
         node["name"] = anchor["name"]
@@ -400,18 +421,20 @@ def build_openai_request(
     text: str,
     tree: dict[str, Any],
     anchors: list[dict[str, str]] | None = None,
+    anchor_descriptions: dict[str, str] | None = None,
     model: str | None = None,
 ) -> dict[str, Any]:
     resolved_anchors = anchors or FIXED_ANCHORS
+    resolved_descriptions = anchor_descriptions or ANCHOR_DESCRIPTIONS
     anchor_list = "\n".join(
-        f"{anchor['id']}: {anchor['name']} - {ANCHOR_DESCRIPTIONS.get(anchor['id'], '核能議題分類。')}"
+        f"{anchor['id']}: {anchor['name']} - {resolved_descriptions.get(anchor['id'], '議題分類。')}"
         for anchor in resolved_anchors
     )
     tree_summary = json.dumps(compact_tree_for_prompt(tree), ensure_ascii=False, indent=2)
 
     prompt_text = "\n".join(
         [
-            "你是「核能議題個人想法脈絡樹」的語意整理 agent，不是逐字拆句工具。",
+            "你是「個人想法脈絡樹」的語意整理 agent，不是逐字拆句工具。",
             "",
             "你的任務：",
             "只整理單一說話者自己的想法脈絡，把這次輸入歸納成少量、高品質、適合放進樹狀圖的語意節點。",
@@ -424,6 +447,10 @@ def build_openai_request(
             "核心原則：",
             f"1. 每次輸入最多輸出 {MAX_ANALYSIS_ITEMS} 個 items。",
             "2. 優先輸出 1 個 item；只有當輸入明確橫跨兩個不同固定分類時才輸出第 2 個。",
+            "   ★ 兩個潛在 item 的 anchorId 若相同，一律合併成一個，不得輸出兩個 item。",
+            "   BAD：「核四建設超支（anchor_economy）＋ 超支是全球現象（anchor_economy）」→ 後者只是佐證，應合併。",
+            "   BAD：「核電低碳（anchor_environment）＋ 脫碳不可或缺（anchor_environment）」→ 同一主張，應合併。",
+            "   BAD：「深地質處置（anchor_waste）＋ 芬蘭昂卡洛（anchor_waste）」→ 昂卡洛是例子，不是獨立論點，應合併。",
             "3. 不要因為一句話裡有「例如、等等、包含、以及」就拆成很多節點。",
             "4. 相近意思要合併成同一個 claim。",
             "5. 不要把原因、例子、補充說明拆成獨立節點，除非它本身是另一個明確議題。",
@@ -507,7 +534,7 @@ def build_openai_request(
                 "type": "json_schema",
                 "name": "semantic_tree_analysis",
                 "strict": True,
-                "schema": ANALYSIS_RESPONSE_SCHEMA,
+                "schema": _analysis_response_schema(resolved_anchors),
             }
         },
     }
@@ -604,7 +631,23 @@ def validate_analysis_items(
             }
         )
 
-    return {"items": items, "invalidItems": invalid_items}
+    # 同一則訊息輸出兩個相同 anchorId 時，只保留信心最高的那一個。
+    # Prompt 規則是機率性的，這裡做程式層兜底，確保每個 anchor 最多貢獻一個節點。
+    seen_anchors: dict[str, dict] = {}
+    deduped_items: list[dict] = []
+    for item in items:
+        existing = seen_anchors.get(item["anchorId"])
+        if existing is None:
+            seen_anchors[item["anchorId"]] = item
+            deduped_items.append(item)
+        elif item["confidence"] > existing["confidence"]:
+            invalid_items.append(_item_error(existing, f"duplicate anchorId {item['anchorId']}: kept higher-confidence item"))
+            seen_anchors[item["anchorId"]] = item
+            deduped_items[deduped_items.index(existing)] = item
+        else:
+            invalid_items.append(_item_error(item, f"duplicate anchorId {item['anchorId']}: dropped in favor of higher-confidence item"))
+
+    return {"items": deduped_items, "invalidItems": invalid_items}
 
 
 def _max_generated_counter(node: dict[str, Any] | None) -> int:
@@ -787,6 +830,7 @@ def analyze_with_openai(
     text: str,
     tree: dict[str, Any],
     anchors: list[dict[str, str]] | None = None,
+    anchor_descriptions: dict[str, str] | None = None,
     api_key: str | None = None,
     model: str | None = None,
 ) -> dict[str, Any]:
@@ -803,6 +847,7 @@ def analyze_with_openai(
         text=cleaned_text,
         tree=tree,
         anchors=anchors or FIXED_ANCHORS,
+        anchor_descriptions=anchor_descriptions,
         model=resolved_model,
     )
     endpoint = "https://api.openai.com/v1/responses"
@@ -991,6 +1036,7 @@ def analyze_pending_room_messages(
     with transaction.atomic():
         locked_match = DialogueMatch.objects.select_for_update().get(pk=match.pk)
         state = get_semantic_tree_state(locked_match, root_name=root_name)
+        anchor_descriptions = get_topic_anchor_descriptions(locked_match.topic_id)
         current_owner_key = _owner_key_for_user(locked_match, current_user_id)
         pending_messages = [
             (message, owner_key)
@@ -1013,6 +1059,7 @@ def analyze_pending_room_messages(
                 text=message.content,
                 tree=owner_state["treeData"],
                 anchors=state["anchors"],
+                anchor_descriptions=anchor_descriptions,
             )
             apply_result = apply_analysis_items_to_tree(
                 owner_state["treeData"],
@@ -1051,6 +1098,7 @@ def analyze_pending_ai_conversations(
     root_name: str,
 ) -> dict[str, Any]:
     state = get_ai_semantic_tree_state(session_record, root_name=root_name)
+    anchor_descriptions = get_topic_anchor_descriptions(session_record.get("topic_id"))
     owner_state = state["participants"][OWNER_AI_USER]
     analyzed_ids = set(owner_state["analyzedSourceIds"])
     pending_turns = [
@@ -1072,6 +1120,7 @@ def analyze_pending_ai_conversations(
             text=turn.user_prompt,
             tree=owner_state["treeData"],
             anchors=state["anchors"],
+            anchor_descriptions=anchor_descriptions,
         )
         apply_result = apply_analysis_items_to_tree(
             owner_state["treeData"],

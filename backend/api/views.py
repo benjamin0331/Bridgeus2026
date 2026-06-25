@@ -304,23 +304,12 @@ def _resolve_stances(
         user_stance_score=user_stance_score,
     )
 
-    if stance_category == "support":
-        return (
-            "較支持核電",
-            "較反對核電",
-            "認為核電的安全、成本與核廢料風險仍被低估，不應輕率視為能源轉型解方。",
-        )
-    if stance_category == "oppose":
-        return (
-            "較反對核電",
-            "較支持核電",
-            "認為核電在減碳與穩定供電上仍具必要性，不應過早排除。",
-        )
-
+    labels = TOPIC_CONFIGS.get(topic_id, {}).get("stance_labels", {})
+    entry = labels.get(stance_category) or labels.get("neutral") or {}
     return (
-        "立場中立或尚未明確",
-        "提出相反觀點",
-        "會根據使用者當前的考量重點，補上另一側對安全、成本、環境與供電穩定性的判斷。",
+        entry.get("user_label", "立場中立或尚未明確"),
+        entry.get("agent_stance", "提出相反觀點"),
+        entry.get("agent_stance_summary", ""),
     )
 
 

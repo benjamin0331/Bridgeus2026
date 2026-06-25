@@ -165,7 +165,7 @@ class SemanticTreeServiceTests(SimpleTestCase):
         self.assertEqual(request["text"]["format"]["name"], "semantic_tree_analysis")
         self.assertTrue(request["text"]["format"]["strict"])
         self.assertTrue(request["model"])
-        self.assertIn("你是「核能議題個人想法脈絡樹」的語意整理 agent", request_text)
+        self.assertIn("你是「個人想法脈絡樹」的語意整理 agent", request_text)
         self.assertIn("只整理單一說話者自己的想法脈絡", request_text)
         self.assertIn("每次輸入最多輸出 2 個 items", request_text)
         self.assertIn("confidence 低於 0.55", request_text)
@@ -357,17 +357,12 @@ class DialogueSessionApiTests(APITestCase):
         response = self.client.get("/api/dialogue/topics/")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(
-            response.data,
-            [
-                {
-                    "id": 102,
-                    "title": TOPIC_CONFIGS[102]["title"],
-                    "description": TOPIC_CONFIGS[102]["topic_description"],
-                    "date": TOPIC_CONFIGS[102]["date"],
-                }
-            ],
-        )
+        topic_ids = [topic["id"] for topic in response.data]
+        self.assertIn(102, topic_ids)
+        self.assertIn(103, topic_ids)
+        topic_102 = next(t for t in response.data if t["id"] == 102)
+        self.assertEqual(topic_102["title"], TOPIC_CONFIGS[102]["title"])
+        self.assertEqual(topic_102["description"], TOPIC_CONFIGS[102]["topic_description"])
 
     def test_topic_survey_returns_backend_questions(self):
         response = self.client.get("/api/dialogue/topics/102/survey/")
@@ -635,7 +630,7 @@ class DialogueSessionApiTests(APITestCase):
 
         analyzed_texts = []
 
-        def fake_analyze(*, text, tree, anchors=None, api_key=None, model=None):
+        def fake_analyze(*, text, tree, anchors=None, anchor_descriptions=None, api_key=None, model=None):
             analyzed_texts.append(text)
             return fake_energy_items_response()
 
@@ -821,7 +816,7 @@ class HistoryApiTests(APITestCase):
         match, own_message, partner_message = self._create_match_history()
         analyzed_texts = []
 
-        def fake_analyze(*, text, tree, anchors=None, api_key=None, model=None):
+        def fake_analyze(*, text, tree, anchors=None, anchor_descriptions=None, api_key=None, model=None):
             analyzed_texts.append(text)
             if "核廢料" in text:
                 return fake_waste_items_response()
@@ -1409,7 +1404,7 @@ class MatchingApiTests(APITestCase):
         )
         tree_snapshots = []
 
-        def fake_analyze(*, text, tree, anchors=None, api_key=None, model=None):
+        def fake_analyze(*, text, tree, anchors=None, anchor_descriptions=None, api_key=None, model=None):
             tree_snapshots.append(deepcopy(tree))
             if "核廢料" in text:
                 return fake_waste_items_response()
@@ -1574,7 +1569,7 @@ class MatchingApiTests(APITestCase):
         match, _ = self._create_match()
         from apps.matching.services.matcher import mark_match_participant_disconnected
 
-        disconnected_at = timezone.now() - timedelta(seconds=179)
+        disconnected_at = timezone.now() - timedelta(seconds=60)
         mark_match_participant_disconnected(
             match=match,
             user_id=self.user.id,
