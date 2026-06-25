@@ -1,12 +1,11 @@
 [gd_scene format=4 uid="uid://bu0s521nxp0w5"]
 
+[ext_resource type="Script" uid="uid://cgplxkbur14gv" path="res://World/game.gd" id="1_2ntvn"]
 [ext_resource type="Texture2D" uid="uid://b1eugsyx3rnma" path="res://Assets/ForgottenMemories/TileSet.png" id="1_vb84i"]
 [ext_resource type="Texture2D" uid="uid://di7igd8hlj1eo" path="res://Assets/ForgottenMemories/WaterTiles-6frames.png" id="2_723o5"]
 [ext_resource type="Texture2D" uid="uid://cntsi5aafunb1" path="res://Assets/ForgottenMemories/Trees_seperated.png" id="3_yaxdk"]
 [ext_resource type="Texture2D" uid="uid://bawd8k56eqmrj" path="res://Assets/ForgottenMemories/Trees.png" id="4_2ntvn"]
-[ext_resource type="PackedScene" uid="uid://cawtmw8w8bom1" path="res://Entities/player/player_00.tscn" id="4_723o5"]
 [ext_resource type="Texture2D" uid="uid://clxv4hdf7hnnm" path="res://Assets/ForgottenMemories/Props.png" id="4_aduw6"]
-[ext_resource type="PackedScene" uid="uid://dy6acfyhangow" path="res://Entities/player/player_01.tscn" id="5_yaxdk"]
 [ext_resource type="Texture2D" uid="uid://c3s1hkkn451xc" path="res://Assets/ForgottenMemories/campfire-Sheet.png" id="6_aduw6"]
 [ext_resource type="PackedScene" uid="uid://l1h0wq6obvlk" path="res://World/trunk.tscn" id="9_aduw6"]
 
@@ -32590,6 +32589,8 @@ b = Vector2(48, 289)
 
 [node name="Game" type="Node2D" unique_id=444697117]
 y_sort_enabled = true
+position = Vector2(671, 365)
+script = ExtResource("1_2ntvn")
 
 [node name="BaseLayer" type="TileMapLayer" parent="." unique_id=15707264]
 z_index = -2
@@ -32698,17 +32699,6 @@ shape = SubResource("SegmentShape2D_4c1bv")
 [node name="Entities" type="Node2D" parent="." unique_id=1589267524]
 y_sort_enabled = true
 
-[node name="player_01" parent="Entities" unique_id=338333752 instance=ExtResource("5_yaxdk")]
-visible = false
-position = Vector2(-158, -152)
-
-[node name="player_00" parent="Entities" unique_id=1048721048 instance=ExtResource("4_723o5")]
-position = Vector2(0, 228)
-
-[node name="Camera2D" type="Camera2D" parent="Entities/player_00" unique_id=1424224332]
-position = Vector2(32, 19)
-zoom = Vector2(3, 3)
-
 [node name="Trunk" parent="Entities" unique_id=1967746299 instance=ExtResource("9_aduw6")]
 position = Vector2(-231, -267)
 
@@ -32738,3 +32728,36 @@ position = Vector2(-283, -210)
 
 [node name="Trunk5" parent="Entities" unique_id=1835888222 instance=ExtResource("9_aduw6")]
 position = Vector2(-289, -251)
+
+[node name="CanvasLayer" type="CanvasLayer" parent="." unique_id=1458463792]
+
+[node name="UI_Root" type="Control" parent="CanvasLayer" unique_id=2099564405]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="HostButton" type="Button" parent="CanvasLayer/UI_Root" unique_id=557231690]
+layout_mode = 1
+offset_left = 20.0
+offset_top = 20.0
+offset_right = 64.0
+offset_bottom = 51.0
+text = "Host"
+metadata/_edit_use_anchors_ = true
+
+[node name="JoinButton" type="Button" parent="CanvasLayer/UI_Root" unique_id=1298270709]
+layout_mode = 1
+anchors_preset = -1
+offset_left = 20.0
+offset_top = 60.0
+offset_right = 58.0
+offset_bottom = 91.0
+text = "Join"
+metadata/_edit_use_anchors_ = true
+
+[node name="MultiplayerSpawner" type="MultiplayerSpawner" parent="." unique_id=863148584]
+_spawnable_scenes = PackedStringArray("uid://cawtmw8w8bom1")
+spawn_path = NodePath("..")
