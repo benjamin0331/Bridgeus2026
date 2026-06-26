@@ -1,0 +1,155 @@
+/* src/pages/LoginPage.css */
+
+.login-page-container {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-color: #f0ece9;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 10000;
+  overflow: hidden;
+}
+
+.login-card {
+  background-color: #ffffff;
+  width: 420px; /* 🔮 寬度稍微修窄一點看起來更專業 */
+  padding: 45px;
+  border-radius: 40px;
+  box-shadow: 0 15px 50px rgba(0,0,0,0.06);
+  position: relative;
+  z-index: 2;
+}
+
+.login-header {
+  text-align: center;
+  margin-bottom: 30px;
+}
+
+.login-logo {
+  width: 70px; height: 70px;
+  border-radius: 50%;
+  margin-bottom: 12px;
+  object-fit: cover;
+}
+
+.login-header h1 {
+  font-size: 32px;
+  margin-bottom: 5px;
+}
+
+.login-header p {
+  color: #888;
+  font-size: 13px;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.input-group label {
+  display: block;
+  font-size: 13px;
+  color: #666;
+  margin-bottom: 8px;
+  padding-left: 5px;
+}
+
+.login-input {
+  width: 100%;
+  background-color: #f1ede8;
+  border: none;
+  border-radius: 15px;
+  padding: 15px 20px;
+  font-size: 15px;
+  box-sizing: border-box;
+}
+
+.login-input:focus {
+  outline: 2px solid #e0d8cf;
+}
+
+.login-submit-btn {
+  background-color: #e0d8cf;
+  color: #333;
+  border: none;
+  border-radius: 30px;
+  padding: 15px;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+  margin-top: 10px;
+}
+
+.login-submit-btn:hover { background-color: #d1c8be; }
+
+.login-footer {
+  margin-top: 25px;
+  text-align: center;
+  font-size: 12px;
+  color: #bbb;
+}
+
+/* --- 🔮 核心法陣：背景裝飾通用樣式 --- */
+.bg-decor {
+  position: absolute;
+  /* background-color 將在下方分別定義 */
+  opacity: 0.4;              /* 🔮 稍微降低透明度 (原0.5)，讓三個顏色重疊時更柔和 */
+  /* filter: blur(20px); */  /* 🛡️ 備註：如果你想要它們像彩虹雲煙，可以解鎖這行 blur 咒語 */
+  pointer-events: none;      /* 🛡️ 確保滑鼠不會點到它們 */
+}
+
+
+.bg-decor-1 {
+  width: 450px; height: 450px; /* 🔮 加大體積，讓它更有存在感 */
+  background-color: #bf6164; /* 💖 你的粉色 */
+  border-radius: 150px;      /* 圓角同步加大 */
+  top: -150px; right: -120px;
+  transform: rotate(15deg);
+}
+
+.bg-decor-2 {
+  width: 350px; height: 350px; /* 🔮 體積 */
+  background-color: #ddd77e; /* 💛 你的黃色 */
+  border-radius: 80px;
+  bottom: -100px; left: -80px;
+  transform: rotate(-10deg);
+}
+
+/* ============================
+   RWD：手機版 (≤ 768px)
+   ============================ */
+@media (max-width: 768px) {
+  .login-card {
+    width: 90%;
+    max-width: 420px;
+    padding: 30px 24px;
+    border-radius: 28px;
+  }
+
+  .login-header h1 {
+    font-size: 24px;
+  }
+
+  .login-logo {
+    width: 55px;
+    height: 55px;
+  }
+
+  .bg-decor-1 {
+    width: 260px;
+    height: 260px;
+    top: -100px;
+    right: -80px;
+  }
+
+  .bg-decor-2 {
+    width: 200px;
+    height: 200px;
+    bottom: -70px;
+    left: -50px;
+  }
+}
+

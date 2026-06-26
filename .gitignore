@@ -1,0 +1,64 @@
+# macOS / editors
+.DS_Store
+**/.DS_Store
+.idea/
+.vscode/
+
+# Python cache / tooling
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+backend/.venv/
+frontend/.venv/
+
+# Environment files
+.env
+.env.*
+!**/.env.example
+
+# Backend local runtime data
+backend/db.sqlite3
+backend/chroma_data/
+backend/staticfiles/
+backend/.cache/
+backend/media/
+
+# Locally fine-tuned classifier weights (~2.7GB) — too large for git.
+# Distribute via shared drive / cloud storage instead; config/label files stay tracked.
+backend/apps/matching/ml_models/*/model_macro/model.safetensors
+backend/apps/matching/ml_models/*/model_micro_*/model.safetensors
+
+# Frontend local dependencies / build output
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Swap / temp
+*.swp
+*.swo
+
+# Legacy folders to remove after migration is confirmed
+BridgeUs/
+BridgeUs_Django_withLLM/
+BridgeUs_2026/
+
+# Git archive folders created during migration
+_git_archives/
+.git.removed-20260422/
