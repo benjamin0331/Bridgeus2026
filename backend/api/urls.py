@@ -61,4 +61,6 @@ urlpatterns = [
         'matching/rooms/<str:room_id>/leave/',
         views.MatchingRoomLeaveView.as_view(),
     ),
+    path('guest/', views.GuestLoginView.as_view()),
+    path('issues/', views.IssueListCreateView.as_view()),
 ]
