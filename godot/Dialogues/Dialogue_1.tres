@@ -1,0 +1,39 @@
+[gd_resource type="Resource" script_class="DialogueGroup" format=3 uid="uid://dnyu2g87lok32"]
+
+[ext_resource type="Script" uid="uid://dhcuvadlq0m13" path="res://Scripts/dialogue_test.gd" id="1_opu18"]
+[ext_resource type="Texture2D" uid="uid://bspf5xlblwu7c" path="res://Assets/test.png" id="2_apwd8"]
+[ext_resource type="Script" uid="uid://hanfyrhego15" path="res://Scripts/dialogue_group.gd" id="2_jyb6k"]
+[ext_resource type="Texture2D" uid="uid://cfyclbgdfr37b" path="res://Assets/test_2.png" id="3_apwd8"]
+
+[sub_resource type="Resource" id="Resource_ipg4j"]
+script = ExtResource("1_opu18")
+character_name = "Test_1"
+content = "關於淡江大學......"
+avatar = ExtResource("2_apwd8")
+metadata/_custom_type_script = "uid://dhcuvadlq0m13"
+
+[sub_resource type="Resource" id="Resource_f63lw"]
+script = ExtResource("1_opu18")
+character_name = "Test_2"
+content = "真是個非常贊的好學校，而且現在還有文創市集"
+avatar = ExtResource("3_apwd8")
+metadata/_custom_type_script = "uid://dhcuvadlq0m13"
+
+[sub_resource type="Resource" id="Resource_dy6vd"]
+script = ExtResource("1_opu18")
+character_name = "Test_1"
+content = "每天中午黃油年糕的攤位有一大堆人在排隊"
+avatar = ExtResource("3_apwd8")
+metadata/_custom_type_script = "uid://dhcuvadlq0m13"
+
+[sub_resource type="Resource" id="Resource_07kd2"]
+script = ExtResource("1_opu18")
+character_name = "Test_2"
+content = "一份100塊八個真的不錯吃"
+avatar = ExtResource("2_apwd8")
+metadata/_custom_type_script = "uid://dhcuvadlq0m13"
+
+[resource]
+script = ExtResource("2_jyb6k")
+dialogue_list = Array[ExtResource("1_opu18")]([SubResource("Resource_ipg4j"), SubResource("Resource_f63lw"), SubResource("Resource_dy6vd"), SubResource("Resource_07kd2")])
+metadata/_custom_type_script = "uid://hanfyrhego15"
