@@ -1,6 +1,12 @@
 # CONTEXT.md — BridgeUs 開發狀態
 
-> 最後更新：2026-05-15（H-H Phase 10：edge cases 修補 — inactivity limits、rephrase fallback、modify retry、AISuggestion 研究欄位）
+> 最後更新：2026-06-29（M6 Part F：平台體驗回饋問卷 — PlatformFeedback model/API + 前端單頁問卷，接於 debriefing 之後）
+
+> 2026-06-29（M6 Part F 平台體驗回饋）：
+> - 後端 `api/models.py` 新增 `PlatformFeedback`（OneToOne→`PostDialogueResponse`）：F1–F5 滿意度 Likert（`ux_matching`/`ux_chatroom`/`ux_nlp_intervention`/`ux_ccnd`/`ux_overall`）、F6 `nps_score`(0–10, CheckConstraint)、F7 `ux_improvement`(nullable)。helper：`mean_ux()`、`nps_category()`。migration `0010_platformfeedback`。
+> - `POST /api/platform-feedback/`（`PlatformFeedbackView`，IsAuthenticated）：以 `response_id` 驗證歸屬，`update_or_create` 冪等寫入。serializer：`PlatformFeedbackSerializer` / `PlatformFeedbackOutputSerializer`。
+> - 前端 `pages/PlatformFeedbackPage.jsx`(+`.css`)：單頁，沿用 post-questionnaire 的 `pq-` 風格 + NPS 0–10 自訂列。`DebriefingPage` 確認同意/撤回後一律導向 Part F（帶 `responseId`、`withdrawn`），Part F 送出後顯示感謝頁（撤回者顯示撤回版文案）。route `/platform-feedback` 已加入 `App.jsx`。
+> - 測試 `api/tests.py::PlatformFeedbackApiTests`（6 項，全綠）：auth、metrics 計算、選填空白、重送更新、NPS 越界、他人 response 拒絕。
 
 ## 專案目標
 

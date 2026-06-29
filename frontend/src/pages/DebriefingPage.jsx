@@ -11,8 +11,6 @@ export default function DebriefingPage() {
   const [choice, setChoice] = useState(null); // 'agree' | 'withdraw'
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
-  const [done, setDone] = useState(false);
-  const [withdrawnConfirmed, setWithdrawnConfirmed] = useState(false);
 
   const handleConfirm = async () => {
     if (!choice) {
@@ -32,46 +30,19 @@ export default function DebriefingPage() {
       await api.patch(`/api/post-questionnaire/${responseId}/consent/`, {
         consent_confirmed: consentConfirmed,
       });
-      setWithdrawnConfirmed(!consentConfirmed);
-      setDone(true);
+      // 不論同意或撤回，都進入 Part F 平台體驗回饋（最後幾個小問題）。
+      navigate('/platform-feedback', {
+        state: { responseId, withdrawn: !consentConfirmed },
+        replace: true,
+      });
     } catch (err) {
       const detail =
         err?.response?.data?.detail ||
         '送出失敗，請稍後再試或聯絡研究團隊。';
       setError(detail);
-    } finally {
       setIsSubmitting(false);
     }
   };
-
-  if (done) {
-    return (
-      <div className="db-page">
-        <div className="db-container">
-          <div className="db-thank-you">
-            <h2>感謝你的參與！</h2>
-            {withdrawnConfirmed ? (
-              <p className="db-withdrawn-note">
-                你的資料已標記為撤回，不會被納入研究分析。
-                <br />
-                感謝你投入時間參與這次實驗。
-              </p>
-            ) : (
-              <p>
-                你的回答已完整記錄。你的貢獻對這份研究非常重要。
-              </p>
-            )}
-            <button
-              className="db-btn db-btn-primary"
-              onClick={() => navigate('/', { replace: true })}
-            >
-              返回首頁
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="db-page">

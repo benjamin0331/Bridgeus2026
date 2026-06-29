@@ -69,4 +69,8 @@ urlpatterns = [
         'post-questionnaire/<int:response_id>/consent/',
         views.PostDialogueResponseConsentView.as_view(),
     ),
+    path(
+        'platform-feedback/',
+        views.PlatformFeedbackView.as_view(),
+    ),
 ]
