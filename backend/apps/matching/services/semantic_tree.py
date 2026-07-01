@@ -390,29 +390,44 @@ def _looks_like_internal_id(value: Any) -> bool:
     return bool(_INTERNAL_ID_RE.match(clean_text(value)))
 
 
+def _latest_stance(node: dict[str, Any]) -> str:
+    messages = node.get("messages") or []
+    if messages:
+        return clean_text(messages[-1].get("stance")) or "中立"
+    return clean_text(node.get("stance")) or "中立"
+
+
 def list_existing_node_names(tree: dict[str, Any] | None) -> str:
-    """Flatten each anchor's existing child names so the model can reuse the
-    exact string and merge synonymous claims instead of spawning near-duplicates.
+    """Flatten each anchor's existing child names (plus, for leaf claim
+    nodes, their current stance and underlying claim) so the model can
+    reuse the exact string and merge synonymous claims — or recognize that
+    a new, opposite-stance claim is actually a stance update on the same
+    discussion axis — instead of spawning near-duplicate/mirror nodes.
     """
     lines = []
     for anchor in (tree or {}).get("children") or []:
         if not isinstance(anchor, dict):
             continue
-        names: list[str] = []
+        entries: list[str] = []
+        seen_names: set[str] = set()
 
         def collect(node: dict[str, Any]) -> None:
             for child in node.get("children") or []:
                 if not isinstance(child, dict):
                     continue
                 name = clean_text(child.get("name"))
-                if name:
-                    names.append(name)
+                if name and name not in seen_names:
+                    seen_names.add(name)
+                    claim = clean_text(child.get("claimText"))
+                    if claim:
+                        entries.append(f"{name}（目前立場：{_latest_stance(child)}；主張：{claim}）")
+                    else:
+                        entries.append(name)
                 collect(child)
 
         collect(anchor)
-        if names:
-            unique_names = list(dict.fromkeys(names))
-            lines.append(f"{anchor.get('name')}：{'、'.join(unique_names)}")
+        if entries:
+            lines.append(f"{anchor.get('name')}：{'、'.join(entries)}")
     return "\n".join(lines) if lines else "（目前各分類底下還沒有任何節點）"
 
 
