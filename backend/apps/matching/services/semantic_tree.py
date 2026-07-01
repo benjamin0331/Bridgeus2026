@@ -480,11 +480,18 @@ def build_openai_request(
             "- 範例：「核電風險不可控」「核能事故後果嚴重」核心主張都是『核安風險高』，應合併。",
             "- 寧可掛到既有節點，也不要為了細微差異新增節點；同一則訊息內也不要同時輸出兩個意思相近的 items。",
             "",
+            # NOTE: this rule and 合併規則 above both resolve to the same action
+            # (reuse the existing node's exact pointName/path) — see
+            # find_child_by_name / apply_analysis_items_to_tree below, which
+            # merge purely by exact-name match regardless of *why* the model
+            # decided to reuse the name. The model doesn't need to classify
+            # which rule "applies"; either one converges on the same output.
             "立場更新規則（新增，務必遵守）：",
             "- 有些新主張和某個既有節點在討論『同一個討論維度』（例如都在回答『核廢問題能不能解決』），但這次的立場和既有節點不同（例如既有節點是『反對』，這次語氣是『支持』）。",
             "- 這種情況屬於『立場更新』，不是新論點：請直接重用該既有節點『完全相同的 pointName 與 path』，讓系統把這次的立場記錄併入同一個節點的歷史，不要另外新增一個看起來相反的節點。",
             "- 判斷依據是『討論的是不是同一個潛在問題』，不是『立場是否相同』；立場不同不代表要拆成新節點。",
             "- 範例：現有節點『核廢問題待解（目前立場：反對；主張：核廢處理方式尚未成熟）』，本次輸入『瑞典的地下處置方式已經證實可行』→ 屬於同一討論維度（核廢問題能否解決）、立場轉為支持，應輸出 pointName＝『核廢問題待解』（沿用既有節點），不要新建『核廢處理有解方』這類新節點。",
+            "- 若不確定屬於合併規則還是立場更新規則，效果相同：兩者都指向重用既有 pointName，不需要為了分辨規則類型而猶豫。",
             "",
             "分類規則：",
             "- anchorId 必須是最主要的議題分類。",

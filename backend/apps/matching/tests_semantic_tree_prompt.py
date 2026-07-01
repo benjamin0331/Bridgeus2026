@@ -4,6 +4,7 @@ stance-update prompt rules from the CCND 對比測試 design (2026-06-29,
 section 10) in /Users/light/project/CCND測試/.
 """
 from apps.matching.services.semantic_tree import (
+    apply_analysis_items_to_tree,
     build_openai_request,
     create_initial_tree,
     list_existing_node_names,
@@ -112,3 +113,35 @@ def test_build_openai_request_prompt_includes_stance_axis_merge_rule():
     prompt = request["input"][0]["content"]
     assert "立場更新" in prompt
     assert ("同一個討論維度" in prompt) or ("同一議題維度" in prompt)
+
+
+def test_apply_analysis_items_merges_stance_update_into_one_node_history():
+    """The prompt rule tells the model to reuse an existing node's exact
+    pointName when a new claim is a stance update on the same axis — this
+    verifies the deterministic downstream machinery actually honors that
+    "reuse the exact name" instruction by merging into one node's message
+    history instead of spawning a mirror node, independent of whether the
+    LLM itself follows the rule."""
+    tree = _tree_with_stance_node("核廢處理方式尚未成熟", "反對")
+
+    stance_update_item = {
+        "claimText": "瑞典的地下處置方式已經證實可行",
+        "anchorId": "anchor_waste",
+        "path": [],
+        "pointName": "核廢問題待解",  # model reuses the exact existing name
+        "stance": "支持",
+        "confidence": 0.95,
+        "rationale": "stance update per 立場更新規則",
+    }
+
+    result = apply_analysis_items_to_tree(tree, [stance_update_item])
+    applied = result["appliedItems"][0]
+    assert applied["applyMode"] == "merge-existing"
+
+    anchor = next(a for a in tree["children"] if a["id"] == "anchor_waste")
+    matching_nodes = [child for child in anchor["children"] if child.get("name") == "核廢問題待解"]
+    assert len(matching_nodes) == 1, "stance update must merge into the SAME node, not spawn a mirror node"
+
+    node = matching_nodes[0]
+    stances = [message["stance"] for message in node["messages"]]
+    assert stances == ["反對", "支持"], "message history should record both the original and updated stance"
