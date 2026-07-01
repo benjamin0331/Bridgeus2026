@@ -392,7 +392,7 @@ def _looks_like_internal_id(value: Any) -> bool:
 
 def _latest_stance(node: dict[str, Any]) -> str:
     messages = node.get("messages") or []
-    if messages:
+    if messages and isinstance(messages[-1], dict):
         return clean_text(messages[-1].get("stance")) or "中立"
     return clean_text(node.get("stance")) or "中立"
 

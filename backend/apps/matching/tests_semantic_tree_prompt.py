@@ -55,6 +55,50 @@ def test_list_existing_node_names_without_claim_shows_bare_name():
     assert "處置方案" in listing
 
 
+def test_list_existing_node_names_joins_multiple_siblings_under_one_anchor():
+    tree = create_initial_tree("核電")
+    anchor = next(a for a in tree["children"] if a["id"] == "anchor_waste")
+    anchor["children"].extend([
+        {
+            "id": "agent_1",
+            "name": "深地質處置",
+            "type": "point",
+            "children": [],
+            "claimText": "核廢料可密封儲存在穩定地質層",
+            "messages": [{"text": "核廢料可密封儲存在穩定地質層", "stance": "支持", "confidence": 0.9}],
+        },
+        {
+            "id": "agent_2",
+            "name": "核廢體積不大",
+            "type": "point",
+            "children": [],
+            "claimText": "核廢料體積其實不大",
+            "messages": [{"text": "核廢料體積其實不大", "stance": "支持", "confidence": 0.9}],
+        },
+    ])
+    listing = list_existing_node_names(tree)
+    line = next(line for line in listing.splitlines() if line.startswith("核廢處理："))
+    assert "深地質處置" in line
+    assert "核廢體積不大" in line
+    assert "、" in line
+
+
+def test_list_existing_node_names_treats_whitespace_only_claim_as_bare_name():
+    tree = create_initial_tree("核電")
+    anchor = next(a for a in tree["children"] if a["id"] == "anchor_waste")
+    anchor["children"].append({
+        "id": "agent_1",
+        "name": "核廢問題待解",
+        "type": "point",
+        "children": [],
+        "claimText": "   ",
+        "messages": [{"text": "   ", "stance": "反對", "confidence": 0.9}],
+    })
+    listing = list_existing_node_names(tree)
+    assert "核廢問題待解" in listing
+    assert "主張：" not in listing
+
+
 def test_build_openai_request_prompt_includes_concrete_naming_rule():
     tree = create_initial_tree("核電")
     request = build_openai_request(text="核電比較安全", tree=tree)
