@@ -39,6 +39,14 @@ function hasAnalyzedTree(treePayload) {
   return Array.isArray(treePayload?.analyzedSourceIds) && treePayload.analyzedSourceIds.length > 0;
 }
 
+function truncateMessagePreview(text, maxLength = 24) {
+  const cleaned = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!cleaned) {
+    return '（空白訊息）';
+  }
+  return cleaned.length <= maxLength ? cleaned : `${cleaned.slice(0, maxLength)}…`;
+}
+
 // CCND 時間軸只支援真人配對房間（M3 semantic-tree/timeline/ API 目前只認 room_id），
 // AI 對話的想法脈絡圖沒有對應的後端 endpoint，所以時間軸控制項只在 kind === 'match' 時顯示。
 function timelineMessagesFor(detail) {
@@ -57,7 +65,11 @@ function HistoryPage() {
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState('');
-  const [timelineIndex, setTimelineIndex] = useState(null); // null = 顯示目前最新狀態
+  const [timelineIndex, setTimelineIndex] = useState(null); // 放開滑桿後「已提交」的位置；null = 即時狀態
+  // 拖動中滑桿本身停留的位置，只影響滑桿把手跟文字提示要不要跟著手指走；
+  // 在放開之前，畫面上顯示的樹狀圖完全不受這個值影響，才不會拖到一半就
+  // 突然閃成空的（timelineIndex 還沒變，displayedTreeData 也還沒變）。
+  const [previewIndex, setPreviewIndex] = useState(null);
   const [timelineTreeData, setTimelineTreeData] = useState(null);
   const [isTimelineLoading, setIsTimelineLoading] = useState(false);
   const [timelineError, setTimelineError] = useState('');
@@ -172,19 +184,41 @@ function HistoryPage() {
   const treePayload = detail?.semantic_tree;
   const shouldShowAnalyzeButton = detail && !hasAnalyzedTree(treePayload);
   const timelineMessages = timelineMessagesFor(detail);
+  // 樹狀圖只看「已提交」的位置，不受拖動中的 previewIndex 影響。
   const isViewingLatest = timelineIndex === null || timelineIndex === timelineMessages.length - 1;
+  // 看即時狀態時直接讀最新的 treePayload（例如剛按完「整理想法脈絡圖」會馬上反映）；
+  // 停在某個歷史時間點時，才顯示上次成功抓回來的歷史快照（timelineTreeData）。
+  const displayedTreeData = isViewingLatest ? treePayload?.treeData || null : timelineTreeData;
 
-  // 拖動中只更新滑桿位置本身，不打 API，避免每拖一格就發一次請求；
-  // 放開滑桿（或用鍵盤操作放開）時才真的去抓那個時間點的樹狀態。
+  // 文字提示跟滑桿把手位置：拖動中優先顯示手指目前停的位置（previewIndex），
+  // 放開之後才會跟已提交的 timelineIndex 一致。
+  const sliderPosition = previewIndex !== null
+    ? previewIndex
+    : (timelineIndex === null ? timelineMessages.length - 1 : timelineIndex);
+  const isLabelAtLatest = sliderPosition === timelineMessages.length - 1;
+  const labelMessage = !isLabelAtLatest ? timelineMessages[sliderPosition] : null;
+
+  // 拖動中只更新滑桿位置本身（給文字提示跟把手用），不打 API 也不改變畫面
+  // 上顯示的樹狀圖——樹狀圖只看「已提交」的 timelineIndex，才不會拖到一半
+  // 就先閃成空的。放開滑桿（或用鍵盤操作放開）時才真的送出這次的位置。
   const handleTimelineDrag = (event) => {
-    setTimelineIndex(Number(event.target.value));
+    setPreviewIndex(Number(event.target.value));
   };
 
   const handleTimelineCommit = async (event) => {
     const index = Number(event.target.value);
+    setPreviewIndex(null);
     if (!detail || !timelineMessages.length) {
       return;
     }
+
+    // 在切換到新位置之前，先把「這一刻畫面上顯示的東西」存成備援快照——
+    // 這裡的 displayedTreeData 是根據上一次「已提交」的位置算出來的，不會
+    // 被拖動中的 previewIndex 影響，所以拿到的一定是使用者上一刻實際看到
+    // 的畫面。如果 timelineTreeData 一直沒被用到（例如從即時狀態第一次拖
+    // 開），它會停在 loadDetail 重置時設的 null，之後拖到抓不到資料的位置
+    // 就會顯示空畫面而不是「上一個有結果的狀態」，所以每次提交前都要補進。
+    setTimelineTreeData(displayedTreeData);
 
     setTimelineIndex(index);
     setTimelineError('');
@@ -192,13 +226,21 @@ function HistoryPage() {
     // 要不要重新打 API——否則舊請求晚一步回來時可能蓋掉這次的畫面。
     const requestId = ++timelineRequestIdRef.current;
 
-    // 拖到最新一格效果等同於目前的即時樹，不用另外呼叫 timeline API。
+    // 拖到最新一格不用另外呼叫 timeline API——displayedTreeData 在 isViewingLatest
+    // 為真時本來就是直接讀最新的 treePayload，timelineIndex 一更新畫面就會自動跟上。
     if (index === timelineMessages.length - 1) {
-      setTimelineTreeData(null);
       return;
     }
 
     const targetMessage = timelineMessages[index];
+    if (targetMessage.role !== 'user') {
+      // 對方傳的訊息只會被整理進「對方自己」的想法脈絡圖，我這邊的樹永遠不會
+      // 有這則訊息的紀錄——不是「還在分析」，打 API 只會拿到誤導人的 404，
+      // 所以直接跳過請求，並保留畫面上一個成功顯示的狀態。
+      setTimelineError('這是對方傳送的訊息，不會出現在你自己的想法脈絡圖裡。');
+      return;
+    }
+
     setIsTimelineLoading(true);
     try {
       const response = await api.get(`/api/matching/rooms/${detail.id}/semantic-tree/timeline/`, {
@@ -216,10 +258,10 @@ function HistoryPage() {
       if (requestId !== timelineRequestIdRef.current) {
         return;
       }
-      setTimelineTreeData(null);
+      // 保留畫面上一個成功顯示的樹狀圖，不要清空，只提示這個時間點暫時看不到。
       setTimelineError(
         requestError?.response?.status === 404
-          ? '這則訊息還在分析中，暫時看不到當時的想法脈絡圖。'
+          ? '這則訊息還在分析中，暫時看不到當時的想法脈絡圖，先顯示上一個有結果的狀態。'
           : requestError?.response?.data?.detail || '目前無法讀取這個時間點的想法脈絡圖。',
       );
     } finally {
@@ -327,7 +369,7 @@ function HistoryPage() {
         </div>
         <ConversationTreePanel
           topicTitle={detail?.topic_title || '想法脈絡圖'}
-          treeData={(isViewingLatest ? treePayload?.treeData : timelineTreeData) || null}
+          treeData={displayedTreeData}
           trees={isViewingLatest ? treePayload?.trees || [] : []}
           messageCount={detail?.messages?.length || 0}
           mode={detail?.kind === 'match' ? 'matching' : 'ai'}
@@ -340,9 +382,15 @@ function HistoryPage() {
           <div className="history-timeline-bar">
             <div className="history-timeline-row">
               <span className="history-timeline-label">
-                {isViewingLatest
-                  ? '目前狀態（即時）'
-                  : `第 ${timelineIndex + 1} 則訊息時的狀態 · ${formatHistoryTime(timelineMessages[timelineIndex]?.created_at)}`}
+                {isLabelAtLatest ? (
+                  '目前狀態（即時）'
+                ) : (
+                  <>
+                    {`第 ${sliderPosition + 1}／${timelineMessages.length} 則・${labelMessage?.sender_label || ''}：`}
+                    <strong>{`「${truncateMessagePreview(labelMessage?.content)}」`}</strong>
+                    {` · ${formatHistoryTime(labelMessage?.created_at)}`}
+                  </>
+                )}
                 {isTimelineLoading && '（讀取中…）'}
               </span>
             </div>
@@ -351,7 +399,7 @@ function HistoryPage() {
               type="range"
               min={0}
               max={timelineMessages.length - 1}
-              value={timelineIndex === null ? timelineMessages.length - 1 : timelineIndex}
+              value={sliderPosition}
               onChange={handleTimelineDrag}
               onMouseUp={handleTimelineCommit}
               onTouchEnd={handleTimelineCommit}
