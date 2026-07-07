@@ -39,6 +39,7 @@ from .serializers import (
     MatchingRoomMessageCreateSerializer,
     MatchingRoomMessagesSerializer,
     MatchingRoomSemanticTreeSerializer,
+    MatchingRoomSemanticTreeTimelineSerializer,
     MatchingStateSerializer,
     MatchingTopicSerializer,
 )
@@ -1385,6 +1386,44 @@ class MatchingRoomSemanticTreeView(APIView):
             current_user_id=request.user.id,
         )
         return Response(MatchingRoomSemanticTreeSerializer(payload).data)
+
+
+class MatchingRoomSemanticTreeTimelineView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, room_id: str):
+        from apps.matching.services.semantic_tree import semantic_tree_timeline_payload
+
+        as_of_message_id = (request.query_params.get("as_of_message_id") or "").strip()
+        if not as_of_message_id:
+            return Response(
+                {"detail": "缺少 as_of_message_id 參數。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        match = _get_room_match_for_user(room_id=room_id, user_id=request.user.id)
+        if not match:
+            return Response(
+                {"detail": "找不到這個配對房間。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        match = _touch_room_match_for_user_activity(
+            match=match,
+            user_id=request.user.id,
+        )
+        payload = semantic_tree_timeline_payload(
+            match=match,
+            root_name=_semantic_tree_root_name(match),
+            current_user_id=request.user.id,
+            source_message_id=as_of_message_id,
+        )
+        if payload is None:
+            return Response(
+                {"detail": "這則訊息還沒有被分析過。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(MatchingRoomSemanticTreeTimelineSerializer(payload).data)
 
 
 class MatchingRoomSemanticTreeAnalyzeView(APIView):

@@ -200,6 +200,16 @@ class MatchingRoomMessagesSerializer(serializers.Serializer):
     messages = MatchMessageSerializer(many=True)
 
 
+class MatchingRoomSemanticTreeTimelineSerializer(serializers.Serializer):
+    room_id = serializers.CharField(max_length=64)
+    match_id = serializers.IntegerField()
+    topic_id = serializers.IntegerField(allow_null=True)
+    asOfMessageId = serializers.CharField(max_length=64)
+    asOfTimestamp = serializers.CharField(max_length=64)
+    treeData = serializers.JSONField()
+    anchors = serializers.JSONField()
+
+
 class MatchingRoomSemanticTreeSerializer(serializers.Serializer):
     room_id = serializers.CharField(max_length=64, required=False)
     match_id = serializers.IntegerField(required=False)

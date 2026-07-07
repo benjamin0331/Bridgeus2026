@@ -54,6 +54,10 @@ urlpatterns = [
         views.MatchingRoomSemanticTreeView.as_view(),
     ),
     path(
+        'matching/rooms/<str:room_id>/semantic-tree/timeline/',
+        views.MatchingRoomSemanticTreeTimelineView.as_view(),
+    ),
+    path(
         'matching/rooms/<str:room_id>/semantic-tree/analyze/',
         views.MatchingRoomSemanticTreeAnalyzeView.as_view(),
     ),

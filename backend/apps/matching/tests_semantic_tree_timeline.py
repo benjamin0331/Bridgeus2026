@@ -128,3 +128,42 @@ def test_resolve_cutoff_for_message_returns_none_for_unknown_message():
     analysis_history = [{"sourceId": "msg_001", "analyzedAt": "2026-07-07T10:00:00+00:00"}]
 
     assert resolve_cutoff_for_message(analysis_history, "does_not_exist") is None
+
+
+def _find_anchor(tree, anchor_id):
+    return next(child for child in tree["children"] if child.get("id") == anchor_id)
+
+
+def test_untouched_anchor_stays_hidden_at_any_cutoff():
+    tree = _build_dialogue_tree()  # only touches anchor_safety and anchor_waste
+    last_recorded_at = _find_by_name(tree, "深地質處置")["messages"][0]["recordedAt"]
+
+    snapshot = reconstruct_tree_as_of(tree, last_recorded_at)
+
+    untouched_anchor = _find_anchor(snapshot, "anchor_economy")
+    assert untouched_anchor["hiddenUntilUsed"] is True
+    assert untouched_anchor["children"] == []
+
+
+def test_anchor_touched_after_cutoff_is_still_hidden_at_that_cutoff():
+    tree = _build_dialogue_tree()
+    first_recorded_at = _find_by_name(tree, "核四延役爭議")["messages"][0]["recordedAt"]
+
+    # As of msg_001, anchor_waste hasn't been touched yet (msg_003 comes later),
+    # even though the *live* tree now shows it unhidden.
+    assert _find_anchor(tree, "anchor_waste")["hiddenUntilUsed"] is False
+
+    snapshot = reconstruct_tree_as_of(tree, first_recorded_at)
+
+    assert _find_anchor(snapshot, "anchor_waste")["hiddenUntilUsed"] is True
+    assert _find_anchor(snapshot, "anchor_safety")["hiddenUntilUsed"] is False
+
+
+def test_anchor_nodes_are_never_dropped_even_when_empty():
+    tree = _build_dialogue_tree()
+
+    snapshot = reconstruct_tree_as_of(tree, "2000-01-01T00:00:00+00:00")
+
+    assert [child["id"] for child in snapshot["children"]] == [
+        anchor["id"] for anchor in tree["children"]
+    ]

@@ -1390,6 +1390,68 @@ class MatchingApiTests(APITestCase):
         self.assertEqual(waste_anchor["children"][0]["name"], "長期處置")
         self.assertEqual(waste_anchor["children"][0]["children"][0]["name"], "核廢長期負擔")
 
+    def test_semantic_tree_timeline_shows_only_nodes_born_by_the_given_message(self):
+        match, room_id = self._create_match()
+        first_message = MatchMessage.objects.create(
+            match=match,
+            sender=self.user,
+            content="核廢料處理會帶來長期負擔",
+        )
+        second_message = MatchMessage.objects.create(
+            match=match,
+            sender=self.user,
+            content="核能可以補足再生能源不穩定",
+        )
+
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}), patch(
+            "apps.matching.services.semantic_tree.analyze_with_openai",
+            side_effect=[fake_waste_items_response(), fake_energy_items_response()],
+        ):
+            self.client.post(f"/api/matching/rooms/{room_id}/semantic-tree/analyze/")
+
+        timeline_response = self.client.get(
+            f"/api/matching/rooms/{room_id}/semantic-tree/timeline/",
+            {"as_of_message_id": str(first_message.id)},
+        )
+
+        self.assertEqual(timeline_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(timeline_response.data["asOfMessageId"], str(first_message.id))
+
+        tree_data = timeline_response.data["treeData"]
+        waste_anchor = next(child for child in tree_data["children"] if child["id"] == "anchor_waste")
+        energy_anchor = next(child for child in tree_data["children"] if child["id"] == "anchor_energy")
+        self.assertEqual(waste_anchor["children"][0]["name"], "長期處置")
+        self.assertEqual(energy_anchor["children"], [])
+        self.assertTrue(energy_anchor["hiddenUntilUsed"])
+
+        second_timeline_response = self.client.get(
+            f"/api/matching/rooms/{room_id}/semantic-tree/timeline/",
+            {"as_of_message_id": str(second_message.id)},
+        )
+        second_energy_anchor = next(
+            child
+            for child in second_timeline_response.data["treeData"]["children"]
+            if child["id"] == "anchor_energy"
+        )
+        self.assertFalse(second_energy_anchor["hiddenUntilUsed"])
+
+    def test_semantic_tree_timeline_requires_as_of_message_id(self):
+        _, room_id = self._create_match()
+
+        response = self.client.get(f"/api/matching/rooms/{room_id}/semantic-tree/timeline/")
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_semantic_tree_timeline_returns_404_for_unanalyzed_message(self):
+        _, room_id = self._create_match()
+
+        response = self.client.get(
+            f"/api/matching/rooms/{room_id}/semantic-tree/timeline/",
+            {"as_of_message_id": "does-not-exist"},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
     def test_semantic_tree_analyze_only_returns_and_updates_current_user_tree(self):
         match, room_id = self._create_match()
         own_message = MatchMessage.objects.create(

@@ -399,6 +399,12 @@ def reconstruct_tree_as_of(tree: dict[str, Any], cutoff_recorded_at: str) -> dic
     and is dropped along with its descendants; a node that had already
     been created keeps only its messages up to the cutoff, with
     `claimText` rolled back to match the last of those messages.
+
+    Anchor nodes are never dropped (the UI always shows all fixed anchors)
+    but their `hiddenUntilUsed` flag is recomputed for this cutoff, since
+    the live tree only ever flips it from True to False and never back —
+    an anchor first touched *after* the cutoff must still show as hidden
+    in the snapshot even though it's long since unhidden in the live tree.
     """
     cutoff = clean_text(cutoff_recorded_at)
     snapshot = deepcopy(tree)
@@ -408,6 +414,7 @@ def reconstruct_tree_as_of(tree: dict[str, Any], cutoff_recorded_at: str) -> dic
         for child in node.get("children") or []:
             if not isinstance(child, dict):
                 continue
+            is_anchor = child.get("type") == "anchor"
             messages = child.get("messages")
             if messages:
                 visible = [
@@ -421,7 +428,9 @@ def reconstruct_tree_as_of(tree: dict[str, Any], cutoff_recorded_at: str) -> dic
                 if child.get("claimText"):
                     child["claimText"] = visible[-1].get("text") or child["claimText"]
             prune(child)
-            if not messages and not child.get("children"):
+            if is_anchor:
+                child["hiddenUntilUsed"] = not bool(child.get("children"))
+            elif not messages and not child.get("children"):
                 continue
             kept_children.append(child)
         node["children"] = kept_children
@@ -1101,6 +1110,38 @@ def semantic_tree_payload(
         "analysisStatus": analysis_status,
         "message": message,
         "analyzedCount": analyzed_count,
+    }
+
+
+def semantic_tree_timeline_payload(
+    *,
+    match: DialogueMatch,
+    root_name: str,
+    current_user_id: int | None,
+    source_message_id: str,
+) -> dict[str, Any] | None:
+    """Reconstruct the current user's tree as it looked right after
+    `source_message_id` was analyzed. Returns None if that message hasn't
+    been analyzed yet (or doesn't belong to this participant), so the
+    caller can turn that into a 404.
+    """
+    state = get_semantic_tree_state(match, root_name=root_name)
+    owner_key = _owner_key_for_user(match, current_user_id)
+    owner_state = state["participants"][owner_key]
+
+    cutoff = resolve_cutoff_for_message(owner_state["analysisHistory"], source_message_id)
+    if cutoff is None:
+        return None
+
+    snapshot = reconstruct_tree_as_of(owner_state["treeData"], cutoff)
+    return {
+        "room_id": match.room_id,
+        "match_id": match.id,
+        "topic_id": match.topic_id,
+        "asOfMessageId": clean_text(source_message_id),
+        "asOfTimestamp": cutoff,
+        "treeData": snapshot,
+        "anchors": state["anchors"],
     }
 
 
