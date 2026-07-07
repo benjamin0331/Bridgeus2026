@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import api from '../api/client';
 import ConversationTreePanel from '../components/ConversationTreePanel';
 import './HistoryPage.css';
@@ -62,6 +62,9 @@ function HistoryPage() {
   const [isTimelineLoading, setIsTimelineLoading] = useState(false);
   const [timelineError, setTimelineError] = useState('');
   const [analysisError, setAnalysisError] = useState('');
+  // 每次切換對話或重新拖動時間軸都會+1，讓晚到的舊請求發現自己已經過期，
+  // 不會在使用者已經切到別筆對話之後才把過期的樹狀態蓋上去。
+  const timelineRequestIdRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -118,6 +121,7 @@ function HistoryPage() {
       setTimelineIndex(null);
       setTimelineTreeData(null);
       setTimelineError('');
+      timelineRequestIdRef.current += 1;
       try {
         const response = await api.get(`/api/history/conversations/${selectedItem.kind}/${selectedItem.id}/`);
         if (!cancelled) {
@@ -184,6 +188,9 @@ function HistoryPage() {
 
     setTimelineIndex(index);
     setTimelineError('');
+    // 每次放開滑桿都先讓前一個還沒回來的請求失效，不管這次放開的位置
+    // 要不要重新打 API——否則舊請求晚一步回來時可能蓋掉這次的畫面。
+    const requestId = ++timelineRequestIdRef.current;
 
     // 拖到最新一格效果等同於目前的即時樹，不用另外呼叫 timeline API。
     if (index === timelineMessages.length - 1) {
@@ -199,8 +206,16 @@ function HistoryPage() {
         // sourceMessageId 對應的是原始訊息 id，要用 source_id 才會查得到。
         params: { as_of_message_id: targetMessage.source_id },
       });
+      // 這段等待期間使用者可能已經切換到別筆對話或拖到別的時間點，
+      // 這種情況下這個回應已經過期，不能再套用到畫面上。
+      if (requestId !== timelineRequestIdRef.current) {
+        return;
+      }
       setTimelineTreeData(response.data?.treeData || null);
     } catch (requestError) {
+      if (requestId !== timelineRequestIdRef.current) {
+        return;
+      }
       setTimelineTreeData(null);
       setTimelineError(
         requestError?.response?.status === 404
@@ -208,7 +223,9 @@ function HistoryPage() {
           : requestError?.response?.data?.detail || '目前無法讀取這個時間點的想法脈絡圖。',
       );
     } finally {
-      setIsTimelineLoading(false);
+      if (requestId === timelineRequestIdRef.current) {
+        setIsTimelineLoading(false);
+      }
     }
   };
 
