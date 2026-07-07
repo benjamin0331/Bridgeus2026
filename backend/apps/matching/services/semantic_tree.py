@@ -375,6 +375,61 @@ def find_nodes_born_from_message(
     return born
 
 
+def resolve_cutoff_for_message(
+    analysis_history: list[dict[str, Any]] | None,
+    source_message_id: str,
+) -> str | None:
+    """Look up the `analyzedAt` timestamp recorded for `source_message_id`
+    in an owner's `analysisHistory` — this is the cutoff to pass to
+    `reconstruct_tree_as_of()` to see the tree "as of" that message, even
+    if the message produced no items of its own.
+    """
+    target_id = clean_text(source_message_id)
+    for entry in analysis_history or []:
+        if isinstance(entry, dict) and clean_text(entry.get("sourceId")) == target_id:
+            return clean_text(entry.get("analyzedAt")) or None
+    return None
+
+
+def reconstruct_tree_as_of(tree: dict[str, Any], cutoff_recorded_at: str) -> dict[str, Any]:
+    """Return a copy of `tree` showing only messages recorded at or before
+    `cutoff_recorded_at`. Nodes aren't repositioned once created, so this
+    is a prune of the current tree rather than a replay from scratch: a
+    node whose messages are all after the cutoff hadn't been created yet
+    and is dropped along with its descendants; a node that had already
+    been created keeps only its messages up to the cutoff, with
+    `claimText` rolled back to match the last of those messages.
+    """
+    cutoff = clean_text(cutoff_recorded_at)
+    snapshot = deepcopy(tree)
+
+    def prune(node: dict[str, Any]) -> None:
+        kept_children = []
+        for child in node.get("children") or []:
+            if not isinstance(child, dict):
+                continue
+            messages = child.get("messages")
+            if messages:
+                visible = [
+                    message
+                    for message in messages
+                    if isinstance(message, dict) and clean_text(message.get("recordedAt")) <= cutoff
+                ]
+                if not visible:
+                    continue
+                child["messages"] = visible
+                if child.get("claimText"):
+                    child["claimText"] = visible[-1].get("text") or child["claimText"]
+            prune(child)
+            if not messages and not child.get("children"):
+                continue
+            kept_children.append(child)
+        node["children"] = kept_children
+
+    prune(snapshot)
+    return snapshot
+
+
 def find_child_by_name(node: dict[str, Any] | None, name: str) -> dict[str, Any] | None:
     return next(
         (
