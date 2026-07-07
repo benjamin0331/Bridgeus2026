@@ -786,12 +786,20 @@ def _max_generated_counter(node: dict[str, Any] | None) -> int:
     return max(current, child_max)
 
 
-def _create_generated_point_node(name: str, counter: int, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+def _create_generated_point_node(
+    name: str,
+    counter: int,
+    metadata: dict[str, Any] | None = None,
+    *,
+    message_id: str = "",
+) -> dict[str, Any]:
     return {
         "id": f"agent_{counter}",
         "name": name,
         "type": "point",
         "children": [],
+        "created_at": timezone.now().isoformat(),
+        "message_id": message_id,
         **(metadata or {}),
     }
 
@@ -874,6 +882,7 @@ def apply_analysis_items_to_tree(
                     "generatedBy": "openai",
                     "sourceClaim": item.get("claimText"),
                 },
+                message_id=clean_text((source_message or {}).get("id")),
             )
             parent_node.setdefault("children", []).append(new_node)
             parent_node = new_node
@@ -896,6 +905,7 @@ def apply_analysis_items_to_tree(
                     "confidence": item.get("confidence"),
                     "rationale": item.get("rationale"),
                 },
+                message_id=clean_text((source_message or {}).get("id")),
             )
             parent_node.setdefault("children", []).append(target_node)
             mode = "new"
