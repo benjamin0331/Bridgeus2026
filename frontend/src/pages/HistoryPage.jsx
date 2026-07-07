@@ -39,6 +39,15 @@ function hasAnalyzedTree(treePayload) {
   return Array.isArray(treePayload?.analyzedSourceIds) && treePayload.analyzedSourceIds.length > 0;
 }
 
+// CCND 時間軸只支援真人配對房間（M3 semantic-tree/timeline/ API 目前只認 room_id），
+// AI 對話的想法脈絡圖沒有對應的後端 endpoint，所以時間軸控制項只在 kind === 'match' 時顯示。
+function timelineMessagesFor(detail) {
+  if (!detail || detail.kind !== 'match' || !Array.isArray(detail.messages)) {
+    return [];
+  }
+  return detail.messages;
+}
+
 function HistoryPage() {
   const [filter, setFilter] = useState('all');
   const [items, setItems] = useState([]);
@@ -48,6 +57,10 @@ function HistoryPage() {
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState('');
+  const [timelineIndex, setTimelineIndex] = useState(null); // null = 顯示目前最新狀態
+  const [timelineTreeData, setTimelineTreeData] = useState(null);
+  const [isTimelineLoading, setIsTimelineLoading] = useState(false);
+  const [timelineError, setTimelineError] = useState('');
   const [analysisError, setAnalysisError] = useState('');
 
   useEffect(() => {
@@ -102,6 +115,9 @@ function HistoryPage() {
     const loadDetail = async () => {
       setIsDetailLoading(true);
       setAnalysisError('');
+      setTimelineIndex(null);
+      setTimelineTreeData(null);
+      setTimelineError('');
       try {
         const response = await api.get(`/api/history/conversations/${selectedItem.kind}/${selectedItem.id}/`);
         if (!cancelled) {
@@ -151,6 +167,50 @@ function HistoryPage() {
 
   const treePayload = detail?.semantic_tree;
   const shouldShowAnalyzeButton = detail && !hasAnalyzedTree(treePayload);
+  const timelineMessages = timelineMessagesFor(detail);
+  const isViewingLatest = timelineIndex === null || timelineIndex === timelineMessages.length - 1;
+
+  // 拖動中只更新滑桿位置本身，不打 API，避免每拖一格就發一次請求；
+  // 放開滑桿（或用鍵盤操作放開）時才真的去抓那個時間點的樹狀態。
+  const handleTimelineDrag = (event) => {
+    setTimelineIndex(Number(event.target.value));
+  };
+
+  const handleTimelineCommit = async (event) => {
+    const index = Number(event.target.value);
+    if (!detail || !timelineMessages.length) {
+      return;
+    }
+
+    setTimelineIndex(index);
+    setTimelineError('');
+
+    // 拖到最新一格效果等同於目前的即時樹，不用另外呼叫 timeline API。
+    if (index === timelineMessages.length - 1) {
+      setTimelineTreeData(null);
+      return;
+    }
+
+    const targetMessage = timelineMessages[index];
+    setIsTimelineLoading(true);
+    try {
+      const response = await api.get(`/api/matching/rooms/${detail.id}/semantic-tree/timeline/`, {
+        // message.id 是「match-38」這種前綴過的 React key，semantic tree 記錄的
+        // sourceMessageId 對應的是原始訊息 id，要用 source_id 才會查得到。
+        params: { as_of_message_id: targetMessage.source_id },
+      });
+      setTimelineTreeData(response.data?.treeData || null);
+    } catch (requestError) {
+      setTimelineTreeData(null);
+      setTimelineError(
+        requestError?.response?.status === 404
+          ? '這則訊息還在分析中，暫時看不到當時的想法脈絡圖。'
+          : requestError?.response?.data?.detail || '目前無法讀取這個時間點的想法脈絡圖。',
+      );
+    } finally {
+      setIsTimelineLoading(false);
+    }
+  };
 
   return (
     <div className="history-page">
@@ -250,8 +310,8 @@ function HistoryPage() {
         </div>
         <ConversationTreePanel
           topicTitle={detail?.topic_title || '想法脈絡圖'}
-          treeData={treePayload?.treeData || null}
-          trees={treePayload?.trees || []}
+          treeData={(isViewingLatest ? treePayload?.treeData : timelineTreeData) || null}
+          trees={isViewingLatest ? treePayload?.trees || [] : []}
           messageCount={detail?.messages?.length || 0}
           mode={detail?.kind === 'match' ? 'matching' : 'ai'}
           isActive={Boolean(detail)}
@@ -259,6 +319,31 @@ function HistoryPage() {
           isAnalyzing={isAnalyzing}
           analysisStatus={treePayload?.analysisStatus || 'ready'}
         />
+        {hasAnalyzedTree(treePayload) && timelineMessages.length > 1 && (
+          <div className="history-timeline-bar">
+            <div className="history-timeline-row">
+              <span className="history-timeline-label">
+                {isViewingLatest
+                  ? '目前狀態（即時）'
+                  : `第 ${timelineIndex + 1} 則訊息時的狀態 · ${formatHistoryTime(timelineMessages[timelineIndex]?.created_at)}`}
+                {isTimelineLoading && '（讀取中…）'}
+              </span>
+            </div>
+            <input
+              className="history-timeline-slider"
+              type="range"
+              min={0}
+              max={timelineMessages.length - 1}
+              value={timelineIndex === null ? timelineMessages.length - 1 : timelineIndex}
+              onChange={handleTimelineDrag}
+              onMouseUp={handleTimelineCommit}
+              onTouchEnd={handleTimelineCommit}
+              onKeyUp={handleTimelineCommit}
+              disabled={isTimelineLoading}
+            />
+            {timelineError && <span className="history-timeline-error">{timelineError}</span>}
+          </div>
+        )}
       </section>
     </div>
   );

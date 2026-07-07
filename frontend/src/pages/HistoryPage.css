@@ -261,6 +261,43 @@
   font-weight: 800;
 }
 
+.history-timeline-bar {
+  position: absolute;
+  bottom: 14px;
+  left: 18px;
+  right: 18px;
+  z-index: 3;
+  display: grid;
+  gap: 6px;
+  border-radius: 18px;
+  padding: 12px 16px;
+  background: rgba(255, 251, 246, 0.92);
+  box-shadow: 0 10px 24px rgba(83, 62, 44, 0.14);
+}
+
+.history-timeline-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.history-timeline-label {
+  color: #6b5b4d;
+  font-size: 9.6px;
+  font-weight: 800;
+}
+
+.history-timeline-slider {
+  width: 100%;
+  accent-color: #315f46;
+}
+
+.history-timeline-error {
+  color: #b42318;
+  font-size: 9.6px;
+  font-weight: 800;
+}
+
 .history-empty-card {
   border-radius: 18px;
   padding: 18px;
