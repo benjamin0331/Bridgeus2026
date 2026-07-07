@@ -145,3 +145,55 @@ def test_apply_analysis_items_merges_stance_update_into_one_node_history():
     node = matching_nodes[0]
     stances = [message["stance"] for message in node["messages"]]
     assert stances == ["反對", "支持"], "message history should record both the original and updated stance"
+    assert node["claimText"] == "瑞典的地下處置方式已經證實可行", (
+        "claimText must track the latest merged claim, not stay frozen at the "
+        "first message, otherwise the displayed listing pairs the new stance "
+        "with a stale/contradictory rationale"
+    )
+
+
+def test_list_existing_node_names_shows_path_prefix_for_nested_nodes():
+    tree = create_initial_tree("核電")
+    anchor = next(a for a in tree["children"] if a["id"] == "anchor_waste")
+    category = {"id": "cat_1", "name": "處置方案", "type": "category", "children": []}
+    category["children"].append({
+        "id": "agent_1",
+        "name": "瑞典地下處置方案",
+        "type": "point",
+        "children": [],
+        "claimText": "地下處置已證實可行",
+        "messages": [{"text": "地下處置已證實可行", "stance": "支持", "confidence": 0.9}],
+    })
+    anchor["children"].append(category)
+
+    listing = list_existing_node_names(tree)
+    assert "處置方案＞瑞典地下處置方案" in listing
+
+
+def test_list_existing_node_names_distinguishes_same_name_under_different_paths():
+    tree = create_initial_tree("核電")
+    anchor = next(a for a in tree["children"] if a["id"] == "anchor_waste")
+    anchor["children"].extend([
+        {
+            "id": "cat_a", "name": "分類A", "type": "category", "children": [
+                {
+                    "id": "n1", "name": "核安風險", "type": "point", "children": [],
+                    "claimText": "說法一",
+                    "messages": [{"text": "說法一", "stance": "反對", "confidence": 0.9}],
+                },
+            ],
+        },
+        {
+            "id": "cat_b", "name": "分類B", "type": "category", "children": [
+                {
+                    "id": "n2", "name": "核安風險", "type": "point", "children": [],
+                    "claimText": "說法二",
+                    "messages": [{"text": "說法二", "stance": "支持", "confidence": 0.9}],
+                },
+            ],
+        },
+    ])
+
+    listing = list_existing_node_names(tree)
+    assert "分類A＞核安風險（目前立場：反對；主張：說法一）" in listing
+    assert "分類B＞核安風險（目前立場：支持；主張：說法二）" in listing

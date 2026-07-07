@@ -351,6 +351,30 @@ def find_node_by_id(node: dict[str, Any] | None, node_id: str) -> dict[str, Any]
     return None
 
 
+def find_nodes_born_from_message(
+    node: dict[str, Any] | None,
+    source_message_id: str,
+) -> list[dict[str, Any]]:
+    """Return every node whose first message (mode == "new") was recorded
+    for `source_message_id` — i.e. the nodes that were created when that
+    message was analyzed, as opposed to nodes it only merged into.
+    """
+    born: list[dict[str, Any]] = []
+    for child in (node or {}).get("children") or []:
+        if not isinstance(child, dict):
+            continue
+        messages = child.get("messages") or []
+        if messages and isinstance(messages[0], dict):
+            first_message = messages[0]
+            if (
+                first_message.get("mode") == "new"
+                and clean_text(first_message.get("sourceMessageId")) == clean_text(source_message_id)
+            ):
+                born.append(child)
+        born.extend(find_nodes_born_from_message(child, source_message_id))
+    return born
+
+
 def find_child_by_name(node: dict[str, Any] | None, name: str) -> dict[str, Any] | None:
     return next(
         (
@@ -409,23 +433,31 @@ def list_existing_node_names(tree: dict[str, Any] | None) -> str:
         if not isinstance(anchor, dict):
             continue
         entries: list[str] = []
-        seen_names: set[str] = set()
+        seen_labels: set[str] = set()
 
-        def collect(node: dict[str, Any]) -> None:
+        def collect(node: dict[str, Any], path_prefix: list[str]) -> None:
             for child in node.get("children") or []:
                 if not isinstance(child, dict):
                     continue
                 name = clean_text(child.get("name"))
-                if name and name not in seen_names:
-                    seen_names.add(name)
-                    claim = clean_text(child.get("claimText"))
-                    if claim:
-                        entries.append(f"{name}（目前立場：{_latest_stance(child)}；主張：{claim}）")
-                    else:
-                        entries.append(name)
-                collect(child)
+                child_path = path_prefix + [name] if name else path_prefix
+                if name:
+                    # Include the path prefix so the model can see a node's
+                    # place in the hierarchy (needed to pick the right
+                    # `path` when reusing a node) and so two different nodes
+                    # that happen to share a bare name aren't collapsed into
+                    # one displayed entry.
+                    label = "＞".join(child_path)
+                    if label not in seen_labels:
+                        seen_labels.add(label)
+                        claim = clean_text(child.get("claimText"))
+                        if claim:
+                            entries.append(f"{label}（目前立場：{_latest_stance(child)}；主張：{claim}）")
+                        else:
+                            entries.append(label)
+                collect(child, child_path)
 
-        collect(anchor)
+        collect(anchor, [])
         if entries:
             lines.append(f"{anchor.get('name')}：{'、'.join(entries)}")
     return "\n".join(lines) if lines else "（目前各分類底下還沒有任何節點）"
@@ -741,7 +773,7 @@ def _append_node_message(
             **_message_source_metadata(source_message),
         }
     )
-    if not node.get("claimText") and mode != "category":
+    if text and mode != "category":
         node["claimText"] = text
     return True
 
