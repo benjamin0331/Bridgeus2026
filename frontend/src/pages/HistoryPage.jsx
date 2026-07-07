@@ -9,6 +9,14 @@ const FILTERS = [
   { id: 'match', label: '真人對話' },
 ];
 
+// 給 ConversationTreePanel 的 trees prop 用的穩定空陣列參照。內文用
+// `... || []` 這種寫法每次 render 都會生一個「內容一樣但參照不同」的新
+// 陣列，會讓 ConversationTreePanel 內部依賴 trees 的 useMemo 判斷成「變了」
+// 而重新計算，一路連動到 D3 的重繪 effect，導致每次 render（包含拖動時間
+// 軸滑桿的每一格）都整個重畫一次樹狀圖，非常卡。用同一個陣列參照就不會
+// 誤觸發。
+const EMPTY_TREES = [];
+
 function formatHistoryTime(value) {
   if (!value) {
     return '時間未知';
@@ -367,7 +375,7 @@ function HistoryPage() {
         <ConversationTreePanel
           topicTitle={detail?.topic_title || '想法脈絡圖'}
           treeData={displayedTreeData}
-          trees={isViewingLatest ? treePayload?.trees || [] : []}
+          trees={isViewingLatest ? treePayload?.trees || EMPTY_TREES : EMPTY_TREES}
           messageCount={detail?.messages?.length || 0}
           mode={detail?.kind === 'match' ? 'matching' : 'ai'}
           isActive={Boolean(detail)}
