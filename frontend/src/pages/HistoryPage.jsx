@@ -49,11 +49,16 @@ function truncateMessagePreview(text, maxLength = 24) {
 
 // CCND 時間軸只支援真人配對房間（M3 semantic-tree/timeline/ API 目前只認 room_id），
 // AI 對話的想法脈絡圖沒有對應的後端 endpoint，所以時間軸控制項只在 kind === 'match' 時顯示。
+//
+// 每個人的想法脈絡圖只會收錄「自己」傳的訊息（後端分析時就是這樣分開整理
+// 的），對方傳的訊息在這棵樹裡永遠不會有對應的節點，時間軸打 API 只會拿到
+// 100% 必定發生的 404。與其讓使用者拖到那些點才被告知「這則沒有」，乾脆
+// 直接把對方的訊息從時間軸的可選位置裡濾掉，時間軸只在自己的訊息之間跳。
 function timelineMessagesFor(detail) {
   if (!detail || detail.kind !== 'match' || !Array.isArray(detail.messages)) {
     return [];
   }
-  return detail.messages;
+  return detail.messages.filter((message) => message.role === 'user');
 }
 
 function HistoryPage() {
@@ -233,14 +238,6 @@ function HistoryPage() {
     }
 
     const targetMessage = timelineMessages[index];
-    if (targetMessage.role !== 'user') {
-      // 對方傳的訊息只會被整理進「對方自己」的想法脈絡圖，我這邊的樹永遠不會
-      // 有這則訊息的紀錄——不是「還在分析」，打 API 只會拿到誤導人的 404，
-      // 所以直接跳過請求，並保留畫面上一個成功顯示的狀態。
-      setTimelineError('這是對方傳送的訊息，不會出現在你自己的想法脈絡圖裡。');
-      return;
-    }
-
     setIsTimelineLoading(true);
     try {
       const response = await api.get(`/api/matching/rooms/${detail.id}/semantic-tree/timeline/`, {
@@ -386,7 +383,8 @@ function HistoryPage() {
                   '目前狀態（即時）'
                 ) : (
                   <>
-                    {`第 ${sliderPosition + 1}／${timelineMessages.length} 則・${labelMessage?.sender_label || ''}：`}
+                    {/* timelineMessages 只會有自己傳的訊息，不用再標「我：」 */}
+                    {`我的第 ${sliderPosition + 1}／${timelineMessages.length} 則訊息：`}
                     <strong>{`「${truncateMessagePreview(labelMessage?.content)}」`}</strong>
                     {` · ${formatHistoryTime(labelMessage?.created_at)}`}
                   </>
