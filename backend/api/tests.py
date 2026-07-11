@@ -865,6 +865,73 @@ class HistoryApiTests(APITestCase):
         self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(detail_response.data["messages"]), 2)
 
+    def test_history_ai_summary_includes_room_id_alias_of_session_id(self):
+        ai_record, _ = self._create_ai_history()
+
+        response = self.client.get("/api/history/conversations/?type=ai")
+
+        item = response.data["results"][0]
+        self.assertEqual(item["room_id"], ai_record.session_id)
+
+    def test_ai_timeline_shows_only_nodes_analyzed_by_the_given_turn(self):
+        ai_record, first_turn = self._create_ai_history()
+
+        with patch(
+            "apps.matching.services.nuclear_node_classifier.build_candidate_items",
+            return_value=fake_waste_items_response()["items"],
+        ):
+            analyze_response = self.client.post(
+                f"/api/history/conversations/ai/{ai_record.session_id}/semantic-tree/analyze/"
+            )
+        self.assertEqual(analyze_response.status_code, status.HTTP_200_OK)
+
+        second_turn = AIConversation.objects.create(
+            user=self.user,
+            session_id=ai_record.session_id,
+            topic_id=102,
+            user_prompt="這則故意不分析,測試還沒分析的畫面行為",
+            ai_response="AI 回覆",
+        )
+
+        timeline_response = self.client.get(
+            f"/api/history/conversations/ai/{ai_record.session_id}/semantic-tree/timeline/",
+            {"as_of_message_id": str(first_turn.id)},
+        )
+
+        self.assertEqual(timeline_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(timeline_response.data["room_id"], ai_record.session_id)
+        self.assertEqual(timeline_response.data["session_id"], ai_record.session_id)
+        waste_anchor = next(
+            child for child in timeline_response.data["treeData"]["children"]
+            if child["id"] == "anchor_waste"
+        )
+        self.assertEqual(waste_anchor["children"][0]["name"], "長期處置")
+
+        unanalyzed_response = self.client.get(
+            f"/api/history/conversations/ai/{ai_record.session_id}/semantic-tree/timeline/",
+            {"as_of_message_id": str(second_turn.id)},
+        )
+        self.assertEqual(unanalyzed_response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_ai_timeline_requires_as_of_message_id(self):
+        ai_record, _ = self._create_ai_history()
+
+        response = self.client.get(
+            f"/api/history/conversations/ai/{ai_record.session_id}/semantic-tree/timeline/"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_ai_timeline_404s_for_other_users_session(self):
+        ai_record, first_turn = self._create_ai_history()
+
+        response = self.other_client.get(
+            f"/api/history/conversations/ai/{ai_record.session_id}/semantic-tree/timeline/",
+            {"as_of_message_id": str(first_turn.id)},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
 
 class MatchingApiTests(APITestCase):
     def setUp(self):

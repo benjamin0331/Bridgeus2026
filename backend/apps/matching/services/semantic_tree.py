@@ -1206,6 +1206,41 @@ def semantic_tree_timeline_payload(
     }
 
 
+def semantic_tree_session_timeline_payload(
+    *,
+    session_record: dict[str, Any],
+    session_id: str,
+    root_name: str,
+    source_message_id: str,
+) -> dict[str, Any] | None:
+    """AI-session equivalent of semantic_tree_timeline_payload(): reconstruct
+    the tree as it looked right after `source_message_id` (an AIConversation
+    turn id) was analyzed. Returns None if that turn hasn't been analyzed
+    yet, so the caller can turn that into a 404.
+
+    `room_id` mirrors `session_id` here — AI sessions don't have a real
+    room, but exposing the same key lets the frontend/serializer treat both
+    conversation kinds uniformly instead of branching on kind everywhere.
+    """
+    state = get_ai_semantic_tree_state(session_record, root_name=root_name)
+    owner_state = state["participants"][OWNER_AI_USER]
+
+    cutoff = resolve_cutoff_for_message(owner_state["analysisHistory"], source_message_id)
+    if cutoff is None:
+        return None
+
+    snapshot = reconstruct_tree_as_of(owner_state["treeData"], cutoff)
+    return {
+        "session_id": session_id,
+        "room_id": session_id,
+        "topic_id": session_record.get("topic_id"),
+        "asOfMessageId": clean_text(source_message_id),
+        "asOfTimestamp": cutoff,
+        "treeData": snapshot,
+        "anchors": state["anchors"],
+    }
+
+
 def semantic_tree_session_payload(
     *,
     session_record: dict[str, Any],

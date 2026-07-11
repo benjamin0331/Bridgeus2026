@@ -55,15 +55,16 @@ function truncateMessagePreview(text, maxLength = 24) {
   return cleaned.length <= maxLength ? cleaned : `${cleaned.slice(0, maxLength)}…`;
 }
 
-// CCND 時間軸只支援真人配對房間（M3 semantic-tree/timeline/ API 目前只認 room_id），
-// AI 對話的想法脈絡圖沒有對應的後端 endpoint，所以時間軸控制項只在 kind === 'match' 時顯示。
+// AI 對話跟真人配對房間都支援 CCND 時間軸，統一打
+// history/conversations/{kind}/{id}/semantic-tree/timeline/ 這支 endpoint。
 //
 // 每個人的想法脈絡圖只會收錄「自己」傳的訊息（後端分析時就是這樣分開整理
-// 的），對方傳的訊息在這棵樹裡永遠不會有對應的節點，時間軸打 API 只會拿到
-// 100% 必定發生的 404。與其讓使用者拖到那些點才被告知「這則沒有」，乾脆
-// 直接把對方的訊息從時間軸的可選位置裡濾掉，時間軸只在自己的訊息之間跳。
+// 的，AI 對話那邊也一樣只分析 user_prompt，不分析 AI 的回覆），對方／AI
+// 的回覆在這棵樹裡永遠不會有對應的節點，時間軸打 API 只會拿到 100% 必定
+// 發生的 404。與其讓使用者拖到那些點才被告知「這則沒有」，乾脆直接把它們
+// 從時間軸的可選位置裡濾掉，時間軸只在自己傳的訊息之間跳。
 function timelineMessagesFor(detail) {
-  if (!detail || detail.kind !== 'match' || !Array.isArray(detail.messages)) {
+  if (!detail || !Array.isArray(detail.messages)) {
     return [];
   }
   return detail.messages.filter((message) => message.role === 'user');
@@ -248,11 +249,15 @@ function HistoryPage() {
     const targetMessage = timelineMessages[index];
     setIsTimelineLoading(true);
     try {
-      const response = await api.get(`/api/matching/rooms/${detail.id}/semantic-tree/timeline/`, {
-        // message.id 是「match-38」這種前綴過的 React key，semantic tree 記錄的
-        // sourceMessageId 對應的是原始訊息 id，要用 source_id 才會查得到。
-        params: { as_of_message_id: targetMessage.source_id },
-      });
+      const response = await api.get(
+        `/api/history/conversations/${detail.kind}/${detail.id}/semantic-tree/timeline/`,
+        {
+          // message.id 是「match-38」/「ai-7-user」這種前綴過的 React key，
+          // semantic tree 記錄的 sourceMessageId 對應的是原始訊息/回合 id，
+          // 要用 source_id 才會查得到。
+          params: { as_of_message_id: targetMessage.source_id },
+        },
+      );
       // 這段等待期間使用者可能已經切換到別筆對話或拖到別的時間點，
       // 這種情況下這個回應已經過期，不能再套用到畫面上。
       if (requestId !== timelineRequestIdRef.current) {

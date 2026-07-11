@@ -620,6 +620,11 @@ def _history_ai_summary(record: DialogueSessionRecord) -> dict:
         "kind": "ai",
         "id": record.session_id,
         "session_id": record.session_id,
+        # Alias of session_id — AI sessions don't have a real "room", but
+        # exposing the same key as match conversations lets the frontend
+        # treat both kinds uniformly instead of branching on kind. Computed
+        # here rather than stored, so it's never missing for older records.
+        "room_id": record.session_id,
         "topic_id": record.topic_id,
         "topic_title": record.topic_title,
         "status": record.status,
@@ -1105,6 +1110,71 @@ class HistoryConversationDetailView(APIView):
             {"detail": "kind 必須是 ai 或 match。"},
             status=status.HTTP_404_NOT_FOUND,
         )
+
+
+class HistoryConversationSemanticTreeTimelineView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, kind: str, conversation_id: str):
+        from apps.matching.services.semantic_tree import (
+            semantic_tree_session_timeline_payload,
+            semantic_tree_timeline_payload,
+        )
+
+        as_of_message_id = (request.query_params.get("as_of_message_id") or "").strip()
+        if not as_of_message_id:
+            return Response(
+                {"detail": "缺少 as_of_message_id 參數。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if kind == "ai":
+            record = _get_history_ai_record_for_user(
+                session_id=conversation_id,
+                user_id=request.user.id,
+            )
+            if record is None:
+                return Response(
+                    {"detail": "找不到這筆 AI 對話紀錄。"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            session_record = _dialogue_session_cache_payload_from_record(record)
+            payload = semantic_tree_session_timeline_payload(
+                session_record=session_record,
+                session_id=record.session_id,
+                root_name=_semantic_tree_root_name_for_topic_id(record.topic_id),
+                source_message_id=as_of_message_id,
+            )
+        elif kind == "match":
+            match = _get_room_match_for_user(
+                room_id=conversation_id,
+                user_id=request.user.id,
+            )
+            if match is None:
+                return Response(
+                    {"detail": "找不到這個配對房間。"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            payload = semantic_tree_timeline_payload(
+                match=match,
+                root_name=_semantic_tree_root_name(match),
+                current_user_id=request.user.id,
+                source_message_id=as_of_message_id,
+            )
+        else:
+            return Response(
+                {"detail": "kind 必須是 ai 或 match。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if payload is None:
+            return Response(
+                {"detail": "這則訊息還沒有被分析過。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(MatchingRoomSemanticTreeTimelineSerializer(payload).data)
 
 
 class HistoryConversationSemanticTreeAnalyzeView(APIView):

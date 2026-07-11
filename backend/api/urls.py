@@ -13,6 +13,10 @@ urlpatterns = [
         views.HistoryConversationDetailView.as_view(),
     ),
     path(
+        'history/conversations/<str:kind>/<str:conversation_id>/semantic-tree/timeline/',
+        views.HistoryConversationSemanticTreeTimelineView.as_view(),
+    ),
+    path(
         'history/conversations/<str:kind>/<str:conversation_id>/semantic-tree/analyze/',
         views.HistoryConversationSemanticTreeAnalyzeView.as_view(),
     ),
