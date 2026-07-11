@@ -60,7 +60,9 @@ func apply_voice_filter(type: int) -> void:
 		_anti_timer.stop()
 	if _bus_idx == -1:
 		return
-	AudioServer.clear_bus_effects(_bus_idx)
+	# Godot 4 沒有 clear_bus_effects，逐個移除。
+	while AudioServer.get_bus_effect_count(_bus_idx) > 0:
+		AudioServer.remove_bus_effect(_bus_idx, 0)
 	match type:
 		VoiceFilter.ANONYMOUS:
 			var ps := AudioEffectPitchShift.new()
