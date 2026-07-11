@@ -27,8 +27,15 @@ var _voice_peer_id := -1
 @onready var _toast: Label = $Toast
 @onready var _voice: Panel = $Voice
 @onready var _voice_title: Label = $Voice/VoiceTitle
-@onready var _pitch_label: Label = $Voice/PitchLabel
-@onready var _pitch_slider: HSlider = $Voice/PitchSlider
+@onready var _preset_btns: Array[Button] = [$Voice/AnonBtn, $Voice/CyberBtn, $Voice/RadioBtn, $Voice/GhostBtn]
+@onready var _bars: Array[ColorRect] = [$Voice/Bar1, $Voice/Bar2, $Voice/Bar3, $Voice/Bar4, $Voice/Bar5]
+
+# 聲波柱：頻段、換算旋鈕（實機微調靈敏度）。
+const _FREQ_BINS := [[20, 200], [200, 500], [500, 1500], [1500, 3000], [3000, 10000]]
+const _HEIGHT_SCALE := 400.0
+const _MIN_BAR := 5.0
+const _MAX_BAR := 135.0
+const _BAR_BASELINE := 300.0   # 柱子底部 y（Voice 面板內），往上長
 
 func _ready():
 	add_to_group("issue_ui")
@@ -41,8 +48,21 @@ func _ready():
 	_chat_input.text_submitted.connect(func(_t): _send_chat())
 	_chat_send_btn.pressed.connect(_send_chat)
 	$Menu/VoiceButton.pressed.connect(_send_voice_invite)
-	_pitch_slider.value_changed.connect(_on_pitch_changed)
 	$Voice/QuitButton.pressed.connect(_quit_voice)
+	for i in _preset_btns.size():
+		_preset_btns[i].pressed.connect(_on_preset.bind(i))
+
+# 聲波柱：通話中每幀抓頻譜能量更新 5 根柱子高度（由底往上長）。
+func _process(_delta):
+	if not _voice.visible:
+		return
+	for i in _bars.size():
+		var raw = VoiceChat.get_spectrum(_FREQ_BINS[i][0], _FREQ_BINS[i][1])
+		var target = clampf(_MIN_BAR + raw * _HEIGHT_SCALE, _MIN_BAR, _MAX_BAR)
+		var cur = _bars[i].offset_bottom - _bars[i].offset_top
+		var h = lerpf(cur, target, 0.3)
+		_bars[i].offset_top = _BAR_BASELINE - h
+		_bars[i].offset_bottom = _BAR_BASELINE
 
 func _local():
 	for p in get_tree().get_nodes_in_group("players"):
@@ -187,13 +207,17 @@ func _send_voice_invite():
 func open_voice(other_id: int):
 	_voice_peer_id = other_id
 	_voice_title.text = "語音通話中（玩家 %d）" % other_id
-	_pitch_slider.value = 1.0
-	_pitch_label.text = "音高：1.0"
+	_highlight_preset(0)   # VoiceChat 啟動時預設 ANONYMOUS
 	_voice.visible = true
 
-func _on_pitch_changed(v: float):
-	VoiceChat.set_voice_pitch(v)
-	_pitch_label.text = "音高：%.2f" % v
+# 點預設按鈕 → 切換變聲 + 高亮當前選項。
+func _on_preset(idx: int):
+	VoiceChat.apply_voice_filter(idx)
+	_highlight_preset(idx)
+
+func _highlight_preset(idx: int):
+	for i in _preset_btns.size():
+		_preset_btns[i].modulate = Color(1, 1, 1) if i == idx else Color(0.55, 0.55, 0.55)
 
 func _quit_voice():
 	var p = _local()
