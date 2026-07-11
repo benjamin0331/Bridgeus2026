@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.contrib.auth.models import User
 from django.db import models
 from django.db.models import F, Q
 from pgvector.django import VectorField
@@ -560,3 +561,16 @@ class PlatformFeedback(models.Model):
             f"PlatformFeedback response={self.response_id} "
             f"mean_ux={self.mean_ux()} nps={self.nps_score}"
         )
+class Issue(models.Model):
+    author = models.ForeignKey(User, on_delete=models.CASCADE, related_name="issues")
+    title = models.CharField(max_length=255)
+    body = models.TextField(blank=True)
+    stance = models.CharField(max_length=20, null=True, blank=True)
+    emotion = models.FloatField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Issue({self.id}) by user={self.author_id}: {self.title[:40]}"

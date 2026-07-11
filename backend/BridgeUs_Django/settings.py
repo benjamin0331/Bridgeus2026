@@ -83,12 +83,14 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.postgres',
     'corsheaders',
     'channels',
     'rest_framework',
     'rest_framework_simplejwt',
     'api',
     'chat',
+    'apps.summary',
 ]
 
 USE_REDIS_CHANNEL = _env_bool("USE_REDIS_CHANNEL", False)

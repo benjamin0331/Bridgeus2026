@@ -33,6 +33,11 @@ backend/staticfiles/
 backend/.cache/
 backend/media/
 
+# ML classifier weights (~391MB each) — copy in separately, see
+# backend/apps/matching/ml_models/nuclear_node_model/README.md
+backend/apps/matching/ml_models/*/model_macro/model.safetensors
+backend/apps/matching/ml_models/*/model_micro_*/model.safetensors
+
 # Frontend local dependencies / build output
 frontend/node_modules/
 frontend/dist/

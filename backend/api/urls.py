@@ -13,6 +13,10 @@ urlpatterns = [
         views.HistoryConversationDetailView.as_view(),
     ),
     path(
+        'history/conversations/<str:kind>/<str:conversation_id>/semantic-tree/timeline/',
+        views.HistoryConversationSemanticTreeTimelineView.as_view(),
+    ),
+    path(
         'history/conversations/<str:kind>/<str:conversation_id>/semantic-tree/analyze/',
         views.HistoryConversationSemanticTreeAnalyzeView.as_view(),
     ),
@@ -54,6 +58,10 @@ urlpatterns = [
         views.MatchingRoomSemanticTreeView.as_view(),
     ),
     path(
+        'matching/rooms/<str:room_id>/semantic-tree/timeline/',
+        views.MatchingRoomSemanticTreeTimelineView.as_view(),
+    ),
+    path(
         'matching/rooms/<str:room_id>/semantic-tree/analyze/',
         views.MatchingRoomSemanticTreeAnalyzeView.as_view(),
     ),
@@ -73,4 +81,6 @@ urlpatterns = [
         'platform-feedback/',
         views.PlatformFeedbackView.as_view(),
     ),
+    path('guest/', views.GuestLoginView.as_view()),
+    path('issues/', views.IssueListCreateView.as_view()),
 ]

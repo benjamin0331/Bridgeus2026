@@ -1,8 +1,10 @@
 import logging
 import os
+import uuid as _uuid_mod
 from functools import lru_cache
 from uuid import uuid4
 
+from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.db.models import Q
 from django.utils import timezone
@@ -10,6 +12,7 @@ from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTStatelessUserAuthentication
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.matching.services.semantic import build_q9_embedding
 
@@ -18,6 +21,7 @@ from .models import (
     DialogueMatch,
     DialogueSessionRecord,
     DiscomfortReport,
+    Issue,
     MatchStanceDrift,
     PlatformFeedback,
     PostDialogueResponse,
@@ -38,6 +42,7 @@ from .serializers import (
     MatchingRoomMessageCreateSerializer,
     MatchingRoomMessagesSerializer,
     MatchingRoomSemanticTreeSerializer,
+    MatchingRoomSemanticTreeTimelineSerializer,
     MatchingStateSerializer,
     MatchingTopicSerializer,
     PlatformFeedbackSerializer,
@@ -312,23 +317,12 @@ def _resolve_stances(
         user_stance_score=user_stance_score,
     )
 
-    if stance_category == "support":
-        return (
-            "較支持核電",
-            "較反對核電",
-            "認為核電的安全、成本與核廢料風險仍被低估，不應輕率視為能源轉型解方。",
-        )
-    if stance_category == "oppose":
-        return (
-            "較反對核電",
-            "較支持核電",
-            "認為核電在減碳與穩定供電上仍具必要性，不應過早排除。",
-        )
-
+    labels = TOPIC_CONFIGS.get(topic_id, {}).get("stance_labels", {})
+    entry = labels.get(stance_category) or labels.get("neutral") or {}
     return (
-        "立場中立或尚未明確",
-        "提出相反觀點",
-        "會根據使用者當前的考量重點，補上另一側對安全、成本、環境與供電穩定性的判斷。",
+        entry.get("user_label", "立場中立或尚未明確"),
+        entry.get("agent_stance", "提出相反觀點"),
+        entry.get("agent_stance_summary", ""),
     )
 
 
@@ -641,6 +635,11 @@ def _history_ai_summary(record: DialogueSessionRecord) -> dict:
         "kind": "ai",
         "id": record.session_id,
         "session_id": record.session_id,
+        # Alias of session_id — AI sessions don't have a real "room", but
+        # exposing the same key as match conversations lets the frontend
+        # treat both kinds uniformly instead of branching on kind. Computed
+        # here rather than stored, so it's never missing for older records.
+        "room_id": record.session_id,
         "topic_id": record.topic_id,
         "topic_title": record.topic_title,
         "status": record.status,
@@ -1128,6 +1127,71 @@ class HistoryConversationDetailView(APIView):
         )
 
 
+class HistoryConversationSemanticTreeTimelineView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, kind: str, conversation_id: str):
+        from apps.matching.services.semantic_tree import (
+            semantic_tree_session_timeline_payload,
+            semantic_tree_timeline_payload,
+        )
+
+        as_of_message_id = (request.query_params.get("as_of_message_id") or "").strip()
+        if not as_of_message_id:
+            return Response(
+                {"detail": "缺少 as_of_message_id 參數。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if kind == "ai":
+            record = _get_history_ai_record_for_user(
+                session_id=conversation_id,
+                user_id=request.user.id,
+            )
+            if record is None:
+                return Response(
+                    {"detail": "找不到這筆 AI 對話紀錄。"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            session_record = _dialogue_session_cache_payload_from_record(record)
+            payload = semantic_tree_session_timeline_payload(
+                session_record=session_record,
+                session_id=record.session_id,
+                root_name=_semantic_tree_root_name_for_topic_id(record.topic_id),
+                source_message_id=as_of_message_id,
+            )
+        elif kind == "match":
+            match = _get_room_match_for_user(
+                room_id=conversation_id,
+                user_id=request.user.id,
+            )
+            if match is None:
+                return Response(
+                    {"detail": "找不到這個配對房間。"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            payload = semantic_tree_timeline_payload(
+                match=match,
+                root_name=_semantic_tree_root_name(match),
+                current_user_id=request.user.id,
+                source_message_id=as_of_message_id,
+            )
+        else:
+            return Response(
+                {"detail": "kind 必須是 ai 或 match。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if payload is None:
+            return Response(
+                {"detail": "這則訊息還沒有被分析過。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(MatchingRoomSemanticTreeTimelineSerializer(payload).data)
+
+
 class HistoryConversationSemanticTreeAnalyzeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -1409,6 +1473,44 @@ class MatchingRoomSemanticTreeView(APIView):
         return Response(MatchingRoomSemanticTreeSerializer(payload).data)
 
 
+class MatchingRoomSemanticTreeTimelineView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, room_id: str):
+        from apps.matching.services.semantic_tree import semantic_tree_timeline_payload
+
+        as_of_message_id = (request.query_params.get("as_of_message_id") or "").strip()
+        if not as_of_message_id:
+            return Response(
+                {"detail": "缺少 as_of_message_id 參數。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        match = _get_room_match_for_user(room_id=room_id, user_id=request.user.id)
+        if not match:
+            return Response(
+                {"detail": "找不到這個配對房間。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        match = _touch_room_match_for_user_activity(
+            match=match,
+            user_id=request.user.id,
+        )
+        payload = semantic_tree_timeline_payload(
+            match=match,
+            root_name=_semantic_tree_root_name(match),
+            current_user_id=request.user.id,
+            source_message_id=as_of_message_id,
+        )
+        if payload is None:
+            return Response(
+                {"detail": "這則訊息還沒有被分析過。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(MatchingRoomSemanticTreeTimelineSerializer(payload).data)
+
+
 class MatchingRoomSemanticTreeAnalyzeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -1603,3 +1705,66 @@ class PlatformFeedbackView(APIView):
 
         out = PlatformFeedbackOutputSerializer(feedback)
         return Response(out.data, status=status.HTTP_201_CREATED)
+class GuestLoginView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        nickname = (request.data.get("nickname") or "Guest")[:30]
+        username = f"guest_{_uuid_mod.uuid4().hex[:8]}"
+        user = User.objects.create_user(username=username, password=None)
+        user.first_name = nickname
+        user.save(update_fields=["first_name"])
+        refresh = RefreshToken.for_user(user)
+        return Response(
+            {
+                "access": str(refresh.access_token),
+                "refresh": str(refresh),
+                "user_id": user.id,
+                "username": username,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class IssueListCreateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        qs = Issue.objects.all()
+        author_id = request.query_params.get("author")
+        if author_id:
+            qs = qs.filter(author_id=author_id)
+        data = [
+            {
+                "id": i.id,
+                "title": i.title,
+                "body": i.body,
+                "author_id": i.author_id,
+                "created_at": i.created_at,
+            }
+            for i in qs
+        ]
+        return Response(data)
+
+    def post(self, request):
+        title = request.data.get("title", "").strip()
+        if not title:
+            return Response(
+                {"detail": "title 必填"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        issue = Issue.objects.create(
+            author=request.user,
+            title=title,
+            body=request.data.get("body", ""),
+        )
+        return Response(
+            {
+                "id": issue.id,
+                "title": issue.title,
+                "body": issue.body,
+                "author_id": issue.author_id,
+                "created_at": issue.created_at,
+            },
+            status=status.HTTP_201_CREATED,
+        )

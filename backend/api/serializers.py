@@ -206,6 +206,20 @@ class MatchingRoomMessagesSerializer(serializers.Serializer):
     messages = MatchMessageSerializer(many=True)
 
 
+class MatchingRoomSemanticTreeTimelineSerializer(serializers.Serializer):
+    # room_id is always present — for AI sessions it's an alias of session_id
+    # (there's no real "room"), so both conversation kinds can share this one
+    # serializer/shape instead of branching by kind on the frontend.
+    room_id = serializers.CharField(max_length=64)
+    match_id = serializers.IntegerField(required=False, allow_null=True)
+    session_id = serializers.CharField(max_length=64, required=False)
+    topic_id = serializers.IntegerField(allow_null=True)
+    asOfMessageId = serializers.CharField(max_length=64)
+    asOfTimestamp = serializers.CharField(max_length=64)
+    treeData = serializers.JSONField()
+    anchors = serializers.JSONField()
+
+
 class MatchingRoomSemanticTreeSerializer(serializers.Serializer):
     room_id = serializers.CharField(max_length=64, required=False)
     match_id = serializers.IntegerField(required=False)

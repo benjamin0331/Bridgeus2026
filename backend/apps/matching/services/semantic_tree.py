@@ -47,68 +47,79 @@ ANCHOR_DESCRIPTIONS = {
     "anchor_waste": "核廢料處置、最終儲存、地方承擔、長期管理、處置場風險。",
 }
 
+
+def get_topic_anchors(topic_id: int | None) -> list[dict[str, str]]:
+    from api.dialogue_topics import TOPIC_CONFIGS
+    return TOPIC_CONFIGS.get(topic_id or 0, {}).get("anchors") or FIXED_ANCHORS
+
+
+def get_topic_anchor_descriptions(topic_id: int | None) -> dict[str, str]:
+    from api.dialogue_topics import TOPIC_CONFIGS
+    return TOPIC_CONFIGS.get(topic_id or 0, {}).get("anchor_descriptions") or ANCHOR_DESCRIPTIONS
+
 # Internal node ids the model must never emit as a human-readable path segment.
 _INTERNAL_ID_RE = re.compile(r"^(anchor|agent|category|point|virtual)_[a-z0-9_-]+$", re.IGNORECASE)
 
-ANALYSIS_RESPONSE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "items": {
-            "type": "array",
-            "maxItems": MAX_ANALYSIS_ITEMS,
+def _analysis_response_schema(anchors: list[dict[str, str]]) -> dict:
+    return {
+        "type": "object",
+        "properties": {
             "items": {
-                "type": "object",
-                "properties": {
-                    "claimText": {
-                        "type": "string",
-                        "description": "從使用者輸入拆出的單一語意重點。",
+                "type": "array",
+                "maxItems": MAX_ANALYSIS_ITEMS,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "claimText": {
+                            "type": "string",
+                            "description": "從使用者輸入拆出的單一語意重點。",
+                        },
+                        "anchorId": {
+                            "type": "string",
+                            "enum": [anchor["id"] for anchor in anchors],
+                            "description": "最適合的固定第二層分類 id。",
+                        },
+                        "path": {
+                            "type": "array",
+                            "maxItems": MAX_PATH_DEPTH,
+                            "items": {"type": "string"},
+                            "description": "anchor 底下的子分類路徑，不包含 anchor 名稱。可為空陣列。",
+                        },
+                        "pointName": {
+                            "type": "string",
+                            "description": "要顯示在圖上的短節點名稱。",
+                        },
+                        "stance": {
+                            "type": "string",
+                            "description": "支持、反對、中立或混合。",
+                        },
+                        "confidence": {
+                            "type": "number",
+                            "minimum": MIN_CONFIDENCE,
+                            "maximum": 1,
+                            "description": "分類信心，0.55 到 1。低於 0.55 不要輸出。",
+                        },
+                        "rationale": {
+                            "type": "string",
+                            "description": "簡短說明為什麼這樣分類。",
+                        },
                     },
-                    "anchorId": {
-                        "type": "string",
-                        "enum": [anchor["id"] for anchor in FIXED_ANCHORS],
-                        "description": "最適合的固定第二層分類 id。",
-                    },
-                    "path": {
-                        "type": "array",
-                        "maxItems": MAX_PATH_DEPTH,
-                        "items": {"type": "string"},
-                        "description": "anchor 底下的子分類路徑，不包含 anchor 名稱。可為空陣列。",
-                    },
-                    "pointName": {
-                        "type": "string",
-                        "description": "要顯示在圖上的短節點名稱。",
-                    },
-                    "stance": {
-                        "type": "string",
-                        "description": "支持、反對、中立或混合。",
-                    },
-                    "confidence": {
-                        "type": "number",
-                        "minimum": MIN_CONFIDENCE,
-                        "maximum": 1,
-                        "description": "分類信心，0.55 到 1。低於 0.55 不要輸出。",
-                    },
-                    "rationale": {
-                        "type": "string",
-                        "description": "簡短說明為什麼這樣分類。",
-                    },
+                    "required": [
+                        "claimText",
+                        "anchorId",
+                        "path",
+                        "pointName",
+                        "stance",
+                        "confidence",
+                        "rationale",
+                    ],
+                    "additionalProperties": False,
                 },
-                "required": [
-                    "claimText",
-                    "anchorId",
-                    "path",
-                    "pointName",
-                    "stance",
-                    "confidence",
-                    "rationale",
-                ],
-                "additionalProperties": False,
-            },
-        }
-    },
-    "required": ["items"],
-    "additionalProperties": False,
-}
+            }
+        },
+        "required": ["items"],
+        "additionalProperties": False,
+    }
 
 
 class SemanticTreeError(Exception):
@@ -140,43 +151,46 @@ def create_anchor_node(anchor: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def create_initial_tree(root_name: str = "核電") -> dict[str, Any]:
+def create_initial_tree(root_name: str = "核電", anchors: list | None = None) -> dict[str, Any]:
+    resolved = anchors or FIXED_ANCHORS
     return {
         "id": "root",
         "name": root_name or "核電",
         "type": "root",
-        "children": [create_anchor_node(anchor) for anchor in FIXED_ANCHORS],
+        "children": [create_anchor_node(anchor) for anchor in resolved],
     }
 
 
-def create_owner_tree_state(owner_key: str, root_name: str) -> dict[str, Any]:
+def create_owner_tree_state(owner_key: str, root_name: str, anchors: list | None = None) -> dict[str, Any]:
     return {
         "ownerKey": owner_key,
-        "treeData": create_initial_tree(root_name),
+        "treeData": create_initial_tree(root_name, anchors),
         "analyzedSourceIds": [],
         "analysisHistory": [],
     }
 
 
-def _empty_match_state(root_name: str) -> dict[str, Any]:
+def _empty_match_state(root_name: str, anchors: list | None = None) -> dict[str, Any]:
+    resolved = anchors or FIXED_ANCHORS
     return {
         "version": SEMANTIC_TREE_STATE_VERSION,
         "mode": MATCH_TREE_MODE,
-        "anchors": deepcopy(FIXED_ANCHORS),
+        "anchors": deepcopy(resolved),
         "participants": {
-            OWNER_USER_A: create_owner_tree_state(OWNER_USER_A, root_name),
-            OWNER_USER_B: create_owner_tree_state(OWNER_USER_B, root_name),
+            OWNER_USER_A: create_owner_tree_state(OWNER_USER_A, root_name, resolved),
+            OWNER_USER_B: create_owner_tree_state(OWNER_USER_B, root_name, resolved),
         },
     }
 
 
-def _empty_ai_state(root_name: str) -> dict[str, Any]:
+def _empty_ai_state(root_name: str, anchors: list | None = None) -> dict[str, Any]:
+    resolved = anchors or FIXED_ANCHORS
     return {
         "version": SEMANTIC_TREE_STATE_VERSION,
         "mode": AI_TREE_MODE,
-        "anchors": deepcopy(FIXED_ANCHORS),
+        "anchors": deepcopy(resolved),
         "participants": {
-            OWNER_AI_USER: create_owner_tree_state(OWNER_AI_USER, root_name),
+            OWNER_AI_USER: create_owner_tree_state(OWNER_AI_USER, root_name, resolved),
         },
     }
 
@@ -196,14 +210,15 @@ def _ensure_owner_tree_state(
     *,
     owner_key: str,
     root_name: str,
+    anchors: list | None = None,
 ) -> dict[str, Any]:
     if not isinstance(owner_state, dict):
-        owner_state = create_owner_tree_state(owner_key, root_name)
+        owner_state = create_owner_tree_state(owner_key, root_name, anchors)
 
     owner_state["ownerKey"] = owner_key
     tree_data = owner_state.get("treeData")
     if not isinstance(tree_data, dict) or not isinstance(tree_data.get("children"), list):
-        tree_data = create_initial_tree(root_name)
+        tree_data = create_initial_tree(root_name, anchors)
         owner_state["treeData"] = tree_data
 
     if root_name and tree_data.get("name") in {None, "", "核電"}:
@@ -217,11 +232,12 @@ def _ensure_owner_tree_state(
         owner_state["analysisHistory"] = []
 
     _normalize_tree_node_types(tree_data)
-    _ensure_fixed_anchors(tree_data)
+    _ensure_fixed_anchors(tree_data, anchors)
     return owner_state
 
 
 def get_semantic_tree_state(match: DialogueMatch, *, root_name: str) -> dict[str, Any]:
+    anchors = get_topic_anchors(match.topic_id)
     stats = _stats_dict(match)
     state = stats.get(SEMANTIC_TREE_STATS_KEY)
 
@@ -233,19 +249,21 @@ def get_semantic_tree_state(match: DialogueMatch, *, root_name: str) -> dict[str
         or state.get("mode") != MATCH_TREE_MODE
         or not isinstance(state.get("participants"), dict)
     ):
-        return _empty_match_state(root_name)
+        return _empty_match_state(root_name, anchors)
 
-    state["anchors"] = deepcopy(FIXED_ANCHORS)
+    state["anchors"] = deepcopy(anchors)
     participants = state.setdefault("participants", {})
     participants[OWNER_USER_A] = _ensure_owner_tree_state(
         participants.get(OWNER_USER_A),
         owner_key=OWNER_USER_A,
         root_name=root_name,
+        anchors=anchors,
     )
     participants[OWNER_USER_B] = _ensure_owner_tree_state(
         participants.get(OWNER_USER_B),
         owner_key=OWNER_USER_B,
         root_name=root_name,
+        anchors=anchors,
     )
     return state
 
@@ -255,6 +273,7 @@ def get_ai_semantic_tree_state(
     *,
     root_name: str,
 ) -> dict[str, Any]:
+    anchors = get_topic_anchors(session_record.get("topic_id"))
     state = session_record.get(SEMANTIC_TREE_STATS_KEY)
     if (
         not isinstance(state, dict)
@@ -262,14 +281,15 @@ def get_ai_semantic_tree_state(
         or state.get("mode") != AI_TREE_MODE
         or not isinstance(state.get("participants"), dict)
     ):
-        return _empty_ai_state(root_name)
+        return _empty_ai_state(root_name, anchors)
 
-    state["anchors"] = deepcopy(FIXED_ANCHORS)
+    state["anchors"] = deepcopy(anchors)
     participants = state.setdefault("participants", {})
     participants[OWNER_AI_USER] = _ensure_owner_tree_state(
         participants.get(OWNER_AI_USER),
         owner_key=OWNER_AI_USER,
         root_name=root_name,
+        anchors=anchors,
     )
     return state
 
@@ -301,12 +321,13 @@ def _normalize_tree_node_types(node: dict[str, Any], depth: int = 0) -> None:
             _normalize_tree_node_types(child, depth + 1)
 
 
-def _ensure_fixed_anchors(tree_data: dict[str, Any]) -> None:
+def _ensure_fixed_anchors(tree_data: dict[str, Any], anchors: list | None = None) -> None:
+    resolved = anchors or FIXED_ANCHORS
     children = [child for child in tree_data.get("children", []) if isinstance(child, dict)]
     child_by_id = {child.get("id"): child for child in children}
     ordered_children = []
 
-    for anchor in FIXED_ANCHORS:
+    for anchor in resolved:
         node = child_by_id.get(anchor["id"]) or create_anchor_node(anchor)
         node["id"] = anchor["id"]
         node["name"] = anchor["name"]
@@ -328,6 +349,94 @@ def find_node_by_id(node: dict[str, Any] | None, node_id: str) -> dict[str, Any]
         if match:
             return match
     return None
+
+
+def find_nodes_born_from_message(
+    node: dict[str, Any] | None,
+    source_message_id: str,
+) -> list[dict[str, Any]]:
+    """Return every node whose first message (mode == "new") was recorded
+    for `source_message_id` — i.e. the nodes that were created when that
+    message was analyzed, as opposed to nodes it only merged into.
+    """
+    born: list[dict[str, Any]] = []
+    for child in (node or {}).get("children") or []:
+        if not isinstance(child, dict):
+            continue
+        messages = child.get("messages") or []
+        if messages and isinstance(messages[0], dict):
+            first_message = messages[0]
+            if (
+                first_message.get("mode") == "new"
+                and clean_text(first_message.get("sourceMessageId")) == clean_text(source_message_id)
+            ):
+                born.append(child)
+        born.extend(find_nodes_born_from_message(child, source_message_id))
+    return born
+
+
+def resolve_cutoff_for_message(
+    analysis_history: list[dict[str, Any]] | None,
+    source_message_id: str,
+) -> str | None:
+    """Look up the `analyzedAt` timestamp recorded for `source_message_id`
+    in an owner's `analysisHistory` — this is the cutoff to pass to
+    `reconstruct_tree_as_of()` to see the tree "as of" that message, even
+    if the message produced no items of its own.
+    """
+    target_id = clean_text(source_message_id)
+    for entry in analysis_history or []:
+        if isinstance(entry, dict) and clean_text(entry.get("sourceId")) == target_id:
+            return clean_text(entry.get("analyzedAt")) or None
+    return None
+
+
+def reconstruct_tree_as_of(tree: dict[str, Any], cutoff_recorded_at: str) -> dict[str, Any]:
+    """Return a copy of `tree` showing only messages recorded at or before
+    `cutoff_recorded_at`. Nodes aren't repositioned once created, so this
+    is a prune of the current tree rather than a replay from scratch: a
+    node whose messages are all after the cutoff hadn't been created yet
+    and is dropped along with its descendants; a node that had already
+    been created keeps only its messages up to the cutoff, with
+    `claimText` rolled back to match the last of those messages.
+
+    Anchor nodes are never dropped (the UI always shows all fixed anchors)
+    but their `hiddenUntilUsed` flag is recomputed for this cutoff, since
+    the live tree only ever flips it from True to False and never back —
+    an anchor first touched *after* the cutoff must still show as hidden
+    in the snapshot even though it's long since unhidden in the live tree.
+    """
+    cutoff = clean_text(cutoff_recorded_at)
+    snapshot = deepcopy(tree)
+
+    def prune(node: dict[str, Any]) -> None:
+        kept_children = []
+        for child in node.get("children") or []:
+            if not isinstance(child, dict):
+                continue
+            is_anchor = child.get("type") == "anchor"
+            messages = child.get("messages")
+            if messages:
+                visible = [
+                    message
+                    for message in messages
+                    if isinstance(message, dict) and clean_text(message.get("recordedAt")) <= cutoff
+                ]
+                if not visible:
+                    continue
+                child["messages"] = visible
+                if child.get("claimText"):
+                    child["claimText"] = visible[-1].get("text") or child["claimText"]
+            prune(child)
+            if is_anchor:
+                child["hiddenUntilUsed"] = not bool(child.get("children"))
+            elif not messages and not child.get("children"):
+                continue
+            kept_children.append(child)
+        node["children"] = kept_children
+
+    prune(snapshot)
+    return snapshot
 
 
 def find_child_by_name(node: dict[str, Any] | None, name: str) -> dict[str, Any] | None:
@@ -369,29 +478,52 @@ def _looks_like_internal_id(value: Any) -> bool:
     return bool(_INTERNAL_ID_RE.match(clean_text(value)))
 
 
+def _latest_stance(node: dict[str, Any]) -> str:
+    messages = node.get("messages") or []
+    if messages and isinstance(messages[-1], dict):
+        return clean_text(messages[-1].get("stance")) or "中立"
+    return clean_text(node.get("stance")) or "中立"
+
+
 def list_existing_node_names(tree: dict[str, Any] | None) -> str:
-    """Flatten each anchor's existing child names so the model can reuse the
-    exact string and merge synonymous claims instead of spawning near-duplicates.
+    """Flatten each anchor's existing child names (plus, for leaf claim
+    nodes, their current stance and underlying claim) so the model can
+    reuse the exact string and merge synonymous claims — or recognize that
+    a new, opposite-stance claim is actually a stance update on the same
+    discussion axis — instead of spawning near-duplicate/mirror nodes.
     """
     lines = []
     for anchor in (tree or {}).get("children") or []:
         if not isinstance(anchor, dict):
             continue
-        names: list[str] = []
+        entries: list[str] = []
+        seen_labels: set[str] = set()
 
-        def collect(node: dict[str, Any]) -> None:
+        def collect(node: dict[str, Any], path_prefix: list[str]) -> None:
             for child in node.get("children") or []:
                 if not isinstance(child, dict):
                     continue
                 name = clean_text(child.get("name"))
+                child_path = path_prefix + [name] if name else path_prefix
                 if name:
-                    names.append(name)
-                collect(child)
+                    # Include the path prefix so the model can see a node's
+                    # place in the hierarchy (needed to pick the right
+                    # `path` when reusing a node) and so two different nodes
+                    # that happen to share a bare name aren't collapsed into
+                    # one displayed entry.
+                    label = "＞".join(child_path)
+                    if label not in seen_labels:
+                        seen_labels.add(label)
+                        claim = clean_text(child.get("claimText"))
+                        if claim:
+                            entries.append(f"{label}（目前立場：{_latest_stance(child)}；主張：{claim}）")
+                        else:
+                            entries.append(label)
+                collect(child, child_path)
 
-        collect(anchor)
-        if names:
-            unique_names = list(dict.fromkeys(names))
-            lines.append(f"{anchor.get('name')}：{'、'.join(unique_names)}")
+        collect(anchor, [])
+        if entries:
+            lines.append(f"{anchor.get('name')}：{'、'.join(entries)}")
     return "\n".join(lines) if lines else "（目前各分類底下還沒有任何節點）"
 
 
@@ -400,18 +532,20 @@ def build_openai_request(
     text: str,
     tree: dict[str, Any],
     anchors: list[dict[str, str]] | None = None,
+    anchor_descriptions: dict[str, str] | None = None,
     model: str | None = None,
 ) -> dict[str, Any]:
     resolved_anchors = anchors or FIXED_ANCHORS
+    resolved_descriptions = anchor_descriptions or ANCHOR_DESCRIPTIONS
     anchor_list = "\n".join(
-        f"{anchor['id']}: {anchor['name']} - {ANCHOR_DESCRIPTIONS.get(anchor['id'], '核能議題分類。')}"
+        f"{anchor['id']}: {anchor['name']} - {resolved_descriptions.get(anchor['id'], '議題分類。')}"
         for anchor in resolved_anchors
     )
     tree_summary = json.dumps(compact_tree_for_prompt(tree), ensure_ascii=False, indent=2)
 
     prompt_text = "\n".join(
         [
-            "你是「核能議題個人想法脈絡樹」的語意整理 agent，不是逐字拆句工具。",
+            "你是「個人想法脈絡樹」的語意整理 agent，不是逐字拆句工具。",
             "",
             "你的任務：",
             "只整理單一說話者自己的想法脈絡，把這次輸入歸納成少量、高品質、適合放進樹狀圖的語意節點。",
@@ -424,6 +558,10 @@ def build_openai_request(
             "核心原則：",
             f"1. 每次輸入最多輸出 {MAX_ANALYSIS_ITEMS} 個 items。",
             "2. 優先輸出 1 個 item；只有當輸入明確橫跨兩個不同固定分類時才輸出第 2 個。",
+            "   ★ 兩個潛在 item 的 anchorId 若相同，一律合併成一個，不得輸出兩個 item。",
+            "   BAD：「核四建設超支（anchor_economy）＋ 超支是全球現象（anchor_economy）」→ 後者只是佐證，應合併。",
+            "   BAD：「核電低碳（anchor_environment）＋ 脫碳不可或缺（anchor_environment）」→ 同一主張，應合併。",
+            "   BAD：「深地質處置（anchor_waste）＋ 芬蘭昂卡洛（anchor_waste）」→ 昂卡洛是例子，不是獨立論點，應合併。",
             "3. 不要因為一句話裡有「例如、等等、包含、以及」就拆成很多節點。",
             "4. 相近意思要合併成同一個 claim。",
             "5. 不要把原因、例子、補充說明拆成獨立節點，除非它本身是另一個明確議題。",
@@ -437,6 +575,19 @@ def build_openai_request(
             "- 範例：「核能較低污染」「核電減少空污排放」「核電比火力乾淨」核心主張都是『核電污染較低』，必須合併成同一個節點，不可變成三個。",
             "- 範例：「核電風險不可控」「核能事故後果嚴重」核心主張都是『核安風險高』，應合併。",
             "- 寧可掛到既有節點，也不要為了細微差異新增節點；同一則訊息內也不要同時輸出兩個意思相近的 items。",
+            "",
+            # NOTE: this rule and 合併規則 above both resolve to the same action
+            # (reuse the existing node's exact pointName/path) — see
+            # find_child_by_name / apply_analysis_items_to_tree below, which
+            # merge purely by exact-name match regardless of *why* the model
+            # decided to reuse the name. The model doesn't need to classify
+            # which rule "applies"; either one converges on the same output.
+            "立場更新規則（新增，務必遵守）：",
+            "- 有些新主張和某個既有節點在討論『同一個討論維度』（例如都在回答『核廢問題能不能解決』），但這次的立場和既有節點不同（例如既有節點是『反對』，這次語氣是『支持』）。",
+            "- 這種情況屬於『立場更新』，不是新論點：請直接重用該既有節點『完全相同的 pointName 與 path』，讓系統把這次的立場記錄併入同一個節點的歷史，不要另外新增一個看起來相反的節點。",
+            "- 判斷依據是『討論的是不是同一個潛在問題』，不是『立場是否相同』；立場不同不代表要拆成新節點。",
+            "- 範例：現有節點『核廢問題待解（目前立場：反對；主張：核廢處理方式尚未成熟）』，本次輸入『瑞典的地下處置方式已經證實可行』→ 屬於同一討論維度（核廢問題能否解決）、立場轉為支持，應輸出 pointName＝『核廢問題待解』（沿用既有節點），不要新建『核廢處理有解方』這類新節點。",
+            "- 若不確定屬於合併規則還是立場更新規則，效果相同：兩者都指向重用既有 pointName，不需要為了分辨規則類型而猶豫。",
             "",
             "分類規則：",
             "- anchorId 必須是最主要的議題分類。",
@@ -465,6 +616,9 @@ def build_openai_request(
             "- 長度建議 6 到 12 個中文字。",
             "- 不要使用完整句子。",
             "- 不要使用「等等」、「很多問題」、「有疑慮」這種模糊名稱。",
+            "- pointName 必須包含至少一個具體名詞或實體（例如地名、技術名稱、政策名稱、數據），不能只是抽象的立場摘要。",
+            "  BAD：「核廢問題待解」「有解方」「風險很高」→ 太抽象，看不出實質內容。",
+            "  GOOD：「瑞典地下處置方案」「核四延役爭議」「反應爐被動安全設計」→ 具體、可辨識。",
             "- 不要和 path 最後一層完全同名。",
             "",
             "confidence 規則：",
@@ -507,7 +661,7 @@ def build_openai_request(
                 "type": "json_schema",
                 "name": "semantic_tree_analysis",
                 "strict": True,
-                "schema": ANALYSIS_RESPONSE_SCHEMA,
+                "schema": _analysis_response_schema(resolved_anchors),
             }
         },
     }
@@ -523,6 +677,8 @@ def validate_analysis_items(
     payload: dict[str, Any],
     tree: dict[str, Any],
     anchors: list[dict[str, str]] | None = None,
+    *,
+    min_confidence: float = MIN_CONFIDENCE,
 ) -> dict[str, list[dict[str, Any]]]:
     resolved_anchors = anchors or FIXED_ANCHORS
     anchor_map = {anchor["id"]: anchor for anchor in resolved_anchors}
@@ -560,8 +716,8 @@ def validate_analysis_items(
         if confidence != confidence:
             invalid_items.append(_item_error(raw_item, "missing confidence"))
             continue
-        if confidence < MIN_CONFIDENCE:
-            invalid_items.append(_item_error(raw_item, f"confidence below {MIN_CONFIDENCE}"))
+        if confidence < min_confidence:
+            invalid_items.append(_item_error(raw_item, f"confidence below {min_confidence}"))
             continue
         if confidence > 1:
             invalid_items.append(_item_error(raw_item, "confidence must be 1 or lower"))
@@ -604,7 +760,23 @@ def validate_analysis_items(
             }
         )
 
-    return {"items": items, "invalidItems": invalid_items}
+    # 同一則訊息輸出兩個相同 anchorId 時，只保留信心最高的那一個。
+    # Prompt 規則是機率性的，這裡做程式層兜底，確保每個 anchor 最多貢獻一個節點。
+    seen_anchors: dict[str, dict] = {}
+    deduped_items: list[dict] = []
+    for item in items:
+        existing = seen_anchors.get(item["anchorId"])
+        if existing is None:
+            seen_anchors[item["anchorId"]] = item
+            deduped_items.append(item)
+        elif item["confidence"] > existing["confidence"]:
+            invalid_items.append(_item_error(existing, f"duplicate anchorId {item['anchorId']}: kept higher-confidence item"))
+            seen_anchors[item["anchorId"]] = item
+            deduped_items[deduped_items.index(existing)] = item
+        else:
+            invalid_items.append(_item_error(item, f"duplicate anchorId {item['anchorId']}: dropped in favor of higher-confidence item"))
+
+    return {"items": deduped_items, "invalidItems": invalid_items}
 
 
 def _max_generated_counter(node: dict[str, Any] | None) -> int:
@@ -616,12 +788,20 @@ def _max_generated_counter(node: dict[str, Any] | None) -> int:
     return max(current, child_max)
 
 
-def _create_generated_point_node(name: str, counter: int, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+def _create_generated_point_node(
+    name: str,
+    counter: int,
+    metadata: dict[str, Any] | None = None,
+    *,
+    message_id: str = "",
+) -> dict[str, Any]:
     return {
         "id": f"agent_{counter}",
         "name": name,
         "type": "point",
         "children": [],
+        "created_at": timezone.now().isoformat(),
+        "message_id": message_id,
         **(metadata or {}),
     }
 
@@ -667,7 +847,7 @@ def _append_node_message(
             **_message_source_metadata(source_message),
         }
     )
-    if not node.get("claimText") and mode != "category":
+    if text and mode != "category":
         node["claimText"] = text
     return True
 
@@ -704,6 +884,7 @@ def apply_analysis_items_to_tree(
                     "generatedBy": "openai",
                     "sourceClaim": item.get("claimText"),
                 },
+                message_id=clean_text((source_message or {}).get("id")),
             )
             parent_node.setdefault("children", []).append(new_node)
             parent_node = new_node
@@ -726,6 +907,7 @@ def apply_analysis_items_to_tree(
                     "confidence": item.get("confidence"),
                     "rationale": item.get("rationale"),
                 },
+                message_id=clean_text((source_message or {}).get("id")),
             )
             parent_node.setdefault("children", []).append(target_node)
             mode = "new"
@@ -787,6 +969,7 @@ def analyze_with_openai(
     text: str,
     tree: dict[str, Any],
     anchors: list[dict[str, str]] | None = None,
+    anchor_descriptions: dict[str, str] | None = None,
     api_key: str | None = None,
     model: str | None = None,
 ) -> dict[str, Any]:
@@ -803,6 +986,7 @@ def analyze_with_openai(
         text=cleaned_text,
         tree=tree,
         anchors=anchors or FIXED_ANCHORS,
+        anchor_descriptions=anchor_descriptions,
         model=resolved_model,
     )
     endpoint = "https://api.openai.com/v1/responses"
@@ -831,6 +1015,55 @@ def analyze_with_openai(
         **validate_analysis_items(parsed, tree, anchors or FIXED_ANCHORS),
         "model": resolved_model,
     }
+
+
+LOCAL_CLASSIFIER_TOPIC_IDS = {102}
+
+# MIN_CONFIDENCE (0.55) was tuned for an LLM's self-reported meta-confidence,
+# which tends to run high. The local classifier's confidence is a raw softmax
+# argmax probability over a 36-way cluster space, where even a correct call
+# often lands around 0.5 — reusing MIN_CONFIDENCE would silently drop most of
+# its output. Tune this independently as real traffic comes in.
+LOCAL_CLASSIFIER_MIN_CONFIDENCE = 0.35
+
+
+def uses_local_classifier(topic_id: int | None) -> bool:
+    return topic_id in LOCAL_CLASSIFIER_TOPIC_IDS
+
+
+def analyze_text_for_tree(
+    *,
+    topic_id: int | None,
+    text: str,
+    tree: dict[str, Any],
+    anchors: list[dict[str, str]] | None = None,
+    anchor_descriptions: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Dispatch node analysis by topic: topic 102 (nuclear energy) uses the
+    locally fine-tuned classifier pipeline; every other topic keeps using the
+    generative OpenAI path.
+    """
+    resolved_anchors = anchors or FIXED_ANCHORS
+    if uses_local_classifier(topic_id):
+        from apps.matching.services import nuclear_node_classifier
+
+        candidate_items = nuclear_node_classifier.build_candidate_items(text, resolved_anchors)
+        return {
+            **validate_analysis_items(
+                {"items": candidate_items},
+                tree,
+                resolved_anchors,
+                min_confidence=LOCAL_CLASSIFIER_MIN_CONFIDENCE,
+            ),
+            "model": "local-bert-pipeline",
+        }
+
+    return analyze_with_openai(
+        text=text,
+        tree=tree,
+        anchors=resolved_anchors,
+        anchor_descriptions=anchor_descriptions,
+    )
 
 
 def _message_to_source(message) -> dict[str, Any]:
@@ -941,6 +1174,73 @@ def semantic_tree_payload(
     }
 
 
+def semantic_tree_timeline_payload(
+    *,
+    match: DialogueMatch,
+    root_name: str,
+    current_user_id: int | None,
+    source_message_id: str,
+) -> dict[str, Any] | None:
+    """Reconstruct the current user's tree as it looked right after
+    `source_message_id` was analyzed. Returns None if that message hasn't
+    been analyzed yet (or doesn't belong to this participant), so the
+    caller can turn that into a 404.
+    """
+    state = get_semantic_tree_state(match, root_name=root_name)
+    owner_key = _owner_key_for_user(match, current_user_id)
+    owner_state = state["participants"][owner_key]
+
+    cutoff = resolve_cutoff_for_message(owner_state["analysisHistory"], source_message_id)
+    if cutoff is None:
+        return None
+
+    snapshot = reconstruct_tree_as_of(owner_state["treeData"], cutoff)
+    return {
+        "room_id": match.room_id,
+        "match_id": match.id,
+        "topic_id": match.topic_id,
+        "asOfMessageId": clean_text(source_message_id),
+        "asOfTimestamp": cutoff,
+        "treeData": snapshot,
+        "anchors": state["anchors"],
+    }
+
+
+def semantic_tree_session_timeline_payload(
+    *,
+    session_record: dict[str, Any],
+    session_id: str,
+    root_name: str,
+    source_message_id: str,
+) -> dict[str, Any] | None:
+    """AI-session equivalent of semantic_tree_timeline_payload(): reconstruct
+    the tree as it looked right after `source_message_id` (an AIConversation
+    turn id) was analyzed. Returns None if that turn hasn't been analyzed
+    yet, so the caller can turn that into a 404.
+
+    `room_id` mirrors `session_id` here — AI sessions don't have a real
+    room, but exposing the same key lets the frontend/serializer treat both
+    conversation kinds uniformly instead of branching on kind everywhere.
+    """
+    state = get_ai_semantic_tree_state(session_record, root_name=root_name)
+    owner_state = state["participants"][OWNER_AI_USER]
+
+    cutoff = resolve_cutoff_for_message(owner_state["analysisHistory"], source_message_id)
+    if cutoff is None:
+        return None
+
+    snapshot = reconstruct_tree_as_of(owner_state["treeData"], cutoff)
+    return {
+        "session_id": session_id,
+        "room_id": session_id,
+        "topic_id": session_record.get("topic_id"),
+        "asOfMessageId": clean_text(source_message_id),
+        "asOfTimestamp": cutoff,
+        "treeData": snapshot,
+        "anchors": state["anchors"],
+    }
+
+
 def semantic_tree_session_payload(
     *,
     session_record: dict[str, Any],
@@ -991,6 +1291,7 @@ def analyze_pending_room_messages(
     with transaction.atomic():
         locked_match = DialogueMatch.objects.select_for_update().get(pk=match.pk)
         state = get_semantic_tree_state(locked_match, root_name=root_name)
+        anchor_descriptions = get_topic_anchor_descriptions(locked_match.topic_id)
         current_owner_key = _owner_key_for_user(locked_match, current_user_id)
         pending_messages = [
             (message, owner_key)
@@ -1002,17 +1303,23 @@ def analyze_pending_room_messages(
             not in set(state["participants"][owner_key]["analyzedSourceIds"])
         ][: semantic_tree_batch_size()]
 
-        if pending_messages and not get_openai_api_key():
+        if (
+            pending_messages
+            and not uses_local_classifier(locked_match.topic_id)
+            and not get_openai_api_key()
+        ):
             raise MissingOpenAIApiKey("server 缺少 OPENAI_API_KEY，無法呼叫 OpenAI。")
 
         analyzed_count = 0
         for message, owner_key in pending_messages:
             owner_state = state["participants"][owner_key]
             source_message = _message_to_source(message)
-            result = analyze_with_openai(
+            result = analyze_text_for_tree(
+                topic_id=locked_match.topic_id,
                 text=message.content,
                 tree=owner_state["treeData"],
                 anchors=state["anchors"],
+                anchor_descriptions=anchor_descriptions,
             )
             apply_result = apply_analysis_items_to_tree(
                 owner_state["treeData"],
@@ -1051,6 +1358,7 @@ def analyze_pending_ai_conversations(
     root_name: str,
 ) -> dict[str, Any]:
     state = get_ai_semantic_tree_state(session_record, root_name=root_name)
+    anchor_descriptions = get_topic_anchor_descriptions(session_record.get("topic_id"))
     owner_state = state["participants"][OWNER_AI_USER]
     analyzed_ids = set(owner_state["analyzedSourceIds"])
     pending_turns = [
@@ -1062,16 +1370,22 @@ def analyze_pending_ai_conversations(
         if clean_text(turn.user_prompt) and clean_text(turn.id) not in analyzed_ids
     ][: semantic_tree_batch_size()]
 
-    if pending_turns and not get_openai_api_key():
+    if (
+        pending_turns
+        and not uses_local_classifier(session_record.get("topic_id"))
+        and not get_openai_api_key()
+    ):
         raise MissingOpenAIApiKey("server 缺少 OPENAI_API_KEY，無法呼叫 OpenAI。")
 
     analyzed_count = 0
     for turn in pending_turns:
         source_message = _ai_turn_to_source(turn)
-        result = analyze_with_openai(
+        result = analyze_text_for_tree(
+            topic_id=session_record.get("topic_id"),
             text=turn.user_prompt,
             tree=owner_state["treeData"],
             anchors=state["anchors"],
+            anchor_descriptions=anchor_descriptions,
         )
         apply_result = apply_analysis_items_to_tree(
             owner_state["treeData"],
