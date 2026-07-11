@@ -843,7 +843,7 @@ class AIConversationListCreate(generics.ListCreateAPIView):
         serializer.save(user=self.request.user)
 
 
-class AIConversationDetail(generics.RetrieveUpdateDestroyAPIView):
+class AIConversationDetail(generics.RetrieveAPIView):
     serializer_class = AIConversationSerializer
     permission_classes = [permissions.IsAuthenticated]
 

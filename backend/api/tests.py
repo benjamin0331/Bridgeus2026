@@ -612,6 +612,37 @@ class DialogueSessionApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_ai_conversation_api_hides_embedding_and_detail_is_read_only(self):
+        conversation = AIConversation.objects.create(
+            user=self.user,
+            session_id="session-list-api",
+            topic_id=102,
+            user_prompt="核能可以補足再生能源不穩定",
+            ai_response="AI 回覆",
+            dialogue_phase="engagement",
+            embedding=make_test_embedding(1),
+        )
+
+        list_response = self.client.get("/api/conversations/")
+        self.assertEqual(list_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(list_response.data), 1)
+        self.assertNotIn("embedding", list_response.data[0])
+        self.assertEqual(list_response.data[0]["ai_response"], "AI 回覆")
+
+        detail_response = self.client.get(f"/api/conversations/{conversation.id}/")
+        self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
+        self.assertNotIn("embedding", detail_response.data)
+        self.assertEqual(detail_response.data["dialogue_phase"], "engagement")
+
+        put_response = self.client.put(
+            f"/api/conversations/{conversation.id}/",
+            {"user_prompt": "更新內容"},
+            format="json",
+        )
+        delete_response = self.client.delete(f"/api/conversations/{conversation.id}/")
+        self.assertEqual(put_response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        self.assertEqual(delete_response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
     def test_ai_semantic_tree_analyzes_only_user_prompts(self):
         create_response = self.client.post(
             "/api/dialogue/sessions/",
