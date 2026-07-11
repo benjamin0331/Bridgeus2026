@@ -22,6 +22,8 @@ var _banner_box: PanelContainer
 var _banner: Label
 var _banner_sb: StyleBoxFlat
 var _nearby: Array = []   # other player nodes currently in range (authority only)
+var _seated := false          # 坐上木樁等待配對時鎖住移動
+var _original_pos := Vector2.ZERO
 
 func _enter_tree():
 	# Name carries the network id (set by the spawner). Owner = authority.
@@ -42,6 +44,12 @@ func _ready():
 		if camera:
 			camera.enabled = false
 		return
+	# 出生點：由 authority 自己定位，MultiplayerSynchronizer 再複製給其他 peer。
+	# （若在 game.gd 的 _spawn_player 設，join 的玩家會被自己 authority 的同步值
+	#   ——場景預設座標——蓋掉，所以一定要在這裡、由 authority 自己設。）
+	var spawn = get_parent().get_node_or_null("SpawnPoint")
+	if spawn:
+		position = spawn.position
 	# Only the locally controlled player needs proximity detection + UI.
 	_make_proximity_area()
 
@@ -49,9 +57,17 @@ func _physics_process(_delta):
 	if not is_multiplayer_authority():
 		return
 
-	# Don't drive movement with WASD while the user is typing in a UI field.
+	# 坐上木樁等待配對中：鎖住移動，直到配對成功或取消。
+	if _seated:
+		velocity = Vector2.ZERO
+		move_and_slide()
+		return
+
+	# Don't drive movement with WASD while typing in a field, or while the
+	# read-issue panel is open (must close it before moving again).
 	var focus = get_viewport().gui_get_focus_owner()
-	if focus is LineEdit or focus is TextEdit:
+	var ui = _ui()
+	if focus is LineEdit or focus is TextEdit or (ui and ui.blocks_movement()):
 		velocity = Vector2.ZERO
 		move_and_slide()
 		return
@@ -141,6 +157,27 @@ func _refresh_menu():
 		return
 	var target = _nearby[0] if _nearby.size() > 0 else null
 	ui.show_interaction(target)
+
+# --- 木樁座位（本地方法，由 game.gd 的 apply_seat/apply_unseat 呼叫）---------
+# 位置由 MultiplayerSynchronizer 從 authority 複製，所以只在 authority peer 傳送。
+func sit_at(pos: Vector2) -> void:
+	# 坐著時畫在樹幹之上。用絕對 z（z_as_relative=false）跳出 root 的 y-sort z 分層，
+	# 否則靠下（y 較大）的樹幹在 y-sort 裡仍會蓋過玩家。所有 peer 都套用。
+	z_as_relative = false
+	z_index = 20
+	if not is_multiplayer_authority():
+		return
+	_original_pos = global_position
+	global_position = pos
+	_seated = true
+
+func stand_up() -> void:
+	z_index = 0
+	z_as_relative = true   # 還原成一般（跟世界一起 y-sort）
+	if not is_multiplayer_authority():
+		return
+	global_position = _original_pos
+	_seated = false
 
 # --- issue submit (authority broadcasts to everyone) ----------------------
 func submit_issue(title: String, body: String) -> void:

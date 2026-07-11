@@ -52,6 +52,17 @@ func _post(path: String, payload: Dictionary, with_auth: bool, done: Callable) -
 		http.queue_free()
 		done.call(0, {})   # code 0 = 連請求都送不出去（網路層失敗）
 
+# --- 議題配對（後端接手前為 no-op）---------------------------------------
+# 兩位玩家在遊戲內選同一議題並坐上木樁後呼叫。後端之後在此建立 match room，
+# 回傳 { room_id, ws_url } 供跳轉網頁聊天室。規格見 docs/topic-match-backend.md。
+# callback 形如 func(code: int, data: Dictionary)。
+func request_topic_match(topic: String, peer_ids: Array, callback := Callable()) -> void:
+	print("[Backend stub] request_topic_match topic=%s peers=%s" % [topic, str(peer_ids)])
+	# TODO(後端)：POST /api/matching/rooms/ {topic_id, users} → 回傳 room_id / ws_url
+	if callback.is_valid():
+		callback.call(0, {})   # code 0 = stub，尚未接後端
+
+
 # --- 保留：分析 hook（後端尚未支援，先放 null） --------------------------
 func analyze_stance(_title: String, _body: String):
 	return null

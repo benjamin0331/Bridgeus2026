@@ -15,6 +15,7 @@ var suppress_menu := false     # game.gd raises this while the submit form is op
 @onready var _read: Panel = $Read
 @onready var _read_title: Label = $Read/ReadTitle
 @onready var _read_body: Label = $Read/ReadBody
+@onready var _read_close: Button = $Read/CloseButton
 @onready var _invite: Panel = $Invite
 @onready var _invite_label: Label = $Invite/InviteLabel
 @onready var _chat: Panel = $Chat
@@ -58,6 +59,10 @@ func _update_menu():
 	_menu_title.text = "議題：" + t
 	_menu.visible = true
 
+# 讀議題面板開啟時鎖住移動，關掉才能動。
+func blocks_movement() -> bool:
+	return _read.visible
+
 func _open_read():
 	if _target == null:
 		return
@@ -66,8 +71,19 @@ func _open_read():
 		return
 	_read_title.text = _target.issue_title
 	_read_body.text = _target.issue_body if _target.issue_body != "" else "（沒有補充內容）"
+	_layout_read()   # 聊天開著時右邊縮短，不與聊天視窗相撞
 	_read.visible = true
 	_update_menu()
+
+# 聊天視窗從 offset_left=840 起，議題面板開著就把右緣縮到 820 留間距；否則用全寬 1140。
+func _layout_read():
+	var right := 820.0 if _chat.visible else 1140.0
+	_read.offset_right = right
+	var inner := right - _read.offset_left   # 面板內部可用寬度
+	_read_title.offset_right = inner - 24
+	_read_body.offset_right = inner - 24
+	_read_close.offset_left = inner - 120
+	_read_close.offset_right = inner
 
 func _close_read():
 	_read.visible = false
@@ -99,6 +115,7 @@ func _answer_invite(accepted: bool):
 func open_chat(other_id: int):
 	_chat_peer_id = other_id
 	_chat.visible = true
+	_layout_read()   # 議題面板若已開著，縮短以讓出聊天視窗空間
 	_set_chat_active(true)
 	_chat_input.grab_focus()
 
@@ -112,6 +129,7 @@ func _close_chat():
 	_chat.visible = false
 	_chat_peer_id = -1
 	_set_chat_active(false)
+	_layout_read()   # 聊天關了，議題面板恢復全寬
 
 func peer_left_chat(from_id: int):
 	if not _chat.visible or from_id != _chat_peer_id:
