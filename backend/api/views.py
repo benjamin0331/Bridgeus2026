@@ -43,15 +43,18 @@ from .serializers import (
     PostDialogueResponseSerializer,
 )
 from .services.dialogue_session import (
-    _cache_dialogue_session_record,
     _dialogue_session_cache_payload_from_record,
     _dialogue_session_response_payload,
     _get_dialogue_runtime,
-    _persist_dialogue_session_record,
     _restore_dialogue_session_record_for_user,
     _update_ai_session_stance_drift,
     _build_topic_config,
+    create_dialogue_session_record,
     get_dialogue_agent,
+    invalidate_dialogue_session_cache,
+    session_metadata,
+    update_semantic_tree_state,
+    update_session_metadata,
 )
 from .services.history import (
     _get_history_ai_record_for_user,
@@ -168,13 +171,13 @@ class DialogueSessionCreateView(APIView):
         )
 
         session_id = uuid4().hex
-        session_record = {
-            "user_id": request.user.id,
-            "session_id": session_id,
-            "topic_id": validated["topic_id"],
-            "topic_title": topic_config["topic"],
-            "collection_name": topic_config["collection_name"],
-            "survey_context": {
+        create_dialogue_session_record(
+            user_id=request.user.id,
+            session_id=session_id,
+            topic_id=validated["topic_id"],
+            topic_title=topic_config["topic"],
+            collection_name=topic_config["collection_name"],
+            survey_context={
                 "survey_answers": validated.get("survey_answers", {}),
                 "survey_open_answers": topic_config["survey_open_answers"],
                 "semantic_vector_interface": topic_config[
@@ -182,10 +185,8 @@ class DialogueSessionCreateView(APIView):
                 ],
                 "q9_embedding": topic_config["q9_embedding"],
             },
-            "session": session.to_dict(),
-        }
-        _cache_dialogue_session_record(session_record)
-        _persist_dialogue_session_record(session_record)
+            metadata=session_metadata(session, stance_drift=None),
+        )
 
         return Response(
             {
@@ -325,6 +326,7 @@ class DialogueSessionReplyView(APIView):
                 session_id,
                 session_record["collection_name"],
             )
+            invalidate_dialogue_session_cache(session_id)
             return Response(
                 {
                     "detail": "目前無法取得 AI 回覆，請稍後再試。"
@@ -336,17 +338,25 @@ class DialogueSessionReplyView(APIView):
 
         chunks = split_into_chunks(reply)
         session.add_agent_message(reply)
-        session_record["session"] = session.to_dict()
-        saved_turn.ai_response = reply
-        saved_turn.dialogue_phase = session.dialogue_phase.value
-        saved_turn.save(update_fields=["ai_response", "dialogue_phase"])
+        # Drift must be computed on the read-through metadata (still holding
+        # the previous stance_drift) before it's overwritten below — otherwise
+        # previous_value is always None and direction is always "stable".
         stance_drift = _update_ai_session_stance_drift(
             session_record=session_record,
             session_id=session_id,
             user_id=request.user.id,
         )
-        _cache_dialogue_session_record(session_record)
-        _persist_dialogue_session_record(session_record)
+        session_record["session"] = session.to_dict()
+        session_record["session"]["stance_drift"] = stance_drift
+        saved_turn.ai_response = reply
+        saved_turn.dialogue_phase = session.dialogue_phase.value
+        saved_turn.save(update_fields=["ai_response", "dialogue_phase"])
+        update_session_metadata(
+            session_id=session_id,
+            user_id=request.user.id,
+            metadata=session_metadata(session, stance_drift=stance_drift),
+        )
+        invalidate_dialogue_session_cache(session_id)
 
         return Response(
             {
@@ -423,8 +433,12 @@ class DialogueSessionSemanticTreeAnalyzeView(APIView):
                 status=exc.status_code,
             )
 
-        _cache_dialogue_session_record(session_record)
-        _persist_dialogue_session_record(session_record)
+        update_semantic_tree_state(
+            session_id=session_id,
+            user_id=request.user.id,
+            semantic_tree=session_record.get("semantic_tree") or {},
+        )
+        invalidate_dialogue_session_cache(session_id)
         return Response(MatchingRoomSemanticTreeSerializer(payload).data)
 
 
@@ -606,7 +620,7 @@ class HistoryConversationSemanticTreeAnalyzeView(APIView):
 
             record.semantic_tree_state = session_record.get("semantic_tree") or {}
             record.save(update_fields=["semantic_tree_state", "updated_at"])
-            _cache_dialogue_session_record(session_record)
+            invalidate_dialogue_session_cache(record.session_id)
             return Response(
                 {
                     **_history_ai_detail(record),

@@ -9,7 +9,6 @@ from asgiref.sync import sync_to_async
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 from django.contrib.auth import get_user_model
-from django.core.cache import cache
 from django.db.models import Q
 from django.utils import timezone
 
@@ -34,7 +33,6 @@ from chat.services.emotion import aget_analyze_emotion
 from chat.services.filter import check_content_sync
 
 User = get_user_model()
-SESSION_TTL_SECONDS = 60 * 60 * 12
 DEFAULT_AI_ASSIST_TIMEOUT_SECONDS = 2.0
 logger = logging.getLogger(__name__)
 
@@ -59,10 +57,6 @@ def ai_assist_timeout_seconds() -> float:
     except (TypeError, ValueError):
         return DEFAULT_AI_ASSIST_TIMEOUT_SECONDS
     return max(0.0, timeout)
-
-
-def _session_cache_key(session_id: str) -> str:
-    return f"dialogue_session:{session_id}"
 
 
 def _query_value(scope, key: str) -> str | None:
@@ -121,14 +115,10 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
         from apps.matching.services.ai_agent import DialoguePhase, DialogueSession
         from api.services.dialogue_session import get_dialogue_agent
 
-        cache_key = _session_cache_key(self.session_id)
-        session_record = await sync_to_async(cache.get)(cache_key)
-
+        session_record = await self._get_session_record()
         if not session_record:
-            session_record = await self._get_session_record()
-            if not session_record:
-                await self._send_error("找不到對話 session，請重新建立對話。")
-                return
+            await self._send_error("找不到對話 session，請重新建立對話。")
+            return
 
         session = DialogueSession.from_dict(session_record["session"])
         session.add_user_message(user_message)
@@ -145,6 +135,12 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
             user_message=user_message,
             dialogue_phase=session.dialogue_phase.value,
         )
+        if saved_turn is None:
+            # Single source of truth is AIConversation turns; a turn that
+            # never reached the DB doesn't exist, so don't let the user keep
+            # talking into a conversation the system can't remember.
+            await self._send_error("目前無法記錄您的訊息，請重試。")
+            return
 
         agent = get_dialogue_agent(session_record["collection_name"])
         full_response = ""
@@ -166,23 +162,24 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
                 self.session_id,
                 session_record.get("collection_name"),
             )
+            await self._invalidate_session_cache()
             await self._send_error("AI 回應中斷，請重試。")
             return
 
         session.add_agent_message(full_response)
+        # Drift must be computed on the read-through metadata (still holding
+        # the previous stance_drift) before it's overwritten below — otherwise
+        # previous_value is always None and direction is always "stable".
+        stance_drift = await self._update_session_stance_drift(session_record)
         session_record["session"] = session.to_dict()
+        session_record["session"]["stance_drift"] = stance_drift
         await self._update_ai_conversation(
             saved_turn=saved_turn,
             ai_response=full_response,
             dialogue_phase=session.dialogue_phase.value,
         )
-        stance_drift = await self._update_session_stance_drift(session_record)
-        await sync_to_async(cache.set)(
-            cache_key,
-            session_record,
-            timeout=SESSION_TTL_SECONDS,
-        )
-        await self._persist_session_record(session_record)
+        await self._update_session_metadata(session, stance_drift)
+        await self._invalidate_session_cache()
 
         await self.send(json.dumps({"type": "agent_stream_end", "stance_drift": stance_drift}))
 
@@ -208,17 +205,26 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
             logger.exception("AI stance drift failed for session %s.", self.session_id)
             return (session_record.get("session") or {}).get("stance_drift")
 
-    async def _persist_session_record(self, session_record: dict):
-        from api.services.dialogue_session import _persist_dialogue_session_record
+    async def _update_session_metadata(self, session, stance_drift: dict | None):
+        from api.services.dialogue_session import session_metadata, update_session_metadata
 
         try:
-            await sync_to_async(_persist_dialogue_session_record)(session_record)
+            await sync_to_async(update_session_metadata)(
+                session_id=self.session_id,
+                user_id=self.user.id,
+                metadata=session_metadata(session, stance_drift=stance_drift),
+            )
         except Exception:
             logger.exception(
-                "Failed to persist AI session record session=%s user=%s.",
+                "Failed to persist AI session metadata session=%s user=%s.",
                 self.session_id,
                 self.user.id,
             )
+
+    async def _invalidate_session_cache(self):
+        from api.services.dialogue_session import invalidate_dialogue_session_cache
+
+        await sync_to_async(invalidate_dialogue_session_cache)(self.session_id)
 
     async def _create_ai_conversation(
         self,

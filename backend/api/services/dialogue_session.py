@@ -3,6 +3,7 @@ import os
 from functools import lru_cache
 
 from django.core.cache import cache
+from django.db import transaction
 from django.utils import timezone
 
 from apps.matching.services.semantic import build_q9_embedding
@@ -36,7 +37,21 @@ def _cache_dialogue_session_record(session_record: dict) -> None:
     )
 
 
-def _rebuild_session_state_from_turns(record: DialogueSessionRecord) -> dict:
+def invalidate_dialogue_session_cache(session_id: str) -> None:
+    cache.delete(_session_cache_key(session_id))
+
+
+def session_metadata(session, *, stance_drift: dict | None) -> dict:
+    """DB-persisted projection of a DialogueSession: to_dict() minus history,
+    plus the last-measured stance_drift. History lives only in AIConversation
+    turns; this is what update_session_metadata writes to session_state."""
+    data = session.to_dict()
+    data.pop("history", None)
+    data["stance_drift"] = stance_drift
+    return data
+
+
+def build_session_state_from_turns(record: DialogueSessionRecord) -> dict:
     session_state = (record.session_state or {}).copy()
     turns = AIConversation.objects.filter(
         user=record.user,
@@ -55,6 +70,13 @@ def _rebuild_session_state_from_turns(record: DialogueSessionRecord) -> dict:
 
     if history:
         session_state["history"] = history
+    elif session_state.get("history"):
+        logger.warning(
+            "Session %s has no AIConversation turns; falling back to legacy "
+            "session_state history (%d entries).",
+            record.session_id,
+            len(session_state["history"]),
+        )
     session_state["dialogue_phase"] = latest_phase
     return session_state
 
@@ -62,7 +84,7 @@ def _rebuild_session_state_from_turns(record: DialogueSessionRecord) -> dict:
 def _dialogue_session_cache_payload_from_record(
     record: DialogueSessionRecord,
 ) -> dict:
-    session_state = _rebuild_session_state_from_turns(record)
+    session_state = build_session_state_from_turns(record)
     payload = {
         "user_id": record.user_id,
         "session_id": record.session_id,
@@ -77,26 +99,86 @@ def _dialogue_session_cache_payload_from_record(
     return payload
 
 
-def _persist_dialogue_session_record(session_record: dict) -> DialogueSessionRecord:
-    current_time = timezone.now()
-    record, _ = DialogueSessionRecord.objects.update_or_create(
-        session_id=session_record["session_id"],
-        defaults={
-            "user_id": session_record["user_id"],
-            "topic_id": session_record["topic_id"],
-            "topic_title": session_record.get("topic_title")
-            or session_record.get("session", {}).get("topic")
-            or f"議題 {session_record['topic_id']}",
-            "collection_name": session_record.get("collection_name")
-            or DEFAULT_DIALOGUE_COLLECTION,
-            "survey_context": session_record.get("survey_context") or {},
-            "session_state": session_record.get("session") or {},
-            "semantic_tree_state": session_record.get("semantic_tree") or {},
-            "status": DialogueSessionRecord.Status.ACTIVE,
-            "last_activity_at": current_time,
-        },
+def create_dialogue_session_record(
+    *,
+    user_id: int,
+    session_id: str,
+    topic_id: int,
+    topic_title: str,
+    collection_name: str,
+    survey_context: dict,
+    metadata: dict,
+) -> DialogueSessionRecord:
+    return DialogueSessionRecord.objects.create(
+        user_id=user_id,
+        session_id=session_id,
+        topic_id=topic_id,
+        topic_title=topic_title or f"議題 {topic_id}",
+        collection_name=collection_name or DEFAULT_DIALOGUE_COLLECTION,
+        survey_context=survey_context or {},
+        session_state=metadata,
+        status=DialogueSessionRecord.Status.ACTIVE,
+        last_activity_at=timezone.now(),
     )
-    return record
+
+
+def update_session_metadata(*, session_id: str, user_id: int, metadata: dict) -> dict:
+    """Reply/WS-only write. Locks the row, re-reads current session_state, and
+    merges the caller's fresh metadata onto it — only dialogue_phase,
+    focus_signal_count and user_reasoning_mode need special merge rules
+    (everything else is a fixed baseline set once at creation, so taking the
+    caller's value is safe). Never touches semantic_tree_state or history."""
+    _, DialoguePhase, _ = _get_dialogue_runtime()
+    with transaction.atomic():
+        record = DialogueSessionRecord.objects.select_for_update().get(
+            session_id=session_id,
+            user_id=user_id,
+        )
+        current = record.session_state or {}
+        turn_count = AIConversation.objects.filter(
+            user_id=user_id,
+            session_id=session_id,
+            user_prompt__gt="",
+        ).count()
+
+        merged = dict(metadata)
+        merged["dialogue_phase"] = DialoguePhase.from_turn_count(turn_count).value
+        merged["focus_signal_count"] = max(
+            current.get("focus_signal_count", 0) or 0,
+            metadata.get("focus_signal_count", 0) or 0,
+        )
+        current_mode = current.get("user_reasoning_mode", "unknown")
+        merged["user_reasoning_mode"] = (
+            current_mode
+            if current_mode != "unknown"
+            else metadata.get("user_reasoning_mode", "unknown")
+        )
+
+        record.session_state = merged
+        record.last_activity_at = timezone.now()
+        record.save(update_fields=["session_state", "last_activity_at"])
+    return merged
+
+
+def update_semantic_tree_state(
+    *,
+    session_id: str,
+    user_id: int,
+    semantic_tree: dict,
+) -> None:
+    """Targeted semantic_tree_state write for the AI-session analyze path.
+
+    P1's own locked transaction (semantic_tree.py) doesn't exist on this
+    branch yet, so this stands in for it at the field-ownership boundary this
+    design assumes: only semantic_tree_state, never session_state/history.
+    Should collapse once P1 lands (see HANDOFF_P5)."""
+    with transaction.atomic():
+        record = DialogueSessionRecord.objects.select_for_update().get(
+            session_id=session_id,
+            user_id=user_id,
+        )
+        record.semantic_tree_state = semantic_tree or {}
+        record.save(update_fields=["semantic_tree_state"])
 
 
 def _restore_dialogue_session_record_for_user(
