@@ -1,6 +1,6 @@
 # CONTEXT.md — BridgeUs 開發狀態
 
-> 最後更新：2026-05-03（H-H NLP Pipeline：Embedding + 情緒偵測 + 攻擊性過濾）
+> 最後更新：2026-07-11（M3 CCND：核能議題本地 ML 分類器移植回主線）
 
 ## 專案目標
 
@@ -89,6 +89,23 @@ BridgeUs（橋得攏）— AI 驅動的去極化對話平台
 **Dialogue Session REST API（views.py）：**
 - `POST /api/dialogue/sessions/`：建立 session，存入 Django cache
 - `POST /api/dialogue/sessions/<id>/reply/`：同步回覆（REST 備用介面，仍保留）
+
+**CCND 節點生成（semantic_tree.py）— 依議題分流 LLM / 本地 ML：**
+- `analyze_text_for_tree()`：依 `topic_id` 分流的 dispatcher。
+  - `topic_id=102`（核能）→ `nuclear_node_classifier.py`：本地兩階段 BERT 分類器
+    （`hfl/chinese-roberta-wwm-ext` 微調），macro 模型判斷 anchor、micro 模型判斷
+    pointName，不呼叫任何 LLM API。架構/訓練來源見
+    `apps/matching/ml_models/nuclear_node_model/README.md`（訓練者：黃筱筑）。
+  - 其他議題（如 103）→ 維持 `analyze_with_openai()` 生成式路徑。
+  - **⚠️ 這條本地分類器路徑目前沒有權重檔**（`model.safetensors` x7，共
+    ~2.7GB，依規定不進版控，見 `.gitignore`）。需從共用空間另外複製進
+    `apps/matching/ml_models/nuclear_node_model/{model_macro,model_micro_0..5}/`
+    才能真的跑起來；沒放的話 `classify()` 會直接丟 `FileNotFoundError`
+    （刻意設計成明確報錯，不會靜默切回 OpenAI）。
+  - 這份實作原本只存在 `feat/hsiao` 分支、沒有合併也沒有寫進任何狀態文件，
+    差點連同分支一起遺失——2026-07-11 已補移植進主線並在此記錄，**之後只
+    要動到 CCND 生成邏輯，這裡的說明要一起更新**，不要讓它再一次只活在某個
+    人的本地分支裡。
 
 ---
 
@@ -227,9 +244,13 @@ P_BridgeUS/
 │   │       └── 0002_alter_message_embedding_dim.py
 │   ├── apps/
 │   │   └── matching/
-│   │       └── services/
-│   │           ├── ai_agent.py
-│   │           └── matcher.py
+│   │       ├── services/
+│   │       │   ├── ai_agent.py
+│   │       │   ├── matcher.py
+│   │       │   ├── semantic_tree.py       ← CCND 節點生成，依 topic_id 分流
+│   │       │   └── nuclear_node_classifier.py  ← topic 102 本地 BERT 分類器
+│   │       └── ml_models/
+│   │           └── nuclear_node_model/     ← 權重不進版控，見 README.md
 │   ├── core/
 │   │   ├── llm_provider.py            ← LLM / embedding provider（H-AI 用）
 │   │   └── chroma_utils.py
@@ -287,6 +308,7 @@ npm run dev   # Vite dev server，port 5173
 - [ ] Docker Compose 完整配置（含 PostgreSQL + Redis）
 - [ ] PostgreSQL 切換（`CREATE EXTENSION IF NOT EXISTS vector`）
 - [ ] 多議題知識庫（目前只有核能）
+- [ ] 補齊核能節點分類器權重檔（`apps/matching/ml_models/nuclear_node_model/`，見 M3 說明）
 
 ### 後期
 
