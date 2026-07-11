@@ -120,6 +120,64 @@ async def test_dialogue_websocket_persists_completed_turn():
 @pytest.mark.asyncio
 @pytest.mark.django_db(transaction=True)
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_dialogue_websocket_ignores_non_object_payload_without_crashing():
+    from BridgeUs_Django.asgi import application
+    from apps.matching.services.ai_agent import DialogueSession
+
+    user = await create_user(username="ai_ws_payload_user", password="secret123")
+    session_id = uuid4().hex
+    session = DialogueSession(
+        topic="台灣核能議題討論",
+        topic_description="討論台灣是否應使用核能。",
+        agent_stance="較反對核電",
+        agent_stance_summary="以反方角度提出核安與核廢料疑慮。",
+        user_stance_label="較支持核電",
+        user_stance_score=6.5,
+    )
+    await sync_to_async(cache.set)(
+        f"dialogue_session:{session_id}",
+        {
+            "user_id": user.id,
+            "session_id": session_id,
+            "topic_id": 102,
+            "topic_title": "台灣核能議題討論",
+            "collection_name": "nuclear_energy_all",
+            "survey_context": {"q9_embedding": make_test_embedding(1)},
+            "session": session.to_dict(),
+        },
+    )
+
+    token = await _access_token_for(user)
+    communicator = WebsocketCommunicator(
+        application,
+        f"/ws/dialogue/{session_id}/?token={token}",
+    )
+
+    with (
+        patch("api.views.get_dialogue_agent", return_value=FakeStreamingDialogueAgent()),
+        patch("api.consumers.aget_embedding", new=AsyncMock(return_value=make_test_embedding(-1))),
+    ):
+        assert (await communicator.connect())[0]
+        await communicator.send_to(text_data="[1]")
+        assert await communicator.receive_nothing(timeout=0.5)
+
+        await communicator.send_json_to(
+            {"type": "user_message", "content": "第二次送正常 payload"}
+        )
+        stream_message = await communicator.receive_json_from(timeout=3)
+        end_message = await communicator.receive_json_from(timeout=3)
+
+    assert stream_message["type"] == "agent_stream"
+    assert end_message["type"] == "agent_stream_end"
+    saved_turn = await AIConversation.objects.aget(session_id=session_id)
+    assert saved_turn.user_prompt == "第二次送正常 payload"
+
+    await communicator.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_match_room_websocket_persists_and_broadcasts_message():
     from BridgeUs_Django.asgi import application
 
@@ -167,6 +225,47 @@ async def test_match_room_websocket_persists_and_broadcasts_message():
     assert saved_message.match_id == match.id
     assert saved_message.sender_id == alice.id
     assert saved_message.content == "我想先談核安。"
+
+    await comm_a.disconnect()
+    await comm_b.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_match_room_websocket_ignores_non_string_content_without_crashing():
+    from BridgeUs_Django.asgi import application
+
+    alice = await create_user(username="match_ws_bad_content_alice", password="secret123")
+    bob = await create_user(username="match_ws_bad_content_bob", password="secret123")
+    match = await _make_active_match(alice, bob)
+
+    alice_token = await _access_token_for(alice)
+    bob_token = await _access_token_for(bob)
+    comm_a = WebsocketCommunicator(
+        application,
+        f"/ws/matching/rooms/{match.room_id}/?token={alice_token}",
+    )
+    comm_b = WebsocketCommunicator(
+        application,
+        f"/ws/matching/rooms/{match.room_id}/?token={bob_token}",
+    )
+
+    assert (await comm_a.connect())[0]
+    assert (await comm_b.connect())[0]
+
+    await comm_a.send_json_to({"type": "match_message", "content": ["bad"]})
+    assert await comm_a.receive_nothing(timeout=0.5)
+    assert await comm_b.receive_nothing(timeout=0.5)
+
+    await comm_a.send_json_to({"type": "match_message", "content": "正常訊息"})
+    response_a = await comm_a.receive_json_from(timeout=3)
+    response_b = await comm_b.receive_json_from(timeout=3)
+
+    assert response_a["type"] == "match_message"
+    assert response_a == response_b
+    assert response_a["message"]["content"] == "正常訊息"
+    assert await MatchMessage.objects.filter(match=match).acount() == 1
 
     await comm_a.disconnect()
     await comm_b.disconnect()
