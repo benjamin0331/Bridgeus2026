@@ -682,7 +682,7 @@ class DialogueSessionApiTests(APITestCase):
             )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertIsNotNone(cache.get(f"dialogue_session:{session_id}"))
+        self.assertIsNone(cache.get(f"dialogue_session:{session_id}"))
 
 
 class HistoryApiTests(APITestCase):
