@@ -29,6 +29,10 @@ from apps.matching.services.hh_analysis import (
     aget_topic_anchor_embedding,
     build_stalemate_prompt,
 )
+from apps.matching.services.message_pipeline import (
+    BLOCKED_MESSAGE,
+    finalize_match_message,
+)
 from chat.services.embedding import aget_embedding
 from chat.services.emotion import aget_analyze_emotion
 from chat.services.filter import check_content_sync
@@ -378,7 +382,7 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
             self.blocked_count += 1
             await self._send_system_prompt(
                 category="content_blocked",
-                message="這則訊息包含可能冒犯對方的用語，請修改後重新發送。",
+                message=BLOCKED_MESSAGE,
             )
             return
 
@@ -580,14 +584,11 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
         )
 
     async def _relay_and_persist(self, content: str, *, emotion_score=None):
-        message = await self._create_message(content, emotion_score=emotion_score)
-        payload = self._message_payload(message)
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {
-                "type": "match.message",
-                "message": payload,
-            },
+        message = await database_sync_to_async(finalize_match_message)(
+            match=self.match,
+            sender=self.user,
+            content=content,
+            emotion_score=emotion_score,
         )
         if hh_ai_assist_enabled():
             asyncio.create_task(
@@ -775,16 +776,6 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
                 self.user.id,
             )
 
-    async def _create_message(self, content: str, *, emotion_score=None):
-        from api.models import MatchMessage
-
-        return await MatchMessage.objects.acreate(
-            match_id=self.match.id,
-            sender=self.user,
-            content=content,
-            emotion_score=emotion_score,
-        )
-
     async def _get_user_suggestion(self, suggestion_id):
         from api.models import MatchAISuggestion
 
@@ -832,13 +823,3 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
     def _suggestion_response_time_ms(suggestion) -> int:
         return int((timezone.now() - suggestion.created_at).total_seconds() * 1000)
 
-    def _message_payload(self, message) -> dict:
-        return {
-            "id": message.id,
-            "match_id": self.match.id,
-            "room_id": self.room_id,
-            "sender_id": self.user.id,
-            "sender_name": "匿名使用者",
-            "content": message.content,
-            "created_at": message.created_at.isoformat(),
-        }

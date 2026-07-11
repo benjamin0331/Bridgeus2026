@@ -1,5 +1,5 @@
 from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -1383,6 +1383,70 @@ class MatchingApiTests(APITestCase):
             "你好，我想先從核安風險談起。",
         )
         self.assertEqual(MatchMessage.objects.filter(match=match).count(), 1)
+
+    def test_room_message_post_blocks_blacklisted_content(self):
+        """REST path runs the same synchronous blacklist stage as the WS path
+        (apps.matching.services.message_pipeline.post_match_message)."""
+        _, room_id = self._create_match()
+
+        with patch(
+            "apps.matching.services.message_pipeline.hh_ai_assist_enabled",
+            return_value=True,
+        ):
+            response = self.client.post(
+                f"/api/matching/rooms/{room_id}/messages/",
+                {"content": "你這個白痴"},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("detail", response.data)
+        self.assertEqual(MatchMessage.objects.count(), 0)
+
+    def test_room_message_post_schedules_embedding_and_broadcasts(self):
+        """A normal REST-posted message is persisted with an emotion score, has its
+        embedding scheduled, and is broadcast over the room's channel-layer group --
+        the same downstream effects as the WS path, minus the interactive rephrase
+        suggestion (REST has no socket to negotiate that over)."""
+        match, room_id = self._create_match()
+
+        fake_embedding = [0.1] * 384
+        fake_emotion = {"score": 0.2, "label": "neutral", "is_over_threshold": False}
+        with (
+            patch(
+                "apps.matching.services.message_pipeline.hh_ai_assist_enabled",
+                return_value=True,
+            ),
+            patch(
+                "apps.matching.services.message_pipeline.get_embedding",
+                return_value=fake_embedding,
+            ),
+            patch(
+                "apps.matching.services.message_pipeline.analyze_emotion",
+                return_value=fake_emotion,
+            ),
+            patch(
+                "apps.matching.services.message_pipeline.get_channel_layer"
+            ) as mock_get_channel_layer,
+        ):
+            mock_channel_layer = mock_get_channel_layer.return_value
+            mock_channel_layer.group_send = AsyncMock()
+            response = self.client.post(
+                f"/api/matching/rooms/{room_id}/messages/",
+                {"content": "我想先談核安。"},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        message = MatchMessage.objects.get(match=match)
+        self.assertEqual(list(message.embedding), fake_embedding)
+        self.assertEqual(message.emotion_score, fake_emotion["score"])
+
+        mock_channel_layer.group_send.assert_called_once()
+        group_name, event = mock_channel_layer.group_send.call_args.args
+        self.assertEqual(group_name, f"match_room_{room_id}")
+        self.assertEqual(event["type"], "match.message")
+        self.assertEqual(event["message"]["content"], "我想先談核安。")
 
     def test_room_messages_include_current_user_latest_drift_value(self):
         match, room_id = self._create_match()
