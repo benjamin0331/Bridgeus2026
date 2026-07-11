@@ -9,6 +9,8 @@ var _chat_peer_id := -1
 var _invite_from := -1
 var _chat_active := false
 var suppress_menu := false     # game.gd raises this while the submit form is open
+var _invite_is_voice := false
+var _voice_peer_id := -1
 
 @onready var _menu: Panel = $Menu
 @onready var _menu_title: Label = $Menu/MenuTitle
@@ -23,6 +25,10 @@ var suppress_menu := false     # game.gd raises this while the submit form is op
 @onready var _chat_input: LineEdit = $Chat/ChatInput
 @onready var _chat_send_btn: Button = $Chat/SendButton
 @onready var _toast: Label = $Toast
+@onready var _voice: Panel = $Voice
+@onready var _voice_title: Label = $Voice/VoiceTitle
+@onready var _pitch_label: Label = $Voice/PitchLabel
+@onready var _pitch_slider: HSlider = $Voice/PitchSlider
 
 func _ready():
 	add_to_group("issue_ui")
@@ -34,6 +40,9 @@ func _ready():
 	$Chat/CloseButton.pressed.connect(_close_chat)
 	_chat_input.text_submitted.connect(func(_t): _send_chat())
 	_chat_send_btn.pressed.connect(_send_chat)
+	$Menu/VoiceButton.pressed.connect(_send_voice_invite)
+	_pitch_slider.value_changed.connect(_on_pitch_changed)
+	$Voice/QuitButton.pressed.connect(_quit_voice)
 
 func _local():
 	for p in get_tree().get_nodes_in_group("players"):
@@ -52,7 +61,7 @@ func refresh_menu():
 
 func _update_menu():
 	# Hide the menu while a modal (form/read/invite) is open so they don't overlap.
-	if _target == null or suppress_menu or _read.visible or _invite.visible:
+	if _target == null or suppress_menu or _read.visible or _invite.visible or _voice.visible:
 		_menu.visible = false
 		return
 	var t = _target.issue_title if _target.issue_title != "" else "（對方尚未提交議題）"
@@ -98,9 +107,11 @@ func _send_invite():
 		notify("已送出聊天邀請")
 
 # --- invite prompt (called by the player on the invited side) -------------
-func show_invite(from_id: int):
+func show_invite(from_id: int, is_voice := false):
 	_invite_from = from_id
-	_invite_label.text = "玩家 %d 想和你聊天" % from_id
+	_invite_is_voice = is_voice
+	var kind = "語音通話" if is_voice else "聊天"
+	_invite_label.text = "玩家 %d 想和你%s" % [from_id, kind]
 	_invite.visible = true
 	_update_menu()
 
@@ -109,7 +120,10 @@ func _answer_invite(accepted: bool):
 	_update_menu()
 	var p = _local()
 	if p:
-		p.respond_invite(_invite_from, accepted)
+		if _invite_is_voice:
+			p.respond_voice_invite(_invite_from, accepted)
+		else:
+			p.respond_invite(_invite_from, accepted)
 
 # --- chat (open_chat / append_chat called by the player) ------------------
 func open_chat(other_id: int):
@@ -160,6 +174,40 @@ func append_chat(from_id: int, text: String):
 		open_chat(from_id)
 	var who = "我" if from_id == multiplayer.get_unique_id() else "玩家 %d" % from_id
 	_chat_log.append_text("[b]%s：[/b]%s\n" % [who, text])
+
+# --- voice call (open_voice / voice_peer_left called by the player) --------
+func _send_voice_invite():
+	if _target == null:
+		return
+	var p = _local()
+	if p:
+		p.invite_to_voice(_target)
+		notify("已送出語音邀請")
+
+func open_voice(other_id: int):
+	_voice_peer_id = other_id
+	_voice_title.text = "語音通話中（玩家 %d）" % other_id
+	_pitch_slider.value = 1.0
+	_pitch_label.text = "音高：1.0"
+	_voice.visible = true
+
+func _on_pitch_changed(v: float):
+	VoiceChat.set_voice_pitch(v)
+	_pitch_label.text = "音高：%.2f" % v
+
+func _quit_voice():
+	var p = _local()
+	if p and _voice_peer_id >= 0:
+		p.leave_voice(_voice_peer_id)
+	_voice.visible = false
+	_voice_peer_id = -1
+
+func voice_peer_left(from_id: int):
+	if not _voice.visible or from_id != _voice_peer_id:
+		return
+	notify("對方已退出語音")
+	_voice.visible = false
+	_voice_peer_id = -1
 
 # --------------------------------------------------------------------------
 func notify(msg: String):
