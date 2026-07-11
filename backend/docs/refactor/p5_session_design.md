@@ -7,6 +7,10 @@
 (`p1_lock_design.md`)衝突時以 P1 為準並回報,不要自行仲裁。
 **本設計需人工過目放行後才進 5b。**
 
+5b 請以 P4 分支 `refactor/m3-p4-service-extraction`(或其合併目標)為基底——
+本設計引用的 `api/services/dialogue_session.py` 只存在於 P4 之後;
+在 P4 之前的分支上,同一批函式還在 `api/views.py` 內,邏輯相同。
+
 ---
 
 ## 1. 現況問題(三份 source of truth)
@@ -54,6 +58,11 @@ metadata 與 `DialogueSession` 序列化分離(§3)後此 bug 結構性消失。
 之類的 helper = `to_dict()` 去掉 `history` 再併入 `stance_drift`。
 **`DialogueSession` dataclass 本身不改**——in-memory 物件仍持有 history
 (prompt 組裝需要 `format_history` / `turn_count`),只在持久化邊界剝離。
+
+組裝順序約束:drift 重算(`calculate_ai_session_stance_drift`)必須在
+read-through 讀到的 metadata 上進行——它的 `previous_value` 來自前次寫回的
+`stance_drift`——算完再組 metadata 寫回。不可先用 `to_dict()` 覆蓋
+`session_record["session"]` 再計算,那正是 §1 direction-永遠-stable bug 的成因。
 
 ## 4. History 重建時機與 `_rebuild_session_state_from_turns` 去留
 
@@ -112,9 +121,22 @@ Key 與 TTL 不變(`dialogue_session:{session_id}`,12h)。
 | 其餘欄位 | create 路徑一次寫定 |
 
 因此 reply × analyze 並發寫入的欄位互斥,P2 的「三路徑互蓋、history 遺失」結構性消失
-(history 根本不再被寫)。reply × reply 並發:turns append-only 不會遺失;
-metadata 之中 phase 與 drift 全量可重算(後寫的一定是以更完整 turns 算出),
-`focus_signal_count` / `user_reasoning_mode` 靠 row lock 序列化避免 lost update。
+(history 根本不再被寫)。
+
+**reply × reply 並發(同 user 前端重試/連點)**:turns append-only 不會遺失;
+但 metadata 是鎖外舊讀算出來的,單純用 row lock 序列化寫入**擋不住 lost update**——
+後取得鎖的 writer 照樣用自己的舊基準蓋掉前一個 writer 的結果。因此
+`update_session_metadata` 必須「**鎖內重讀 → 合併 → 寫回**」,不可拿呼叫端
+鎖外組好的 dict 直接整欄覆蓋。合併規則(只有 4 個 key 會變動,其餘 key
+建立後不變,取呼叫端值即可):
+
+| key | 合併規則 | 理由 |
+|-----|---------|------|
+| `dialogue_phase` | 鎖內以 DB user-turn 數重算 `DialoguePhase.from_turn_count` | phase 是 turn 數的單調函數,重算必然收斂正確 |
+| `focus_signal_count` | `max(DB 現值, 呼叫端值)` | 單調遞增計數,max 不遺失 |
+| `user_reasoning_mode` | 單向升級:任一方為非 `"unknown"` 就取非 unknown 值 | 現行唯一轉移是 unknown → collaborative,不可逆 |
+| `stance_drift` | 取呼叫端值 | 每次都以全量 turns 重算,後寫覆蓋無害(頂多 `measured_at` 較新) |
+
 兩把 `select_for_update`(本設計的 metadata 寫回、P1 的 analyze)鎖同一 row,
 但都是毫秒級純 DB 操作,互相短暫排隊即可,無 deadlock 面(單一 row、無巢狀鎖)。
 
@@ -128,7 +150,7 @@ metadata 之中 phase 與 drift 全量可重算(後寫的一定是以更完整 t
 | 路徑 | 讀取 | 寫入 | 行為變化 |
 |------|------|------|---------|
 | **reply**(REST) | read-through 恢復(cache 或 turns 重建)→ `DialogueSession.from_dict` | ① user turn create(不變)② ai_response 補寫(不變)③ `update_session_metadata`(取代整包 persist)④ `cache.delete`(取代 `cache.set`);LLM 失敗路徑補 `cache.delete` | 回應 payload 的 `history` 改用 in-memory session 組(內容等價);`stance_drift.direction` 開始有非 stable 值(§1 bug 修復) |
-| **WS stream** | 移除自己的裸 `cache.get`,改用與 REST 同一個 read-through helper | 同 reply ①–④;`focus_signal_count`/`user_reasoning_mode` 變動隨 metadata 寫回 | 重連恢復從「cache 沒了就可能斷」變成「一定能從 turns 重建」 |
+| **WS stream** | 移除自己的裸 `cache.get`,改用與 REST 同一個 read-through helper(順帶補上 cache 命中時的 `user_id` 檢查——現行裸 get 沒驗) | 同 reply ①–④;`focus_signal_count`/`user_reasoning_mode` 變動隨 metadata 寫回 | 重連恢復從「cache 沒了就可能斷」變成「一定能從 turns 重建」。另建議:`_create_ai_conversation` 失敗時回錯誤中止本輪,取代現況吞例外繼續——單一權威下,沒落 DB 的 turn 等於不存在,繼續對話只會產生使用者看得到、系統記不住的訊息 |
 | **analyze** | 依 P1:收 `session_id`/`user_id`,鎖內重讀 record;pending 來源本來就是 turns,不變 | 只寫 `semantic_tree_state`(P1 交易 2)+ `cache.delete`;**不再** persist/cache 整包 session_record | 不再有機會覆蓋 reply/WS 剛寫的狀態;view 端兩行整包覆蓋刪除 |
 | **restore**(latest / detail / history views) | read-through;history 一律由 turns 重建 | 無(read-only;`_restore` 的 populate 除外) | payload 形狀不變;kill cache 後可完整恢復成為不變量而非僥倖 |
 
@@ -142,12 +164,24 @@ metadata 之中 phase 與 drift 全量可重算(後寫的一定是以更完整 t
     無法從程式碼證明這種資料不存在,計畫原建議的「一律忽略」有靜默丟資料風險,
     fallback 一行成本換掉這個風險。
   - **寫**:`update_session_metadata` 寫入的 dict 不含 `history` key,
-    整欄覆蓋 `session_state` ⇒ 該 session 首次有新活動時舊 history 自然清除
-    (此時 turns 必然已有本輪資料,fallback 不再觸發)。
-  - **不做 data migration 回填 turns**:否決理由——把 history 的
+    整欄覆蓋 `session_state` ⇒ 該 session 首次有新活動時舊 history key 被清除。
+  - **已知有界損失(明講,不掩蓋)**:若某 record 屬於「turns 全空、僅
+    session_state 有 history」的極舊資料,且使用者恢復它並發出新訊息,
+    則清除後 turns 只剩新的一輪,舊對話永久遺失(fallback 從此不再觸發)。
+    接受理由:(1) 產生這種 record 需要該 session 當年**每一輪** turn 寫入都失敗
+    ——REST reply 的 turn create 沒有 try/except,失敗直接 500、連 history
+    都不會累積;只有 WS 路徑吞例外——機率趨近於零;(2) 這類 record 對分析管線
+    (stance drift、semantic tree)本來就不可見,它們一直只讀 turns。
+    同理,「單輪 turn 寫入失敗但 history 有該輪」的個別 exchange 在單一權威化後
+    會從 history 消失——同樣是分析管線從未看過的資料,接受。
+  - **5b 合併前先量測,把未知風險變成已量測風險**:跑一次 one-off 統計
+    「`session_state.history` 非空且無任何對應 `AIConversation`」的 record 數
+    (資料量小,shell 迴圈逐筆 `exists()` 即可)。結果為 0(預期)→ 照本設計走;
+    \> 0 → 對這些 record 先做一次性 turns 回填再上線,回填規則屆時另議。
+  - **不做全面 data migration 回填 turns**:否決理由——把 history 的
     user/agent entry 配對回 turn 的規則含糊(失敗輪、半輪、順序異常);
-    fallback 讀取已覆蓋需求;真要清,P6 清理包可先跑 management command 統計
-    「turns 空但 session_state.history 非空」的 record 數量再決定,不在 P5 範圍。
+    fallback 讀取 + 上述量測已覆蓋需求。殘留在舊 record 裡、已被 turns
+    重複覆蓋的 history key,由 P6 清理包擇機掃掉,不在 P5 範圍。
 
 ## 9. 與 P1 鎖設計的相容性
 
@@ -167,7 +201,7 @@ metadata 之中 phase 與 drift 全量可重算(後寫的一定是以更完整 t
 - 「kill cache 後 session 可完整從 DB 恢復」← §4 重建 + §5 read-through(不變量,測試:清 cache → detail/reply 均正常且 history 完整)。
 - 「reply 與 analyze 並發不遺失 history」← §6 欄位所有權互斥(測試:analyze 進行中模擬 reply 寫入,兩者結果都在)。
 - 「`session_state` 不再存 history 全文」← §3 + §8 寫路徑自然清除(測試:reply 後重讀 DB record,`session_state` 無 `history` key)。
-- 另補:重連恢復(WS helper 統一)、reply 後 history 正確(payload 與 turns 重建一致)、舊資料 fallback(turns 空 + 舊 history 非空可讀)。
+- 另補:重連恢復(WS helper 統一)、reply 後 history 正確(payload 與 turns 重建一致)、舊資料 fallback(turns 空 + 舊 history 非空可讀)、併發 reply×reply 的 metadata 合併(兩次交錯寫回後 `focus_signal_count` 不遺失、`user_reasoning_mode` 不回退,§6 合併規則)。
 
 **5b 要做**:改 `api/services/dialogue_session.py`(§3–§6 的 helper 拆分)、
 `api/consumers.py`(共用 read-through、invalidate)、`api/views.py` 4 個呼叫點、
