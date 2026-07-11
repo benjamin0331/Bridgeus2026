@@ -1,4 +1,3 @@
-from copy import deepcopy
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -630,13 +629,15 @@ class DialogueSessionApiTests(APITestCase):
 
         analyzed_texts = []
 
-        def fake_analyze(*, text, tree, anchors=None, anchor_descriptions=None, api_key=None, model=None):
+        def fake_classify(text, anchors=None):
             analyzed_texts.append(text)
-            return fake_energy_items_response()
+            return fake_energy_items_response()["items"]
 
-        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}), patch(
-            "apps.matching.services.semantic_tree.analyze_with_openai",
-            side_effect=fake_analyze,
+        # topic 102 (核能) routes through the local classifier, not
+        # analyze_with_openai — see semantic_tree.uses_local_classifier().
+        with patch(
+            "apps.matching.services.nuclear_node_classifier.build_candidate_items",
+            side_effect=fake_classify,
         ):
             response = self.client.post(
                 f"/api/dialogue/sessions/{session_id}/semantic-tree/analyze/"
@@ -649,7 +650,9 @@ class DialogueSessionApiTests(APITestCase):
         self.assertEqual(response.data["trees"][0]["analyzedSourceIds"], [str(AIConversation.objects.get().id)])
         self.assertNotIn("核廢料", str(response.data["treeData"]))
 
-    def test_ai_semantic_tree_requires_openai_key_without_blocking_session(self):
+    def test_ai_semantic_tree_topic_102_does_not_require_openai_key(self):
+        # topic 102 (核能) routes through the local classifier, so unlike
+        # every other topic it must keep working with no OPENAI_API_KEY set.
         create_response = self.client.post(
             "/api/dialogue/sessions/",
             {
@@ -668,13 +671,15 @@ class DialogueSessionApiTests(APITestCase):
             ai_response="AI 回覆",
         )
 
-        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}):
+        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}), patch(
+            "apps.matching.services.nuclear_node_classifier.build_candidate_items",
+            return_value=[],
+        ):
             response = self.client.post(
                 f"/api/dialogue/sessions/{session_id}/semantic-tree/analyze/"
             )
 
-        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
-        self.assertEqual(response.data["error"], "missing_openai_api_key")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIsNotNone(cache.get(f"dialogue_session:{session_id}"))
 
 
@@ -816,15 +821,15 @@ class HistoryApiTests(APITestCase):
         match, own_message, partner_message = self._create_match_history()
         analyzed_texts = []
 
-        def fake_analyze(*, text, tree, anchors=None, anchor_descriptions=None, api_key=None, model=None):
+        def fake_classify(text, anchors=None):
             analyzed_texts.append(text)
             if "核廢料" in text:
-                return fake_waste_items_response()
-            return fake_economy_items_response()
+                return fake_waste_items_response()["items"]
+            return fake_economy_items_response()["items"]
 
-        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}), patch(
-            "apps.matching.services.semantic_tree.analyze_with_openai",
-            side_effect=fake_analyze,
+        with patch(
+            "apps.matching.services.nuclear_node_classifier.build_candidate_items",
+            side_effect=fake_classify,
         ):
             response = self.client.post(
                 f"/api/history/conversations/match/{match.room_id}/semantic-tree/analyze/"
@@ -839,16 +844,20 @@ class HistoryApiTests(APITestCase):
         self.assertIn("核廢長期負擔", str(tree["treeData"]))
         self.assertNotIn("除役維護成本", str(tree["treeData"]))
 
-    def test_history_analyze_missing_key_does_not_block_detail(self):
+    def test_history_analyze_topic_102_does_not_require_openai_key(self):
+        # topic 102 (核能) routes through the local classifier, so unlike
+        # every other topic it must keep working with no OPENAI_API_KEY set.
         ai_record, _ = self._create_ai_history()
 
-        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}):
+        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}), patch(
+            "apps.matching.services.nuclear_node_classifier.build_candidate_items",
+            return_value=[],
+        ):
             response = self.client.post(
                 f"/api/history/conversations/ai/{ai_record.session_id}/semantic-tree/analyze/"
             )
 
-        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
-        self.assertEqual(response.data["error"], "missing_openai_api_key")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
 
         detail_response = self.client.get(
             f"/api/history/conversations/ai/{ai_record.session_id}/"
@@ -1343,7 +1352,9 @@ class MatchingApiTests(APITestCase):
         self.assertTrue(response.data["trees"][0]["isCurrentUser"])
         self.assertNotIn("匿名對話者", str(response.data))
 
-    def test_semantic_tree_analyze_requires_openai_key_without_blocking_messages(self):
+    def test_semantic_tree_analyze_topic_102_does_not_require_openai_key(self):
+        # topic 102 (核能) routes through the local classifier, so unlike
+        # every other topic it must keep working with no OPENAI_API_KEY set.
         match, room_id = self._create_match()
         MatchMessage.objects.create(
             match=match,
@@ -1351,11 +1362,13 @@ class MatchingApiTests(APITestCase):
             content="核廢料處理會帶來長期負擔",
         )
 
-        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}):
+        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}), patch(
+            "apps.matching.services.nuclear_node_classifier.build_candidate_items",
+            return_value=[],
+        ):
             response = self.client.post(f"/api/matching/rooms/{room_id}/semantic-tree/analyze/")
 
-        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
-        self.assertEqual(response.data["error"], "missing_openai_api_key")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
         messages_response = self.client.get(f"/api/matching/rooms/{room_id}/messages/")
         self.assertEqual(messages_response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(messages_response.data["messages"]), 1)
@@ -1368,9 +1381,9 @@ class MatchingApiTests(APITestCase):
             content="核廢料處理會帶來長期負擔",
         )
 
-        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}), patch(
-            "apps.matching.services.semantic_tree.analyze_with_openai",
-            return_value=fake_waste_items_response(),
+        with patch(
+            "apps.matching.services.nuclear_node_classifier.build_candidate_items",
+            return_value=fake_waste_items_response()["items"],
         ) as mocked_analyze:
             first_response = self.client.post(
                 f"/api/matching/rooms/{room_id}/semantic-tree/analyze/"
@@ -1403,9 +1416,12 @@ class MatchingApiTests(APITestCase):
             content="核能可以補足再生能源不穩定",
         )
 
-        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}), patch(
-            "apps.matching.services.semantic_tree.analyze_with_openai",
-            side_effect=[fake_waste_items_response(), fake_energy_items_response()],
+        with patch(
+            "apps.matching.services.nuclear_node_classifier.build_candidate_items",
+            side_effect=[
+                fake_waste_items_response()["items"],
+                fake_energy_items_response()["items"],
+            ],
         ):
             self.client.post(f"/api/matching/rooms/{room_id}/semantic-tree/analyze/")
 
@@ -1464,17 +1480,14 @@ class MatchingApiTests(APITestCase):
             sender=self.other_user,
             content="核電除役與維護成本會增加負擔",
         )
-        tree_snapshots = []
-
-        def fake_analyze(*, text, tree, anchors=None, anchor_descriptions=None, api_key=None, model=None):
-            tree_snapshots.append(deepcopy(tree))
+        def fake_classify(text, anchors=None):
             if "核廢料" in text:
-                return fake_waste_items_response()
-            return fake_economy_items_response()
+                return fake_waste_items_response()["items"]
+            return fake_economy_items_response()["items"]
 
-        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}), patch(
-            "apps.matching.services.semantic_tree.analyze_with_openai",
-            side_effect=fake_analyze,
+        with patch(
+            "apps.matching.services.nuclear_node_classifier.build_candidate_items",
+            side_effect=fake_classify,
         ) as mocked_analyze:
             response = self.client.post(f"/api/matching/rooms/{room_id}/semantic-tree/analyze/")
             partner_response = self.other_client.post(
@@ -1484,7 +1497,6 @@ class MatchingApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(partner_response.status_code, status.HTTP_200_OK)
         self.assertEqual(mocked_analyze.call_count, 2)
-        self.assertNotIn("核廢長期負擔", str(tree_snapshots[1]))
         self.assertEqual(response.data["analyzedCount"], 1)
         self.assertEqual(partner_response.data["analyzedCount"], 1)
         self.assertEqual(len(response.data["trees"]), 1)

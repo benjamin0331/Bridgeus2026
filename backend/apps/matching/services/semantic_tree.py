@@ -677,6 +677,8 @@ def validate_analysis_items(
     payload: dict[str, Any],
     tree: dict[str, Any],
     anchors: list[dict[str, str]] | None = None,
+    *,
+    min_confidence: float = MIN_CONFIDENCE,
 ) -> dict[str, list[dict[str, Any]]]:
     resolved_anchors = anchors or FIXED_ANCHORS
     anchor_map = {anchor["id"]: anchor for anchor in resolved_anchors}
@@ -714,8 +716,8 @@ def validate_analysis_items(
         if confidence != confidence:
             invalid_items.append(_item_error(raw_item, "missing confidence"))
             continue
-        if confidence < MIN_CONFIDENCE:
-            invalid_items.append(_item_error(raw_item, f"confidence below {MIN_CONFIDENCE}"))
+        if confidence < min_confidence:
+            invalid_items.append(_item_error(raw_item, f"confidence below {min_confidence}"))
             continue
         if confidence > 1:
             invalid_items.append(_item_error(raw_item, "confidence must be 1 or lower"))
@@ -1017,6 +1019,13 @@ def analyze_with_openai(
 
 LOCAL_CLASSIFIER_TOPIC_IDS = {102}
 
+# MIN_CONFIDENCE (0.55) was tuned for an LLM's self-reported meta-confidence,
+# which tends to run high. The local classifier's confidence is a raw softmax
+# argmax probability over a 36-way cluster space, where even a correct call
+# often lands around 0.5 — reusing MIN_CONFIDENCE would silently drop most of
+# its output. Tune this independently as real traffic comes in.
+LOCAL_CLASSIFIER_MIN_CONFIDENCE = 0.35
+
 
 def uses_local_classifier(topic_id: int | None) -> bool:
     return topic_id in LOCAL_CLASSIFIER_TOPIC_IDS
@@ -1040,7 +1049,12 @@ def analyze_text_for_tree(
 
         candidate_items = nuclear_node_classifier.build_candidate_items(text, resolved_anchors)
         return {
-            **validate_analysis_items({"items": candidate_items}, tree, resolved_anchors),
+            **validate_analysis_items(
+                {"items": candidate_items},
+                tree,
+                resolved_anchors,
+                min_confidence=LOCAL_CLASSIFIER_MIN_CONFIDENCE,
+            ),
             "model": "local-bert-pipeline",
         }
 
