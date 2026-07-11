@@ -101,6 +101,10 @@ Key 與 TTL 不變(`dialogue_session:{session_id}`,12h)。
 
 - **create 路徑不 `cache.set`**:只寫 DB,讓第一次讀 populate。少一條「寫路徑可以 set」
   的規則例外,代價只是首次讀多一次 DB query。
+- **已知且接受的 read-repopulate race**:讀者從 DB 讀出舊狀態、寫者寫 DB 並 delete、
+  讀者才 `cache.set` ⇒ cache 短暫停留在舊資料。接受理由:權威在 turns,cache 永遠
+  不會回寫 DB,不可能造成永久損壞;髒窗只影響 history 顯示少一輪,且下一次任何
+  寫入的 delete 就清掉,TTL 12h 兜底。不為此引入版本化 key 或 double-delete。
 
 ## 6. 持久化寫入規則(欄位所有權)
 
@@ -108,9 +112,11 @@ Key 與 TTL 不變(`dialogue_session:{session_id}`,12h)。
 
 1. `create_dialogue_session_record(...)` — 僅 create 路徑,完整建立(行為同現在)。
 2. `update_session_metadata(*, session_id, user_id, metadata: dict)` — reply/WS 用:
-   `select_for_update` 鎖 record row → 只更新 `session_state`(= §3 的 metadata dict,無 history)
+   `transaction.atomic()` 內 `select_for_update` 鎖 record row → 鎖內重讀並依下述
+   規則合併 → 只更新 `session_state`(= §3 的 metadata dict,無 history)
    與 `last_activity_at`,以 `update_fields` 寫回。**絕不碰**
    `semantic_tree_state` / `survey_context` / topic 欄位 / `status`。
+   WS 呼叫端經 `sync_to_async`(thread_sensitive 預設值)包裝,交易完整落在同一執行緒。
 
 欄位所有權(寫入者 × 欄位互斥):
 
@@ -160,6 +166,8 @@ Key 與 TTL 不變(`dialogue_session:{session_id}`,12h)。
 - 舊 record 的 `session_state` 內含 `history`:
   - **讀**:turns 非空 → 忽略舊 `history` key(turns 為準,即現行 rebuild 的覆蓋行為);
     turns 為空**且**舊 history 非空 → fallback 使用舊 history(log warning 一次)。
+    注意這正是現行 `_rebuild_session_state_from_turns` 的既有行為
+    (`if history:` 才覆蓋,turns 空時舊 key 原樣保留)——5b 只需補 log,不需新邏輯。
     後者保護「歷史上只寫了 session_state、沒有對應 turns」的極舊 session——
     無法從程式碼證明這種資料不存在,計畫原建議的「一律忽略」有靜默丟資料風險,
     fallback 一行成本換掉這個風險。
