@@ -86,16 +86,16 @@ theme_override_font_sizes/font_size = 18
 autowrap_mode = 3
 
 [node name="AcceptButton" type="Button" parent="Invite"]
-offset_left = 20.0
+offset_left = 220.0
 offset_top = 110.0
-offset_right = 140.0
+offset_right = 340.0
 offset_bottom = 146.0
 text = "同意"
 
 [node name="RejectButton" type="Button" parent="Invite"]
-offset_left = 220.0
+offset_left = 20.0
 offset_top = 110.0
-offset_right = 340.0
+offset_right = 140.0
 offset_bottom = 146.0
 text = "拒絕"
 
