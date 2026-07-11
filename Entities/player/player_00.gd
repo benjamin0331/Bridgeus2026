@@ -278,3 +278,75 @@ func peer_left_chat(from_id: int):
 	var ui = _ui()
 	if ui:
 		ui.peer_left_chat(from_id)
+
+# --- voice call handshake (mirrors chat) ----------------------------------
+var _in_voice := false
+var _voice_peer := -1
+
+# Local: ask `target` for a voice call.
+func invite_to_voice(target):
+	var target_id = target.name.to_int()
+	target.receive_voice_invite.rpc_id(target_id, multiplayer.get_unique_id())
+
+@rpc("any_peer", "reliable")
+func receive_voice_invite(from_id: int):
+	var ui = _ui()
+	if ui:
+		ui.show_invite(from_id, true)
+
+# Local (target side): answer a voice invite.
+func respond_voice_invite(from_id: int, accepted: bool):
+	var inviter = _find_player(from_id)
+	if inviter:
+		inviter.voice_invite_result.rpc_id(from_id, multiplayer.get_unique_id(), accepted)
+	if accepted:
+		_start_voice(from_id)
+		var ui = _ui()
+		if ui:
+			ui.open_voice(from_id)
+
+@rpc("any_peer", "reliable")
+func voice_invite_result(from_id: int, accepted: bool):
+	var ui = _ui()
+	if accepted:
+		_start_voice(from_id)
+		if ui:
+			ui.open_voice(from_id)
+	elif ui:
+		ui.notify("對方拒絕了語音邀請")
+
+# Local: leave the voice call.
+func leave_voice(to_id: int):
+	var other = _find_player(to_id)
+	if other:
+		other.peer_left_voice.rpc_id(to_id, multiplayer.get_unique_id())
+	_stop_voice()
+
+@rpc("any_peer", "reliable")
+func peer_left_voice(from_id: int):
+	_stop_voice()
+	var ui = _ui()
+	if ui:
+		ui.voice_peer_left(from_id)
+
+func _start_voice(peer: int):
+	_in_voice = true
+	_voice_peer = peer
+	VoiceChat.start()
+
+func _stop_voice():
+	_in_voice = false
+	_voice_peer = -1
+	VoiceChat.stop()
+
+# --- voice audio transport ------------------------------------------------
+# 本地玩家每幀把擷取到的變調後 PCM 送給通話對象。
+func _process(_delta):
+	if _in_voice and is_multiplayer_authority():
+		var f = VoiceChat.get_captured_frames()
+		if f.size() > 0:
+			receive_voice.rpc_id(_voice_peer, f)
+
+@rpc("any_peer", "unreliable")
+func receive_voice(frames: PackedVector2Array):
+	VoiceChat.play_frames(frames)
