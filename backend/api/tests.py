@@ -17,6 +17,8 @@ from api.models import (
     MatchMessage,
     MatchQueueEntry,
     MatchStanceDrift,
+    PlatformFeedback,
+    PostDialogueResponse,
     UserStanceProfile,
 )
 from api.views import _resolve_stance_category
@@ -1664,3 +1666,108 @@ class MatchingApiTests(APITestCase):
         )
         self.assertNotIn("anthropic invalid key", reply_response.data["detail"])
         mocked_get_agent.assert_called_once_with("nuclear_energy_all")
+
+
+class PlatformFeedbackApiTests(APITestCase):
+    """Part F — platform experience feedback endpoint."""
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="feedback_user",
+            password="secret123",
+        )
+        self.client.force_authenticate(user=self.user)
+        self.response_obj = self._create_post_response(self.user)
+
+    def _create_post_response(self, user):
+        return PostDialogueResponse.objects.create(
+            user=user,
+            topic_id=102,
+            session_id="sess-partf",
+            experiment_condition=PostDialogueResponse.ExperimentCondition.AI,
+            post_likert_1=4, post_likert_2=4, post_likert_3=4, post_likert_4=4,
+            post_likert_5=4, post_likert_6=4, post_likert_7=4, post_likert_8=4,
+            exp_stance_change_1=4, exp_stance_change_2=4,
+            exp_quality_1=4, exp_quality_2=4,
+            exp_reflection_1=4, exp_reflection_2=4,
+            ccnd_attention=4, ccnd_awareness=4, ccnd_influence=4,
+            opponent_judgment=2,
+            post_open_comprehension="x" * 60,
+        )
+
+    def _valid_payload(self, **overrides):
+        payload = {
+            "response_id": self.response_obj.id,
+            "ux_matching": 6,
+            "ux_chatroom": 7,
+            "ux_nlp_intervention": 5,
+            "ux_ccnd": 4,
+            "ux_overall": 6,
+            "nps_score": 9,
+            "ux_improvement": "希望配對更快一點。",
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_platform_feedback_requires_authentication(self):
+        self.client.force_authenticate(user=None)
+        response = self.client.post(
+            "/api/platform-feedback/", self._valid_payload(), format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_submit_platform_feedback_persists_and_computes_metrics(self):
+        response = self.client.post(
+            "/api/platform-feedback/", self._valid_payload(), format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["mean_ux"], 5.6)
+        self.assertEqual(response.data["nps_category"], "promoter")
+
+        feedback = PlatformFeedback.objects.get(response=self.response_obj)
+        self.assertEqual(feedback.nps_score, 9)
+        self.assertEqual(feedback.ux_improvement, "希望配對更快一點。")
+
+    def test_optional_improvement_can_be_blank(self):
+        response = self.client.post(
+            "/api/platform-feedback/",
+            self._valid_payload(ux_improvement=""),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_resubmit_updates_existing_feedback(self):
+        self.client.post(
+            "/api/platform-feedback/", self._valid_payload(), format="json"
+        )
+        self.client.post(
+            "/api/platform-feedback/",
+            self._valid_payload(nps_score=3),
+            format="json",
+        )
+        self.assertEqual(
+            PlatformFeedback.objects.filter(response=self.response_obj).count(), 1
+        )
+        feedback = PlatformFeedback.objects.get(response=self.response_obj)
+        self.assertEqual(feedback.nps_score, 3)
+        self.assertEqual(feedback.nps_category(), "detractor")
+
+    def test_nps_out_of_range_is_rejected(self):
+        response = self.client.post(
+            "/api/platform-feedback/",
+            self._valid_payload(nps_score=11),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_cannot_submit_feedback_for_other_users_response(self):
+        other = get_user_model().objects.create_user(
+            username="intruder", password="secret123"
+        )
+        other_response = self._create_post_response(other)
+        response = self.client.post(
+            "/api/platform-feedback/",
+            self._valid_payload(response_id=other_response.id),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)

@@ -1,7 +1,13 @@
 from rest_framework import serializers
 
 from .dialogue_topics import get_dialogue_survey
-from .models import AIConversation, DiscomfortReport, MatchMessage, PostDialogueResponse
+from .models import (
+    AIConversation,
+    DiscomfortReport,
+    MatchMessage,
+    PlatformFeedback,
+    PostDialogueResponse,
+)
 
 
 class AIConversationSerializer(serializers.ModelSerializer):
@@ -309,6 +315,55 @@ class PostDialogueResponseSerializer(serializers.Serializer):
 
 class PostDialogueResponseConsentSerializer(serializers.Serializer):
     consent_confirmed = serializers.BooleanField()
+
+
+class PlatformFeedbackSerializer(serializers.Serializer):
+    """Part F — platform experience feedback (7 items)."""
+
+    response_id = serializers.IntegerField()
+
+    # F1–F5 satisfaction Likert (1–7)
+    ux_matching = _likert_7()
+    ux_chatroom = _likert_7()
+    ux_nlp_intervention = _likert_7()
+    ux_ccnd = _likert_7()
+    ux_overall = _likert_7()
+
+    # F6 NPS (0–10)
+    nps_score = serializers.IntegerField(min_value=0, max_value=10)
+
+    # F7 open-ended (optional)
+    ux_improvement = serializers.CharField(
+        max_length=4000,
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        trim_whitespace=False,
+    )
+
+
+class PlatformFeedbackOutputSerializer(serializers.ModelSerializer):
+    mean_ux = serializers.SerializerMethodField()
+    nps_category = serializers.SerializerMethodField()
+
+    def get_mean_ux(self, obj):
+        return obj.mean_ux()
+
+    def get_nps_category(self, obj):
+        return obj.nps_category()
+
+    class Meta:
+        model = PlatformFeedback
+        fields = [
+            "id",
+            "response",
+            "ux_matching", "ux_chatroom", "ux_nlp_intervention",
+            "ux_ccnd", "ux_overall",
+            "nps_score", "ux_improvement",
+            "mean_ux", "nps_category",
+            "created_at",
+        ]
+        read_only_fields = fields
 
 
 class PostDialogueResponseOutputSerializer(serializers.ModelSerializer):

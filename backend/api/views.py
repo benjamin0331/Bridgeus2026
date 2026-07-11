@@ -19,6 +19,7 @@ from .models import (
     DialogueSessionRecord,
     DiscomfortReport,
     MatchStanceDrift,
+    PlatformFeedback,
     PostDialogueResponse,
 )
 from .dialogue_topics import (
@@ -39,6 +40,8 @@ from .serializers import (
     MatchingRoomSemanticTreeSerializer,
     MatchingStateSerializer,
     MatchingTopicSerializer,
+    PlatformFeedbackSerializer,
+    PlatformFeedbackOutputSerializer,
     PostDialogueResponseConsentSerializer,
     PostDialogueResponseOutputSerializer,
     PostDialogueResponseSerializer,
@@ -1562,3 +1565,41 @@ class PostDialogueResponseConsentView(APIView):
                 ),
             }
         )
+
+
+class PlatformFeedbackView(APIView):
+    """POST /api/platform-feedback/ — submit Part F platform experience feedback."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        serializer = PlatformFeedbackSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        validated = serializer.validated_data
+
+        try:
+            response_obj = PostDialogueResponse.objects.get(
+                id=validated["response_id"],
+                user=request.user,
+            )
+        except PostDialogueResponse.DoesNotExist:
+            return Response(
+                {"detail": "找不到對應的問卷紀錄。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        feedback, _created = PlatformFeedback.objects.update_or_create(
+            response=response_obj,
+            defaults={
+                "ux_matching": validated["ux_matching"],
+                "ux_chatroom": validated["ux_chatroom"],
+                "ux_nlp_intervention": validated["ux_nlp_intervention"],
+                "ux_ccnd": validated["ux_ccnd"],
+                "ux_overall": validated["ux_overall"],
+                "nps_score": validated["nps_score"],
+                "ux_improvement": validated.get("ux_improvement") or "",
+            },
+        )
+
+        out = PlatformFeedbackOutputSerializer(feedback)
+        return Response(out.data, status=status.HTTP_201_CREATED)

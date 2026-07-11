@@ -288,17 +288,15 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
         )
 
 
-# Topic relevance is checked per message (a single off-topic line should surface
-# immediately), but drift + stalemate need accumulated context and are heavier, so
-# they run at most once per _ANALYSIS_CHAR_THRESHOLD chars or _ANALYSIS_INTERVAL_SECONDS,
-# whichever comes first. The counters are shared across both users in a match so the
-# window reflects the conversation, not one speaker.
-_ANALYSIS_CHAR_THRESHOLD = 200
-_ANALYSIS_INTERVAL_SECONDS = 300
+# Stance drift and topic relevance now run per message (see _run_message_analysis),
+# mirroring the H-AI per-turn cadence so both cohorts' drift series are comparable.
+# Stalemate detection stays throttled: it compares both users' recent messages and
+# fires a direction suggestion, so running it every message would spam and needs no
+# such granularity. At most once per _STALEMATE_MIN_INTERVAL_SECONDS per match.
+_STALEMATE_MIN_INTERVAL_SECONDS = 300
 
-# Shared per-match throttle state (single-process only).
-_match_char_count: dict[int, int] = {}
-_match_last_analysis: dict[int, float] = {}
+# Per-match stalemate throttle state (single-process only; see USE_REDIS_CHANNEL note).
+_match_last_stalemate: dict[int, float] = {}
 
 
 class MatchRoomConsumer(AsyncWebsocketConsumer):
@@ -326,8 +324,7 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
     async def disconnect(self, close_code):
         if hasattr(self, "match") and self.match:
             await self._mark_current_user_disconnected()
-            _match_char_count.pop(self.match.id, None)
-            _match_last_analysis.pop(self.match.id, None)
+            _match_last_stalemate.pop(self.match.id, None)
         if hasattr(self, "room_group_name"):
             await self.channel_layer.group_discard(
                 self.room_group_name,
@@ -596,23 +593,6 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
             asyncio.create_task(
                 self._run_message_analysis(message.id, content, emotion_score=emotion_score)
             )
-            self._maybe_run_periodic_analysis(content)
-
-    def _maybe_run_periodic_analysis(self, content: str) -> None:
-        """Run drift + stalemate at most once per _ANALYSIS_CHAR_THRESHOLD chars or
-        _ANALYSIS_INTERVAL_SECONDS, shared across both users in the match."""
-        match_id = self.match.id
-        _match_char_count[match_id] = _match_char_count.get(match_id, 0) + len(content)
-        last = _match_last_analysis.get(match_id)
-        now = time.monotonic()
-        elapsed = (now - last) if last is not None else _ANALYSIS_INTERVAL_SECONDS
-        if (
-            _match_char_count[match_id] >= _ANALYSIS_CHAR_THRESHOLD
-            or elapsed >= _ANALYSIS_INTERVAL_SECONDS
-        ):
-            _match_char_count[match_id] = 0
-            _match_last_analysis[match_id] = now
-            asyncio.create_task(self._run_drift_and_stalemate_checks())
 
     async def _run_message_analysis(self, message_id: int, content: str, *, emotion_score=None):
         from api.models import MatchMessage
@@ -635,9 +615,11 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
         if embedding is None:
             return
 
-        # Topic relevance runs every message; drift + stalemate are throttled
-        # separately via _maybe_run_periodic_analysis.
+        # Per-message, sender-bound analyses (run after this message's embedding is
+        # persisted so the just-sent message is included). Stalemate stays throttled.
         await self._run_topic_check()
+        await self._run_stance_drift()
+        await self._maybe_run_stalemate_check()
 
     async def _run_topic_check(self):
         anchor = await self._ensure_topic_anchor_embedding()
@@ -655,24 +637,46 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
         if result.get("is_off_topic"):
             await self._send_redirect_suggestion(trigger_score=result.get("relevance_score"))
 
-    async def _run_drift_and_stalemate_checks(self):
+    async def _run_stance_drift(self):
+        """Recompute this speaker's own drift after each of their messages (mirrors
+        the H-AI per-turn cadence) and push it to the speaker only. Drift is computed
+        against the speaker's own Q9 baseline, so a message only affects its sender."""
         try:
-            await acalculate_match_stance_drift(match_id=self.match.id, user_id=self.user.id)
+            drift = await acalculate_match_stance_drift(
+                match_id=self.match.id, user_id=self.user.id
+            )
         except Exception:
             logger.exception("Stance drift failed for match %s.", self.match.id)
+            return
+        if not drift:
+            return
+        payload = {**drift, "measured_at": timezone.now().isoformat()}
+        await self.send(
+            json.dumps({"type": "match_stance_drift", "stance_drift": payload})
+        )
 
+    async def _maybe_run_stalemate_check(self):
+        """Stalemate detection stays throttled (unlike drift): it compares both users'
+        recent messages and fires a direction suggestion, so it must not run every
+        message. At most once per _STALEMATE_MIN_INTERVAL_SECONDS per match."""
+        match_id = self.match.id
+        now = time.monotonic()
+        last = _match_last_stalemate.get(match_id)
+        if last is not None and (now - last) < _STALEMATE_MIN_INTERVAL_SECONDS:
+            return
+        _match_last_stalemate[match_id] = now
         try:
-            stalemate = await adetect_match_stalemate(match_id=self.match.id)
+            stalemate = await adetect_match_stalemate(match_id=match_id)
             if stalemate.get("is_stalemate"):
                 keywords = await aextract_match_opponent_keywords(
-                    match_id=self.match.id,
+                    match_id=match_id,
                     user_id=self.user.id,
                 )
                 await self._send_direction_suggestion(
                     suggested_content=build_stalemate_prompt(keywords)
                 )
         except Exception:
-            logger.exception("Stalemate detection failed for match %s.", self.match.id)
+            logger.exception("Stalemate detection failed for match %s.", match_id)
 
     async def _ensure_topic_anchor_embedding(self):
         if self.match.topic_anchor_embedding is not None:

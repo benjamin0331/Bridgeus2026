@@ -465,6 +465,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
         return;
       }
 
+      if (data.type === 'match_stance_drift') {
+        setMatchStanceDrift(data.stance_drift || null);
+        return;
+      }
+
       if (data.type === 'error') {
         setMatchChatError(data.content || '配對聊天室連線發生錯誤。');
       }
@@ -2208,7 +2213,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
         <div className="right-minor-feature-row" aria-label="對話即時指標">
           <div className="minor-feature-box metric-card">
-            <span className="metric-label">我的立場偏離度</span>
+            <span className="metric-label">我的論述移動</span>
             <strong className="metric-value">
               {driftValueDisplay}
             </strong>

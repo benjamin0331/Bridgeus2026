@@ -438,3 +438,54 @@ async def test_match_room_ai_assist_rephrase_fallback_disallows_accept():
     assert suggestion["actions"] == ["modify", "ignore"]
 
     await comm_a.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_match_room_pushes_sender_drift_after_each_message():
+    """Each user message recomputes and pushes that speaker's own drift (mirrors the
+    H-AI per-turn cadence, no 200-char throttle) and only to the sender."""
+    from BridgeUs_Django.asgi import application
+
+    alice = await create_user(username="drift_alice", password="secret123")
+    bob = await create_user(username="drift_bob", password="secret123")
+    match = await _make_active_match(alice, bob)
+
+    alice_token = await _access_token_for(alice)
+    bob_token = await _access_token_for(bob)
+    comm_a = WebsocketCommunicator(application, f"/ws/matching/rooms/{match.room_id}/?token={alice_token}")
+    comm_b = WebsocketCommunicator(application, f"/ws/matching/rooms/{match.room_id}/?token={bob_token}")
+    assert (await comm_a.connect())[0]
+    assert (await comm_b.connect())[0]
+
+    low_emotion = {"score": 0.1, "label": "neutral", "is_over_threshold": False}
+    drift_mock = AsyncMock(return_value={"drift_value": 0.42, "direction": "approaching"})
+    with patch("api.consumers.hh_ai_assist_enabled", return_value=True), \
+         patch("api.consumers.aget_analyze_emotion", new=AsyncMock(return_value=low_emotion)), \
+         patch("api.consumers.aget_embedding", new=AsyncMock(return_value=make_test_embedding(1))), \
+         patch("api.consumers.aget_topic_anchor_embedding", new=AsyncMock(return_value=make_test_embedding(0.5))), \
+         patch("api.consumers.acheck_match_topic_relevance", new=AsyncMock(return_value={"is_off_topic": False, "relevance_score": 0.9})), \
+         patch("api.consumers.adetect_match_stalemate", new=AsyncMock(return_value={"is_stalemate": False})), \
+         patch("api.consumers.acalculate_match_stance_drift", new=drift_mock):
+        # A short (<200 char) message must still trigger a drift recompute.
+        await comm_a.send_json_to({"type": "match_message", "content": "短短一句話。"})
+
+        msg_a = await comm_a.receive_json_from(timeout=3)
+        msg_b = await comm_b.receive_json_from(timeout=3)
+        assert msg_a["type"] == "match_message"
+        assert msg_b["type"] == "match_message"
+
+        drift_a = await comm_a.receive_json_from(timeout=3)
+        assert drift_a["type"] == "match_stance_drift"
+        assert drift_a["stance_drift"]["drift_value"] == 0.42
+        assert drift_a["stance_drift"]["measured_at"]
+
+        # The other user is not sent a drift push for the sender's message.
+        assert await comm_b.receive_nothing(timeout=1)
+
+    # Drift was recomputed for the sender only.
+    drift_mock.assert_awaited_once_with(match_id=match.id, user_id=alice.id)
+
+    await comm_a.disconnect()
+    await comm_b.disconnect()

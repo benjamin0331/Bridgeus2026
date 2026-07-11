@@ -485,3 +485,78 @@ class DiscomfortReport(models.Model):
 
     def __str__(self):
         return f"DiscomfortReport response={self.response_id}"
+
+
+# ---------------------------------------------------------------------------
+# Part F — platform experience feedback (collected after debriefing)
+# ---------------------------------------------------------------------------
+
+
+class PlatformFeedback(models.Model):
+    """Part F: 7-item platform UX feedback, filled right after debriefing.
+
+    Linked one-to-one to a PostDialogueResponse so the experiment condition,
+    topic and stance-change deltas can be JOINed for the cross-indicators
+    described in Part F (e.g. F5 vs |ΔS|, NPS H-AI vs H-H).
+    """
+
+    response = models.OneToOneField(
+        PostDialogueResponse,
+        on_delete=models.CASCADE,
+        related_name="platform_feedback",
+    )
+
+    # F1–F5: 7-point satisfaction Likert (1=非常不滿意, 7=非常滿意)
+    ux_matching = _likert_field("F1 配對機制")
+    ux_chatroom = _likert_field("F2 對話室體驗")
+    ux_nlp_intervention = _likert_field("F3 NLP 介入機制")
+    ux_ccnd = _likert_field("F4 概念認知網路圖")
+    ux_overall = _likert_field("F5 系統整體可用性")
+
+    # F6: NPS (0–10)
+    nps_score = models.PositiveSmallIntegerField(help_text="F6 推薦意願 0–10")
+
+    # F7: open-ended improvement suggestion (optional)
+    ux_improvement = models.TextField(
+        blank=True,
+        null=True,
+        help_text="F7 最需要改進的地方（選填）",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(nps_score__gte=0) & Q(nps_score__lte=10),
+                name="platform_feedback_nps_0_10",
+            ),
+        ]
+
+    # --- Analysis helpers ---
+
+    def mean_ux(self) -> float:
+        """F1–F5 平均功能滿意度。"""
+        total = (
+            self.ux_matching
+            + self.ux_chatroom
+            + self.ux_nlp_intervention
+            + self.ux_ccnd
+            + self.ux_overall
+        )
+        return round(total / 5, 4)
+
+    def nps_category(self) -> str:
+        """9–10 推薦者、7–8 被動者、0–6 批評者。"""
+        if self.nps_score >= 9:
+            return "promoter"
+        if self.nps_score >= 7:
+            return "passive"
+        return "detractor"
+
+    def __str__(self):
+        return (
+            f"PlatformFeedback response={self.response_id} "
+            f"mean_ux={self.mean_ux()} nps={self.nps_score}"
+        )
