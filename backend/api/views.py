@@ -64,6 +64,13 @@ from .serializers import (
     PostDialogueResponseOutputSerializer,
     PostDialogueResponseSerializer,
 )
+from .throttles import (
+    DialogueReplyRateThrottle,
+    DialogueSessionSemanticTreeAnalyzeRateThrottle,
+    GuestLoginRateThrottle,
+    HistoryConversationSemanticTreeAnalyzeRateThrottle,
+    MatchingRoomSemanticTreeAnalyzeRateThrottle,
+)
 
 SESSION_TTL_SECONDS = 60 * 60 * 12
 logger = logging.getLogger(__name__)
@@ -1010,6 +1017,7 @@ class DialogueSessionDetailView(APIView):
 
 class DialogueSessionReplyView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [DialogueReplyRateThrottle]
 
     def post(self, request, session_id: str):
         _, DialoguePhase, DialogueSession = _get_dialogue_runtime()
@@ -1128,6 +1136,7 @@ class DialogueSessionSemanticTreeView(APIView):
 
 class DialogueSessionSemanticTreeAnalyzeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [DialogueSessionSemanticTreeAnalyzeRateThrottle]
 
     def post(self, request, session_id: str):
         from apps.matching.services.semantic_tree import (
@@ -1298,6 +1307,7 @@ class HistoryConversationSemanticTreeTimelineView(APIView):
 
 class HistoryConversationSemanticTreeAnalyzeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [HistoryConversationSemanticTreeAnalyzeRateThrottle]
 
     def post(self, request, kind: str, conversation_id: str):
         from apps.matching.services.semantic_tree import (
@@ -1617,6 +1627,7 @@ class MatchingRoomSemanticTreeTimelineView(APIView):
 
 class MatchingRoomSemanticTreeAnalyzeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [MatchingRoomSemanticTreeAnalyzeRateThrottle]
 
     def post(self, request, room_id: str):
         from apps.matching.services.semantic_tree import (
@@ -1811,6 +1822,7 @@ class PlatformFeedbackView(APIView):
         return Response(out.data, status=status.HTTP_201_CREATED)
 class GuestLoginView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [GuestLoginRateThrottle]
 
     def post(self, request):
         nickname = (request.data.get("nickname") or "Guest")[:30]

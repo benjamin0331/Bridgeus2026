@@ -250,7 +250,29 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
-    )
+    ),
+    'DEFAULT_THROTTLE_RATES': {
+        'guest_login': os.getenv(
+            "DRF_THROTTLE_GUEST_LOGIN_RATE",
+            "10/hour",
+        ),
+        'dialogue_reply': os.getenv(
+            "DRF_THROTTLE_DIALOGUE_REPLY_RATE",
+            "30/min",
+        ),
+        'dialogue_session_semantic_tree_analyze': os.getenv(
+            "DRF_THROTTLE_DIALOGUE_ANALYZE_RATE",
+            "6/min",
+        ),
+        'history_conversation_semantic_tree_analyze': os.getenv(
+            "DRF_THROTTLE_HISTORY_ANALYZE_RATE",
+            "6/min",
+        ),
+        'matching_room_semantic_tree_analyze': os.getenv(
+            "DRF_THROTTLE_MATCHING_ANALYZE_RATE",
+            "6/min",
+        ),
+    },
 }
 
 SIMPLE_JWT = {

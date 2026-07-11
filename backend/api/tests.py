@@ -22,6 +22,11 @@ from api.models import (
     PostDialogueResponse,
     UserStanceProfile,
 )
+from api.throttles import (
+    DialogueReplyRateThrottle,
+    GuestLoginRateThrottle,
+    HistoryConversationSemanticTreeAnalyzeRateThrottle,
+)
 from api.views import _resolve_stance_category
 
 
@@ -987,6 +992,30 @@ class HistoryApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_history_semantic_tree_analyze_is_throttled(self):
+        ai_record, _ = self._create_ai_history()
+
+        with (
+            patch.dict(
+                HistoryConversationSemanticTreeAnalyzeRateThrottle.THROTTLE_RATES,
+                {"history_conversation_semantic_tree_analyze": "1/min"},
+                clear=False,
+            ),
+            patch(
+                "apps.matching.services.nuclear_node_classifier.build_candidate_items",
+                return_value=[],
+            ),
+        ):
+            first_response = self.client.post(
+                f"/api/history/conversations/ai/{ai_record.session_id}/semantic-tree/analyze/"
+            )
+            second_response = self.client.post(
+                f"/api/history/conversations/ai/{ai_record.session_id}/semantic-tree/analyze/"
+            )
+
+        self.assertEqual(first_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(second_response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
 
 class MatchingApiTests(APITestCase):
     def setUp(self):
@@ -1855,6 +1884,61 @@ class MatchingApiTests(APITestCase):
         )
         self.assertNotIn("anthropic invalid key", reply_response.data["detail"])
         mocked_get_agent.assert_called_once_with("nuclear_energy_all")
+
+    @patch("api.views.get_dialogue_agent", return_value=FakeDialogueAgent())
+    def test_dialogue_reply_is_throttled(self, mocked_get_agent):
+        create_response = self.client.post(
+            "/api/dialogue/sessions/",
+            {
+                "topic_id": 102,
+                "topic_title": "核能發電在減碳中的角色",
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        session_id = create_response.data["session_id"]
+
+        with patch.dict(
+            DialogueReplyRateThrottle.THROTTLE_RATES,
+            {"dialogue_reply": "1/min"},
+            clear=False,
+        ):
+            first_response = self.client.post(
+                f"/api/dialogue/sessions/{session_id}/reply/",
+                {"message": "第一次回覆"},
+                format="json",
+            )
+            second_response = self.client.post(
+                f"/api/dialogue/sessions/{session_id}/reply/",
+                {"message": "第二次回覆"},
+                format="json",
+            )
+
+        self.assertEqual(first_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(second_response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        mocked_get_agent.assert_called_once_with("nuclear_energy_all")
+
+
+class GuestLoginApiTests(APITestCase):
+    def test_guest_login_is_throttled(self):
+        with patch.dict(
+            GuestLoginRateThrottle.THROTTLE_RATES,
+            {"guest_login": "1/hour"},
+            clear=False,
+        ):
+            first_response = self.client.post(
+                "/api/guest/",
+                {"nickname": "Guest One"},
+                format="json",
+            )
+            second_response = self.client.post(
+                "/api/guest/",
+                {"nickname": "Guest Two"},
+                format="json",
+            )
+
+        self.assertEqual(first_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(second_response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
 
 
 class PlatformFeedbackApiTests(APITestCase):
