@@ -97,11 +97,15 @@ BridgeUs（橋得攏）— AI 驅動的去極化對話平台
     pointName，不呼叫任何 LLM API。架構/訓練來源見
     `apps/matching/ml_models/nuclear_node_model/README.md`（訓練者：黃筱筑）。
   - 其他議題（如 103）→ 維持 `analyze_with_openai()` 生成式路徑。
-  - **⚠️ 這條本地分類器路徑目前沒有權重檔**（`model.safetensors` x7，共
-    ~2.7GB，依規定不進版控，見 `.gitignore`）。需從共用空間另外複製進
-    `apps/matching/ml_models/nuclear_node_model/{model_macro,model_micro_0..5}/`
-    才能真的跑起來；沒放的話 `classify()` 會直接丟 `FileNotFoundError`
-    （刻意設計成明確報錯，不會靜默切回 OpenAI）。
+  - `model.safetensors`（x7，共 ~2.7GB）依規定不進版控（見 `.gitignore`）。
+    在**開發伺服器**上已用 `backend/scripts/copy_nuclear_weights.sh` 從訓練
+    專案目錄（`/srv/BridgeUs_dev_server/nuclear/test_for_2_label_pytorch_train_30_restart`）
+    複製進來並驗證可用；其他機器/CI 上還沒有，沒放的話 `classify()` 會直接
+    丟 `FileNotFoundError`（刻意設計成明確報錯，不會靜默切回 OpenAI）。
+  - `LOCAL_CLASSIFIER_MIN_CONFIDENCE = 0.35`：跟 OpenAI 路徑的 `MIN_CONFIDENCE`
+    (0.55) 分開設定。實測發現分類器的 softmax 信心值就算分類正確也常落在
+    0.5 左右，共用同一個門檻會把大部分正確結果都判定 invalid 丟棄。這個值
+    只是先射一個保守的估計，之後有真實流量要再調整。
   - 這份實作原本只存在 `feat/hsiao` 分支、沒有合併也沒有寫進任何狀態文件，
     差點連同分支一起遺失——2026-07-11 已補移植進主線並在此記錄，**之後只
     要動到 CCND 生成邏輯，這裡的說明要一起更新**，不要讓它再一次只活在某個
@@ -308,7 +312,8 @@ npm run dev   # Vite dev server，port 5173
 - [ ] Docker Compose 完整配置（含 PostgreSQL + Redis）
 - [ ] PostgreSQL 切換（`CREATE EXTENSION IF NOT EXISTS vector`）
 - [ ] 多議題知識庫（目前只有核能）
-- [ ] 補齊核能節點分類器權重檔（`apps/matching/ml_models/nuclear_node_model/`，見 M3 說明）
+- [x] 核能節點分類器權重檔（開發伺服器已放好並驗證，見 M3 說明）
+- [ ] 用真實對話資料重新檢視 `LOCAL_CLASSIFIER_MIN_CONFIDENCE`（目前 0.35 是保守估計值）
 
 ### 後期
 
