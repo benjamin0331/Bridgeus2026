@@ -10,7 +10,7 @@ visible = false
 offset_left = 510.0
 offset_top = 430.0
 offset_right = 770.0
-offset_bottom = 600.0
+offset_bottom = 660.0
 
 [node name="MenuTitle" type="Label" parent="Menu"]
 offset_left = 16.0
@@ -33,6 +33,13 @@ offset_top = 112.0
 offset_right = 244.0
 offset_bottom = 148.0
 text = "發起聊天邀請"
+
+[node name="VoiceButton" type="Button" parent="Menu"]
+offset_left = 16.0
+offset_top = 160.0
+offset_right = 244.0
+offset_bottom = 196.0
+text = "發起語音邀請"
 
 [node name="Read" type="Panel" parent="."]
 visible = false
@@ -135,6 +142,45 @@ offset_top = 464.0
 offset_right = 404.0
 offset_bottom = 504.0
 text = "送出"
+
+[node name="Voice" type="Panel" parent="."]
+visible = false
+offset_left = 460.0
+offset_top = 280.0
+offset_right = 820.0
+offset_bottom = 470.0
+
+[node name="VoiceTitle" type="Label" parent="Voice"]
+offset_left = 20.0
+offset_top = 16.0
+offset_right = 340.0
+offset_bottom = 48.0
+theme_override_font_sizes/font_size = 18
+text = "語音通話中"
+
+[node name="PitchLabel" type="Label" parent="Voice"]
+offset_left = 20.0
+offset_top = 64.0
+offset_right = 340.0
+offset_bottom = 92.0
+text = "音高：1.0"
+
+[node name="PitchSlider" type="HSlider" parent="Voice"]
+offset_left = 20.0
+offset_top = 100.0
+offset_right = 340.0
+offset_bottom = 124.0
+min_value = 0.5
+max_value = 2.0
+step = 0.05
+value = 1.0
+
+[node name="QuitButton" type="Button" parent="Voice"]
+offset_left = 20.0
+offset_top = 140.0
+offset_right = 160.0
+offset_bottom = 176.0
+text = "退出語音"
 
 [node name="Toast" type="Label" parent="."]
 visible = false
