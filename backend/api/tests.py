@@ -685,6 +685,129 @@ class DialogueSessionApiTests(APITestCase):
         self.assertIsNotNone(cache.get(f"dialogue_session:{session_id}"))
 
 
+class StanceProfileReuseApiTests(APITestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = get_user_model().objects.create_user(
+            username="alice",
+            password="secret123",
+        )
+        self.client.force_authenticate(user=self.user)
+
+    def test_stance_profile_reports_not_existing_before_any_survey(self):
+        response = self.client.get("/api/dialogue/topics/102/stance-profile/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, {"exists": False, "topic_id": 102})
+
+    def test_stance_profile_unknown_topic_returns_404(self):
+        response = self.client.get("/api/dialogue/topics/999/stance-profile/")
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_stance_profile_requires_authentication(self):
+        self.client.force_authenticate(user=None)
+
+        response = self.client.get("/api/dialogue/topics/102/stance-profile/")
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_ai_session_creation_persists_reusable_stance_profile(self):
+        with patch(
+            "api.views.build_q9_embedding",
+            return_value=make_test_embedding(1),
+        ):
+            create_response = self.client.post(
+                "/api/dialogue/sessions/",
+                {
+                    "topic_id": 102,
+                    "topic_title": "核能發電在減碳中的角色",
+                    "survey_answers": build_supporting_answers(),
+                    "survey_open_answers": {
+                        "Q9": "我支持核電，因為它能穩定供電並協助減碳。",
+                        "Q10": "反對者最強的論點是核安與核廢料風險。",
+                    },
+                },
+                format="json",
+            )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+
+        profile = UserStanceProfile.objects.get(user=self.user, topic_id=102)
+        self.assertEqual(profile.stance_category, "support")
+        self.assertEqual(float(profile.stance_score), 7.0)
+        self.assertEqual(profile.survey_answers, build_supporting_answers())
+        self.assertEqual(profile.survey_open_answers["Q9"], "我支持核電，因為它能穩定供電並協助減碳。")
+
+        profile_response = self.client.get(
+            "/api/dialogue/topics/102/stance-profile/"
+        )
+        self.assertEqual(profile_response.status_code, status.HTTP_200_OK)
+        self.assertTrue(profile_response.data["exists"])
+        self.assertEqual(profile_response.data["stance_category"], "support")
+        self.assertEqual(
+            profile_response.data["survey_answers"],
+            build_supporting_answers(),
+        )
+
+    def test_empty_survey_does_not_persist_stance_profile(self):
+        create_response = self.client.post(
+            "/api/dialogue/sessions/",
+            {
+                "topic_id": 102,
+                "topic_title": "核能發電在減碳中的角色",
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        self.assertFalse(
+            UserStanceProfile.objects.filter(user=self.user, topic_id=102).exists()
+        )
+
+    def test_reusing_saved_answers_creates_new_session(self):
+        with patch(
+            "api.views.build_q9_embedding",
+            return_value=make_test_embedding(1),
+        ):
+            self.client.post(
+                "/api/dialogue/sessions/",
+                {
+                    "topic_id": 102,
+                    "topic_title": "核能發電在減碳中的角色",
+                    "survey_answers": build_supporting_answers(),
+                    "survey_open_answers": {"Q9": "我支持核電。"},
+                },
+                format="json",
+            )
+
+        saved = self.client.get("/api/dialogue/topics/102/stance-profile/").data
+
+        # Simulate the frontend "reuse previous stance" path: resubmit the saved
+        # answers through the normal session-create flow.
+        with patch(
+            "api.views.build_q9_embedding",
+            return_value=make_test_embedding(1),
+        ):
+            reuse_response = self.client.post(
+                "/api/dialogue/sessions/",
+                {
+                    "topic_id": 102,
+                    "topic_title": "核能發電在減碳中的角色",
+                    "survey_answers": saved["survey_answers"],
+                    "survey_open_answers": saved["survey_open_answers"],
+                },
+                format="json",
+            )
+
+        self.assertEqual(reuse_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(reuse_response.data["stance_score"], 7.0)
+        self.assertEqual(reuse_response.data["stance_category"], "support")
+        # Still one canonical profile per user+topic.
+        self.assertEqual(
+            UserStanceProfile.objects.filter(user=self.user, topic_id=102).count(),
+            1,
+        )
+
+
 class HistoryApiTests(APITestCase):
     def setUp(self):
         cache.clear()

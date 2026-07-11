@@ -1,0 +1,101 @@
+/* Reuses .modal-overlay / .modal-content / .modal-close-btn from SurveyModal.css */
+
+.stance-reuse-content {
+  width: 480px;
+  gap: 24px;
+}
+
+.stance-reuse-header h2 {
+  font-size: 24px;
+  font-weight: bold;
+  margin: 10px 0 12px;
+  color: #1a1a1a;
+}
+
+.stance-reuse-header p {
+  color: #6f665e;
+  font-size: 14px;
+  line-height: 1.7;
+  margin: 0;
+}
+
+.stance-reuse-kicker {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: bold;
+  letter-spacing: 0.5px;
+  color: #8a7c6b;
+  background-color: #ece4da;
+  padding: 4px 12px;
+  border-radius: 999px;
+}
+
+.stance-reuse-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background-color: #eeeeee;
+  border-radius: 14px;
+  padding: 18px 20px;
+}
+
+.stance-reuse-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.stance-reuse-label {
+  font-size: 13px;
+  color: #7b726a;
+}
+
+.stance-reuse-value {
+  font-size: 15px;
+  font-weight: bold;
+  color: #2d2d2d;
+}
+
+.stance-reuse-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.stance-reuse-btn {
+  width: 100%;
+  padding: 14px 20px;
+  border-radius: 30px;
+  border: none;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.stance-reuse-btn.primary {
+  background-color: #e0d8cf;
+  color: #333;
+}
+
+.stance-reuse-btn.secondary {
+  background-color: #f7f3f0;
+  color: #6f665e;
+  border: 1px solid #d1c9c0;
+}
+
+.stance-reuse-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@media (max-width: 768px) {
+  .stance-reuse-content {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .stance-reuse-header h2 {
+    font-size: 20px;
+  }
+}

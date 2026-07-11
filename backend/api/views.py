@@ -21,6 +21,7 @@ from .models import (
     MatchStanceDrift,
     PlatformFeedback,
     PostDialogueResponse,
+    UserStanceProfile,
 )
 from .dialogue_topics import (
     TOPIC_CONFIGS,
@@ -422,6 +423,40 @@ def _build_topic_config(
     }
 
 
+def _upsert_user_stance_profile(
+    *,
+    user,
+    topic_id: int,
+    survey_answers: dict[str, int],
+    survey_open_answers: dict[str, str],
+    user_stance_score: float,
+    q9_embedding,
+) -> UserStanceProfile:
+    """Persist the user's latest pre-survey stance for a topic.
+
+    Shared canonical store (per user+topic) so a later "new dialogue" can offer
+    to reuse the previous pre-survey answers instead of re-filling them. Matching
+    already upserts this via ``enqueue_for_matching``; this keeps the AI-mode flow
+    in sync so AI-only users also have a reusable profile.
+    """
+    stance_category = _resolve_stance_category(
+        topic_id=topic_id,
+        user_stance_score=user_stance_score,
+    )
+    profile, _ = UserStanceProfile.objects.update_or_create(
+        user=user,
+        topic_id=topic_id,
+        defaults={
+            "stance_score": user_stance_score,
+            "stance_category": stance_category,
+            "survey_answers": survey_answers,
+            "survey_open_answers": survey_open_answers,
+            "q9_embedding": q9_embedding,
+        },
+    )
+    return profile
+
+
 def _get_other_user(match: DialogueMatch, *, user_id: int):
     return match.user_b if match.user_a_id == user_id else match.user_a
 
@@ -766,6 +801,45 @@ class DialogueSurveyView(APIView):
         return Response(serializer.data)
 
 
+class DialogueStanceProfileView(APIView):
+    """GET /api/dialogue/topics/<topic_id>/stance-profile/
+
+    Reports whether the user already has a saved pre-survey stance for this
+    topic, and returns the stored answers so the frontend can offer to reuse
+    them instead of re-filling the survey for a new dialogue.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    authentication_classes = [JWTStatelessUserAuthentication]
+
+    def get(self, request, topic_id: int):
+        if not get_dialogue_survey(topic_id):
+            return Response(
+                {"detail": "找不到這個議題的問卷設定。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        profile = (
+            UserStanceProfile.objects.filter(user=request.user, topic_id=topic_id)
+            .order_by("-updated_at", "-id")
+            .first()
+        )
+        if profile is None:
+            return Response({"exists": False, "topic_id": topic_id})
+
+        return Response(
+            {
+                "exists": True,
+                "topic_id": topic_id,
+                "stance_score": profile.stance_score,
+                "stance_category": profile.stance_category,
+                "survey_answers": profile.survey_answers or {},
+                "survey_open_answers": profile.survey_open_answers or {},
+                "updated_at": profile.updated_at,
+            }
+        )
+
+
 class DialogueSessionCreateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -783,6 +857,19 @@ class DialogueSessionCreateView(APIView):
             survey_open_answers=validated.get("survey_open_answers", {}),
             user_initial_argument=validated.get("user_initial_argument", ""),
         )
+
+        # Persist the pre-survey stance so a later "new dialogue" can reuse it.
+        # Only when the survey was actually filled, to avoid overwriting a real
+        # profile with the neutral default of an empty answer set.
+        if validated.get("survey_answers"):
+            _upsert_user_stance_profile(
+                user=request.user,
+                topic_id=validated["topic_id"],
+                survey_answers=validated["survey_answers"],
+                survey_open_answers=topic_config["survey_open_answers"],
+                user_stance_score=topic_config["user_stance_score"],
+                q9_embedding=topic_config["q9_embedding"],
+            )
 
         session = DialogueSession(
             topic=topic_config["topic"],
