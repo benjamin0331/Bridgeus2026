@@ -1,0 +1,11 @@
+{
+  "num_labels": 2,
+  "raw_label_to_id": {
+    "3": 0,
+    "10": 1
+  },
+  "id_to_raw_label": {
+    "0": 3,
+    "1": 10
+  }
+}

@@ -1015,6 +1015,43 @@ def analyze_with_openai(
     }
 
 
+LOCAL_CLASSIFIER_TOPIC_IDS = {102}
+
+
+def uses_local_classifier(topic_id: int | None) -> bool:
+    return topic_id in LOCAL_CLASSIFIER_TOPIC_IDS
+
+
+def analyze_text_for_tree(
+    *,
+    topic_id: int | None,
+    text: str,
+    tree: dict[str, Any],
+    anchors: list[dict[str, str]] | None = None,
+    anchor_descriptions: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Dispatch node analysis by topic: topic 102 (nuclear energy) uses the
+    locally fine-tuned classifier pipeline; every other topic keeps using the
+    generative OpenAI path.
+    """
+    resolved_anchors = anchors or FIXED_ANCHORS
+    if uses_local_classifier(topic_id):
+        from apps.matching.services import nuclear_node_classifier
+
+        candidate_items = nuclear_node_classifier.build_candidate_items(text, resolved_anchors)
+        return {
+            **validate_analysis_items({"items": candidate_items}, tree, resolved_anchors),
+            "model": "local-bert-pipeline",
+        }
+
+    return analyze_with_openai(
+        text=text,
+        tree=tree,
+        anchors=resolved_anchors,
+        anchor_descriptions=anchor_descriptions,
+    )
+
+
 def _message_to_source(message) -> dict[str, Any]:
     return {
         "source": "match_message",
@@ -1217,14 +1254,19 @@ def analyze_pending_room_messages(
             not in set(state["participants"][owner_key]["analyzedSourceIds"])
         ][: semantic_tree_batch_size()]
 
-        if pending_messages and not get_openai_api_key():
+        if (
+            pending_messages
+            and not uses_local_classifier(locked_match.topic_id)
+            and not get_openai_api_key()
+        ):
             raise MissingOpenAIApiKey("server 缺少 OPENAI_API_KEY，無法呼叫 OpenAI。")
 
         analyzed_count = 0
         for message, owner_key in pending_messages:
             owner_state = state["participants"][owner_key]
             source_message = _message_to_source(message)
-            result = analyze_with_openai(
+            result = analyze_text_for_tree(
+                topic_id=locked_match.topic_id,
                 text=message.content,
                 tree=owner_state["treeData"],
                 anchors=state["anchors"],
@@ -1279,13 +1321,18 @@ def analyze_pending_ai_conversations(
         if clean_text(turn.user_prompt) and clean_text(turn.id) not in analyzed_ids
     ][: semantic_tree_batch_size()]
 
-    if pending_turns and not get_openai_api_key():
+    if (
+        pending_turns
+        and not uses_local_classifier(session_record.get("topic_id"))
+        and not get_openai_api_key()
+    ):
         raise MissingOpenAIApiKey("server 缺少 OPENAI_API_KEY，無法呼叫 OpenAI。")
 
     analyzed_count = 0
     for turn in pending_turns:
         source_message = _ai_turn_to_source(turn)
-        result = analyze_with_openai(
+        result = analyze_text_for_tree(
+            topic_id=session_record.get("topic_id"),
             text=turn.user_prompt,
             tree=owner_state["treeData"],
             anchors=state["anchors"],
