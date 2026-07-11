@@ -7,8 +7,6 @@ const GEN_BUFFER := 0.1   # ponytail: 播放緩衝秒數；破音/延遲時實�
 
 var _bus_idx := -1
 var _pitch: AudioEffectPitchShift = null
-var _reverb: AudioEffectReverb = null
-var _distortion: AudioEffectDistortion = null
 var _capture: AudioEffectCapture = null
 var _analyzer: AudioEffectSpectrumAnalyzerInstance = null
 var _mic: AudioStreamPlayer = null
@@ -39,20 +37,10 @@ func start() -> void:
 	add_child(_gen_player)
 	_gen_player.play()
 	_playback = _gen_player.get_stream_playback()
-	# 可調效果鏈（預設中性＝接近原音），鏈尾固定 Capture → SpectrumAnalyzer。
+	# 可調音高（預設 1.0＝原音），鏈尾固定 Capture → SpectrumAnalyzer。
 	_pitch = AudioEffectPitchShift.new()
 	_pitch.pitch_scale = 1.0
 	AudioServer.add_bus_effect(_bus_idx, _pitch)
-	_reverb = AudioEffectReverb.new()
-	_reverb.room_size = 0.8
-	_reverb.damping = 0.5
-	_reverb.dry = 1.0
-	_reverb.wet = 0.0
-	AudioServer.add_bus_effect(_bus_idx, _reverb)
-	_distortion = AudioEffectDistortion.new()
-	_distortion.mode = AudioEffectDistortion.MODE_OVERDRIVE
-	_distortion.drive = 0.0
-	AudioServer.add_bus_effect(_bus_idx, _distortion)
 	_capture = AudioEffectCapture.new()
 	AudioServer.add_bus_effect(_bus_idx, _capture)
 	AudioServer.add_bus_effect(_bus_idx, AudioEffectSpectrumAnalyzer.new())
@@ -63,14 +51,6 @@ func start() -> void:
 func set_pitch(v: float) -> void:      # 0.5 大叔 ~ 2.0 花栗鼠
 	if _pitch:
 		_pitch.pitch_scale = v
-
-func set_reverb(v: float) -> void:      # 0.0 無 ~ 1.0 空靈迴音
-	if _reverb:
-		_reverb.wet = v
-
-func set_distortion(v: float) -> void:  # 0.0 乾淨 ~ 1.0 機械沙啞
-	if _distortion:
-		_distortion.drive = v
 
 # UI 用：某頻段的能量強度（複合波幅）。
 func get_spectrum(from_hz: float, to_hz: float) -> float:
@@ -110,8 +90,6 @@ func stop() -> void:
 	_capture = null
 	_analyzer = null
 	_pitch = null
-	_reverb = null
-	_distortion = null
 	if _bus_idx != -1:
 		AudioServer.remove_bus(_bus_idx)
 		_bus_idx = -1
