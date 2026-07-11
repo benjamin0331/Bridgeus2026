@@ -154,16 +154,11 @@ function normalizeTreeEntries(trees, treeData, topicTitle) {
   });
 }
 
-function shouldRenderNode(node) {
-  if (node.type !== 'anchor') {
-    return true;
-  }
-
-  if (!node.hiddenUntilUsed) {
-    return true;
-  }
-
-  return (node.children || []).length > 0;
+function shouldRenderNode() {
+  // Every node renders. All 6 anchors are shown from the start — an anchor that
+  // has not been lit yet is drawn in a dormant (gray) state rather than hidden.
+  // The dormant/lit distinction is purely visual; see nodeClassName().
+  return true;
 }
 
 function deriveVisibleTreeData(node) {
@@ -392,6 +387,16 @@ function labelClassForNode(node) {
   return `conversation-tree-node-label ${node.data.type}-label`;
 }
 
+function nodeClassName(item) {
+  const base = `conversation-tree-node node-${item.data.type}`;
+  // Depth-1 anchors that have not been lit yet (backend still flags them
+  // hiddenUntilUsed) render in a dormant/gray state; lit anchors render bright.
+  if (item.data.type === 'anchor' && item.data.hiddenUntilUsed) {
+    return `${base} is-dormant`;
+  }
+  return base;
+}
+
 function wrapText(textSelection) {
   textSelection.each(function wrapNodeLabel(node) {
     const textNode = select(this);
@@ -616,7 +621,7 @@ function ConversationTreePanel({
         .selectAll('g')
         .data(root.descendants(), (item) => item.data.id)
         .join('g')
-        .attr('class', (item) => `conversation-tree-node node-${item.data.type}`)
+        .attr('class', nodeClassName)
         .attr('transform', transformFromPosition)
         .attr('opacity', 0)
         .on('click', (event, item) => {

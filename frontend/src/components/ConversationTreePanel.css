@@ -172,6 +172,20 @@
   stroke: rgba(140, 100, 60, 0.3);
 }
 
+/* Dormant anchor: shown from the start in a muted gray state until one of its
+   child nodes is lit, at which point the backend clears hiddenUntilUsed and it
+   renders bright (the rule above). */
+.node-anchor.is-dormant .conversation-tree-node-shape {
+  fill: #d5ccc1;
+  stroke: rgba(120, 105, 90, 0.25);
+  opacity: 0.55;
+}
+
+.node-anchor.is-dormant .anchor-label {
+  fill: #8f8173;
+  opacity: 0.85;
+}
+
 .node-point .conversation-tree-node-shape {
   fill: #f0e8dc;
   stroke: rgba(140, 110, 80, 0.28);
