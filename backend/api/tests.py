@@ -3,7 +3,9 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.db import connection
 from django.test import SimpleTestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
@@ -874,6 +876,26 @@ class HistoryApiTests(APITestCase):
 
         item = response.data["results"][0]
         self.assertEqual(item["room_id"], ai_record.session_id)
+
+    def test_history_list_uses_constant_queries(self):
+        self._create_ai_history(session_id="session-a")
+        self._create_ai_history(session_id="session-b")
+        self._create_match_history(room_id="room-a")
+        self._create_match_history(room_id="room-b")
+
+        with CaptureQueriesContext(connection) as first_ctx:
+            first_response = self.client.get("/api/history/conversations/")
+        self.assertEqual(first_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(first_response.data["count"], 4)
+
+        self._create_ai_history(session_id="session-c")
+        self._create_match_history(room_id="room-c")
+
+        with CaptureQueriesContext(connection) as second_ctx:
+            second_response = self.client.get("/api/history/conversations/")
+        self.assertEqual(second_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(second_response.data["count"], 6)
+        self.assertEqual(len(first_ctx), len(second_ctx))
 
     def test_ai_timeline_shows_only_nodes_analyzed_by_the_given_turn(self):
         ai_record, first_turn = self._create_ai_history()
