@@ -15,9 +15,14 @@ run/main_scene="uid://bu0s521nxp0w5"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 config/icon="res://icon.svg"
 
+[audio]
+
+driver/enable_input=true
+
 [autoload]
 
 Backend="*res://Globals/Backend.gd"
+VoiceChat="*res://Globals/VoiceChat.gd"
 
 [display]
 
