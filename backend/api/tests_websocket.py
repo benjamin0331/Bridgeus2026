@@ -88,7 +88,7 @@ async def test_dialogue_websocket_persists_completed_turn():
     )
 
     with (
-        patch("api.views.get_dialogue_agent", return_value=FakeStreamingDialogueAgent()),
+        patch("api.services.dialogue_session.get_dialogue_agent", return_value=FakeStreamingDialogueAgent()),
         patch("api.consumers.aget_embedding", new=AsyncMock(return_value=make_test_embedding(-1))),
     ):
         connected, _ = await communicator.connect()

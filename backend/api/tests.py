@@ -20,7 +20,7 @@ from api.models import (
     PostDialogueResponse,
     UserStanceProfile,
 )
-from api.views import _resolve_stance_category
+from api.services.stance_scoring import _resolve_stance_category
 
 
 def fake_waste_items_response():
@@ -503,7 +503,7 @@ class DialogueSessionApiTests(APITestCase):
         mocked_get_agent.assert_called_once_with("nuclear_energy_all")
 
     @patch("chat.services.embedding.get_embedding", return_value=make_test_embedding(-1))
-    @patch("api.views.build_q9_embedding", return_value=make_test_embedding(1), create=True)
+    @patch("api.services.dialogue_session.build_q9_embedding", return_value=make_test_embedding(1), create=True)
     @patch("api.views.get_dialogue_agent", return_value=FakeDialogueAgent())
     def test_ai_reply_includes_session_stance_drift_value(
         self,

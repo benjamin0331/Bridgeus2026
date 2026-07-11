@@ -119,7 +119,7 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
 
     async def _stream_response(self, user_message: str):
         from apps.matching.services.ai_agent import DialoguePhase, DialogueSession
-        from api.views import get_dialogue_agent
+        from api.services.dialogue_session import get_dialogue_agent
 
         cache_key = _session_cache_key(self.session_id)
         session_record = await sync_to_async(cache.get)(cache_key)
@@ -187,7 +187,7 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
         await self.send(json.dumps({"type": "agent_stream_end", "stance_drift": stance_drift}))
 
     async def _get_session_record(self):
-        from api.views import _restore_dialogue_session_record_for_user
+        from api.services.dialogue_session import _restore_dialogue_session_record_for_user
 
         session_record, _ = await sync_to_async(
             _restore_dialogue_session_record_for_user
@@ -209,7 +209,7 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
             return (session_record.get("session") or {}).get("stance_drift")
 
     async def _persist_session_record(self, session_record: dict):
-        from api.views import _persist_dialogue_session_record
+        from api.services.dialogue_session import _persist_dialogue_session_record
 
         try:
             await sync_to_async(_persist_dialogue_session_record)(session_record)
