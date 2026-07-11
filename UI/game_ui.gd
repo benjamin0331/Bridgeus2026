@@ -27,15 +27,20 @@ var _voice_peer_id := -1
 @onready var _toast: Label = $Toast
 @onready var _voice: Panel = $Voice
 @onready var _voice_title: Label = $Voice/VoiceTitle
-@onready var _preset_btns: Array[Button] = [$Voice/AnonBtn, $Voice/CyberBtn, $Voice/RadioBtn, $Voice/GhostBtn]
+@onready var _pitch_slider: HSlider = $Voice/PitchSlider
+@onready var _pitch_label: Label = $Voice/PitchLabel
+@onready var _reverb_slider: HSlider = $Voice/ReverbSlider
+@onready var _reverb_label: Label = $Voice/ReverbLabel
+@onready var _dist_slider: HSlider = $Voice/DistSlider
+@onready var _dist_label: Label = $Voice/DistLabel
 @onready var _bars: Array[ColorRect] = [$Voice/Bar1, $Voice/Bar2, $Voice/Bar3, $Voice/Bar4, $Voice/Bar5]
 
 # 聲波柱：頻段、換算旋鈕（實機微調靈敏度）。
 const _FREQ_BINS := [[20, 200], [200, 500], [500, 1500], [1500, 3000], [3000, 10000]]
 const _HEIGHT_SCALE := 400.0
 const _MIN_BAR := 5.0
-const _MAX_BAR := 135.0
-const _BAR_BASELINE := 300.0   # 柱子底部 y（Voice 面板內），往上長
+const _MAX_BAR := 100.0
+const _BAR_BASELINE := 330.0   # 柱子底部 y（Voice 面板內），往上長
 
 func _ready():
 	add_to_group("issue_ui")
@@ -49,8 +54,9 @@ func _ready():
 	_chat_send_btn.pressed.connect(_send_chat)
 	$Menu/VoiceButton.pressed.connect(_send_voice_invite)
 	$Voice/QuitButton.pressed.connect(_quit_voice)
-	for i in _preset_btns.size():
-		_preset_btns[i].pressed.connect(_on_preset.bind(i))
+	_pitch_slider.value_changed.connect(_on_pitch)
+	_reverb_slider.value_changed.connect(_on_reverb)
+	_dist_slider.value_changed.connect(_on_dist)
 
 # 聲波柱：通話中每幀抓頻譜能量更新 5 根柱子高度（由底往上長）。
 func _process(_delta):
@@ -207,17 +213,28 @@ func _send_voice_invite():
 func open_voice(other_id: int):
 	_voice_peer_id = other_id
 	_voice_title.text = "語音通話中（玩家 %d）" % other_id
-	_highlight_preset(0)   # VoiceChat 啟動時預設 ANONYMOUS
+	# 滑桿歸中性（接近原音）+ 更新說明文字。
+	_pitch_slider.value = 1.0
+	_reverb_slider.value = 0.0
+	_dist_slider.value = 0.0
+	_pitch_label.text = "音高 低沉↔尖細：1.00"
+	_reverb_label.text = "混響 空靈迴音：0.00"
+	_dist_label.text = "失真 機械沙啞：0.00"
 	_voice.visible = true
+	_update_menu()   # 隱藏靠近選單，避免和語音面板重疊
 
-# 點預設按鈕 → 切換變聲 + 高亮當前選項。
-func _on_preset(idx: int):
-	VoiceChat.apply_voice_filter(idx)
-	_highlight_preset(idx)
+# 滑桿即時調變聲參數 + 更新說明文字。
+func _on_pitch(v: float):
+	VoiceChat.set_pitch(v)
+	_pitch_label.text = "音高 低沉↔尖細：%.2f" % v
 
-func _highlight_preset(idx: int):
-	for i in _preset_btns.size():
-		_preset_btns[i].modulate = Color(1, 1, 1) if i == idx else Color(0.55, 0.55, 0.55)
+func _on_reverb(v: float):
+	VoiceChat.set_reverb(v)
+	_reverb_label.text = "混響 空靈迴音：%.2f" % v
+
+func _on_dist(v: float):
+	VoiceChat.set_distortion(v)
+	_dist_label.text = "失真 機械沙啞：%.2f" % v
 
 func _quit_voice():
 	var p = _local()
@@ -225,6 +242,7 @@ func _quit_voice():
 		p.leave_voice(_voice_peer_id)
 	_voice.visible = false
 	_voice_peer_id = -1
+	_update_menu()   # 面板關了，靠近選單恢復顯示
 
 func voice_peer_left(from_id: int):
 	if not _voice.visible or from_id != _voice_peer_id:
@@ -232,6 +250,7 @@ func voice_peer_left(from_id: int):
 	notify("對方已退出語音")
 	_voice.visible = false
 	_voice_peer_id = -1
+	_update_menu()
 
 # --------------------------------------------------------------------------
 func notify(msg: String):
