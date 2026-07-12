@@ -1,39 +1,45 @@
 # BridgeUs Backend Refactor — 結案報告(P7)
 
-- 日期:2026-07-12
+- 日期:2026-07-12(第一輪整合 P1~P5;同日第二輪補整合 P6,即本版)
 - 執行:Claude Fable 5 @ Claude Code(P7 最終整合 Review)
-- 整合分支:`refactor/p7-integration`(自 tag `refactor-baseline` 依序 merge P1 → P2 → P3 → P5(內含 P4))
-- Review 範圍:`git diff refactor-baseline...refactor/p7-integration`(23 檔,+3374 / -864)
+- 整合分支:`refactor/p7-integration`(自 tag `refactor-baseline` 依序 merge P1 → P2 → P3 → P5(內含 P4)→ P6)
+- Review 範圍:`git diff refactor-baseline...refactor/p7-integration`(42 檔,+3792 / -1035)
 
 ---
 
 ## 0. 重要:實際 repo 狀態與計畫的落差
 
-P7 啟動時的前提「P1~P6 已併回 feat/Light」**與事實不符**:
+P7 第一輪啟動時的前提「P1~P6 已併回 feat/Light」**與事實不符**:
 
 1. `feat/Light` 仍停在 baseline(tag `refactor-baseline`),各 Part 都留在自己的子分支上**未併回**。
 2. 各 Part 分支都直接從 baseline 切出(而非計畫要求的「從已含前面 Part 的 feat/Light 切出」),
    所以 P3 與 P4/P5 對 `views.py` 的改動互相衝突,P1 與 P5 對 analyze view 的改動也互相衝突。
-3. **P6(清理包)完全沒有執行**:`refactor/core-p6-cleanup` 分支存在但零 commit,無 HANDOFF_P6。
+3. P7 第一輪時 **P6(清理包)尚未執行**;第一輪後 P6 已在 `refactor/core-p6-cleanup`
+   補做完成(4 commits + HANDOFF_P6),但同樣是**從 baseline 切出**,沒看到 P1~P5 的
+   service 結構——P6 對 `views.py`/`consumers.py` 收斂的重複碼,實際位置已被 P4/P5 搬進
+   `api/services/*` 與 `message_pipeline.py`。
 
-P7 的處置:建立 `refactor/p7-integration`,依依賴順序 merge 全部已完成的 Part 並解衝突
-(解法記錄在 merge commit message 與本文第 2 節),再對整合後的 diff 做 review。
+P7 的處置:建立 `refactor/p7-integration`,依依賴順序 merge 全部 Part 並解衝突
+(解法記錄在各 merge commit message 與本文第 2 節);P6 併入時把它的語意變更
+重新落在 P4 之後的 service 位置(見 §2 第 5 點)。
 **把 `refactor/p7-integration` 併回 `feat/Light` 屬計畫中人工把關的步驟,留給人類執行**
 (計畫 §0.5 第 4 步:review 通過才併回)。
 
 ---
 
-## 1. 測試與冒煙結果(整合後)
+## 1. 測試與冒煙結果(P6 併入後全部重跑)
 
 | 指令 | 結果 |
 |---|---|
-| `DB_ENGINE=sqlite uv run python manage.py test api --keepdb --noinput` | 76 tests OK |
-| `DB_ENGINE=sqlite uv run pytest api/tests_websocket.py` | 13 passed(修 1 個 P3×P5 接縫,見 §2) |
+| `DB_ENGINE=sqlite uv run python manage.py test api --keepdb --noinput` | 78 tests OK(含 P6 新增的 topic-config 錯誤測試) |
+| `DB_ENGINE=sqlite uv run pytest api/tests_websocket.py` | 13 passed(第一輪修 1 個 P3×P5 接縫,見 §2) |
 | `DB_ENGINE=sqlite uv run pytest apps/matching -q` | 58 passed(含 P1 的 8 個鎖測試) |
-| `DB_ENGINE=sqlite uv run pytest api/tests.py apps/matching/tests/test_semantic_tree_lock.py` | 84 passed |
+| `DB_ENGINE=sqlite uv run pytest apps/matching/tests_semantic_tree_{prompt,timeline,node_birth,node_creation_metadata}.py` | 28 passed(P6 改動的測試檔) |
+| `DB_ENGINE=sqlite uv run pytest chat/tests_embedding.py chat/tests_warm_nlp_models.py` | 13 passed |
 | `uv run pytest`(baseline 預設指令) | 58 passed |
 | `manage.py check` | 無 issue |
-| 冒煙(暫時性 e2e 測試,跑完即刪):建 session → reply(mock LLM)→ semantic-tree analyze(mock 分類器)→ history 列表 → history detail | 全通過;history `message_count=2`、analyze `analysisStatus=ready` |
+| ruff(F/E9)掃合併後全部改動檔 | 無 finding(僅 1 個 baseline 既有 unused-variable,見 §2 第 6 點) |
+| 冒煙(暫時性 e2e 測試,跑完即刪):建 session → reply(mock LLM)→ semantic-tree analyze(mock 分類器)→ history 列表 → history detail | 全通過;history `message_count=2`、analyze `analysisStatus=ready`、detail 2 則訊息 |
 
 ---
 
@@ -52,6 +58,23 @@ P7 的處置:建立 `refactor/p7-integration`,依依賴順序 merge 全部已完
    且只 seed cache 沒建 DB row(P5 寫入路徑需要真實 row)。→ 修 patch 目標 + 補 DB row。
 4. **死 import**:views.py 的 `MatchMessageSerializer`(CODE_REVIEW 主題 7 項目)與未再使用的
    `django.db.models.Q` import 一併移除。
+5. **P6×(P1/P2/P4/P5)接縫(重複碼收斂落點)**:P6 從 baseline 切出,它改的
+   `views.py`/`consumers.py` helper 已被 P4/P5 搬走。併入時採「P1~P5 結構為準、
+   P6 語意重新套用」:
+   - `api/services/dialogue_session.py` 改用 `core.env` 的 `SESSION_TTL_SECONDS` 與
+     `dialogue_session_cache_key`(刪本地副本);
+   - `api/services/history.py` 的 `_semantic_tree_root_name_for_topic_id` 改走
+     `get_topic_title`(查不到 raise,不再 fallback `"核電"`);
+   - `api/services/room_state.py` 與 `message_pipeline.py` 的匿名顯示名改用
+     `core.env` 常數(「匿名對話者」/「匿名使用者」單一定義);
+   - `semantic_tree.py` 保留 P1 鎖結構,anchors/descriptions 改 import 自
+     `api.dialogue_topics`(缺 config 即 raise),並刪掉 P1 加的本地
+     `_dialogue_session_cache_key` 副本改用 `core.env`(第一輪標記的主題 4 殘留);
+   - consumers/views 丟棄 P6 的 baseline 形狀 cache 直取(P5 read-through 已取代),
+     並移除因此變死的 `core.env` import 與 `Issue` import。
+6. **死 import(P6 精神順手修)**:`api/serializers.py` 的 `DiscomfortReport`
+   baseline 起即未使用,移除。ruff 另報 `ccnd_snapshot_analysis.py:284` 一個
+   baseline 既有的 unused variable(`segment`),在演算法迴圈中、不影響行為,留給維護者。
 
 以上均已 commit 在 `refactor/p7-integration`。
 
@@ -84,12 +107,12 @@ P7 的處置:建立 `refactor/p7-integration`,依依賴順序 merge 全部已完
 |---|---|---|
 | 1. 模組邊界(views helpers → services;consumers 不再 import views) | **已修(第 1、2 步)**(Part 4) | `api/services/{dialogue_session,stance_scoring,history,room_state}.py`;`rg "from api.views import" consumers.py` 無結果。**model 搬遷(第 3 步)延後**(計畫本來就排最後) |
 | 2. AI session 狀態單一化 | **已修**(Part 5) | turns 為權威、session_state 只留 metadata、cache 純 read-through、寫入者一律 invalidate;kill-cache 恢復 / reply×analyze / reply×reply 均有測試 |
-| 3. topic 102 預設值拔出共用碼 | **未修**(P6 未執行) | `FIXED_ANCHORS`/`ANCHOR_DESCRIPTIONS` 仍在 `semantic_tree.py` 頂部;root name fallback `"核電"` 現在位於 `api/services/history.py:_semantic_tree_root_name_for_topic_id`(P4 搬移時原樣帶過去) |
-| 4. 重複碼收斂 | **未修**(P6 未執行) | `_env_bool` 仍 ×3;session cache key 仍 ×2(`dialogue_session._session_cache_key` 與 `semantic_tree._dialogue_session_cache_key`,字串相同、P7 已驗證一致);匿名顯示名仍兩套(`room_state.py`「匿名對話者」vs `message_pipeline.py`「匿名使用者」) |
+| 3. topic 102 預設值拔出共用碼 | **已修**(Part 6,P7 落點調整) | `FIXED_ANCHORS`/`ANCHOR_DESCRIPTIONS` 已刪;anchors/title/descriptions 一律 `api.dialogue_topics.get_topic_*`,缺 config raise `ValueError`(有測試);root name fallback `"核電"` 已從 `api/services/history.py` 移除 |
+| 4. 重複碼收斂 | **已修**(Part 6 + P7 收斂) | `_env_bool` 單一定義於 `core/env.py`(settings/matching_algorithm/hh_ai 共用);session cache key 單一定義(`core.env.dialogue_session_cache_key`,dialogue_session 與 semantic_tree 都改 import);匿名顯示名兩個常數集中 `core/env.py`。向量清理(`_clean_vector`≈`_clean_embedding`)未收斂——計畫未分配,兩者語意略異 |
 | 5. LLM / embedding 技術棧收斂 | **未修(延後)** | 計畫未分配任何 Part |
 | 6. `match.stats` JSON 無上限成長 | **未修(延後)** | P1 的 `pendingClaims` 也放進同一 JSON,但有 TTL + 寫回即清,增量有界 |
-| 7. 死碼清理 | **部分修** | P7 移除 views.py 的 `MatchMessageSerializer` 死 import;`main.py`、`Issue` model、`from_turn_count` 註解 → 未修(P6 未執行) |
-| 8. 其他(文件對齊、sqlite+pgvector README、tests 拆分、分頁) | **未修**(P6 未執行) | — |
+| 7. 死碼清理 | **已修**(Part 6 + P7) | `main.py` 已刪;`Issue` model + view + URL 已刪(migration 0012);`from_turn_count` 註解已改為描述現實(production 判定);`MatchMessageSerializer`/`DiscomfortReport`/`User` 死 import 已移除 |
+| 8. 其他(文件對齊、sqlite+pgvector README、tests 拆分、分頁) | **部分修**(Part 6) | CLAUDE.md 版本對齊(Django 6.0.4 / Python 3.12+);README 已寫入 SQLite+pgvector 限制。**未修**:`api/tests.py` 拆分(現 2200+ 行)、全站分頁——計畫未分配 |
 
 ### 前面 Part 留下的 NEEDS_DECISION 處置
 
@@ -106,12 +129,17 @@ P7 的處置:建立 `refactor/p7-integration`,依依賴順序 merge 全部已完
 
 1. **(高)配對 enqueue deadlock**——唯一未修的多人上線即可能觸發的正確性問題。
 2. **(高)人工把 `refactor/p7-integration` review 後併回 `feat/Light`**,再走 feat/Light → dev PR。
-3. **(中)執行 P6 清理包**(照 EXECUTION_PLAN Part 6 原任務即可,對照表位置不變)。
-4. **(中)chat/tests*.py 處置 + pytest python_files 設定**(兩項綁定)。
-5. **(低)DialogueAgent async 包裝、thread_sensitive ORM、LLM 棧收斂、model 搬遷。**
+3. **(中)chat/tests*.py 處置 + pytest python_files 設定**(兩項綁定)。
+4. **(中)行為變更知會**:P6 把「查不到 topic config」從默默長出核能樹改成 raise
+   `ValueError`(HTTP 500)。現有資料 topic_id 都在 config 內,但若未來刪 config 條目
+   或有 legacy record topic_id 為空,history/analyze 端點會 500——上線前可考慮在
+   view 層把 `ValueError` 轉 4xx。
+5. **(低)DialogueAgent async 包裝、thread_sensitive ORM、LLM 棧收斂、model 搬遷、
+   api/tests.py 拆分、全站分頁。**
 
 ## 5. 驗收判定
 
-- 整合後 review 發現的 blocker:**0**(發現的 4 個接縫問題已當場修復並有測試)。
-- 全測試綠(見 §1),冒煙通過。
-- 未修項目均為:計畫本來就沒分配的項目、或未執行的 P6 範圍——已如實列於 §3,不影響已完成 Part 的驗收。
+- 整合後 review 發現的 blocker:**0**(第一輪 4 個接縫問題 + 第二輪 P6 落點調整
+  均已當場修復並有測試)。
+- P1~P6 全部執行完畢並整合;全測試綠(見 §1),冒煙通過。
+- 未修項目均為計畫本來就沒分配的項目——已如實列於 §3 與 §4,不影響驗收。
