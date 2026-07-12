@@ -6,7 +6,19 @@ from uuid import uuid4
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
-from django.db.models import Q
+from django.db.models import (
+    Case,
+    Count,
+    IntegerField,
+    OuterRef,
+    Q,
+    Subquery,
+    Sum,
+    TextField,
+    Value,
+    When,
+)
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
@@ -22,6 +34,7 @@ from .models import (
     DialogueSessionRecord,
     DiscomfortReport,
     Issue,
+    MatchMessage,
     MatchStanceDrift,
     PlatformFeedback,
     PostDialogueResponse,
@@ -50,6 +63,13 @@ from .serializers import (
     PostDialogueResponseConsentSerializer,
     PostDialogueResponseOutputSerializer,
     PostDialogueResponseSerializer,
+)
+from .throttles import (
+    DialogueReplyRateThrottle,
+    DialogueSessionSemanticTreeAnalyzeRateThrottle,
+    GuestLoginRateThrottle,
+    HistoryConversationSemanticTreeAnalyzeRateThrottle,
+    MatchingRoomSemanticTreeAnalyzeRateThrottle,
 )
 
 SESSION_TTL_SECONDS = 60 * 60 * 12
@@ -628,9 +648,21 @@ def _history_match_messages(match: DialogueMatch, *, user_id: int) -> list[dict]
 
 
 def _history_ai_summary(record: DialogueSessionRecord) -> dict:
-    messages = _history_ai_messages(record)
-    user_messages = [message for message in messages if message["role"] == "user"]
-    preview_source = user_messages[-1] if user_messages else (messages[-1] if messages else None)
+    message_count = getattr(record, "summary_message_count", None)
+    if message_count is None:
+        turns = AIConversation.objects.filter(
+            user=record.user,
+            session_id=record.session_id,
+        ).values("ai_response")
+        message_count = sum(2 if turn["ai_response"] else 1 for turn in turns)
+    preview = getattr(record, "summary_last_message_preview", None)
+    if preview is None:
+        messages = _history_ai_messages(record)
+        user_messages = [message for message in messages if message["role"] == "user"]
+        preview_source = user_messages[-1] if user_messages else (
+            messages[-1] if messages else None
+        )
+        preview = (preview_source or {}).get("content", "")
     return {
         "kind": "ai",
         "id": record.session_id,
@@ -643,15 +675,23 @@ def _history_ai_summary(record: DialogueSessionRecord) -> dict:
         "topic_id": record.topic_id,
         "topic_title": record.topic_title,
         "status": record.status,
-        "message_count": len(messages),
-        "last_message_preview": (preview_source or {}).get("content", "")[:120],
+        "message_count": message_count,
+        "last_message_preview": preview[:120],
         "last_activity_at": record.last_activity_at,
     }
 
 
 def _history_match_summary(match: DialogueMatch, *, user_id: int) -> dict:
-    messages = _history_match_messages(match, user_id=user_id)
-    preview_source = messages[-1] if messages else None
+    message_count = getattr(match, "summary_message_count", None)
+    if message_count is None:
+        message_count = match.messages.count()
+    preview = getattr(match, "summary_last_message_preview", None)
+    preview_created_at = getattr(match, "summary_last_message_created_at", None)
+    if preview is None or preview_created_at is None:
+        messages = _history_match_messages(match, user_id=user_id)
+        preview_source = messages[-1] if messages else None
+        preview = (preview_source or {}).get("content", "")
+        preview_created_at = (preview_source or {}).get("created_at")
     return {
         "kind": "match",
         "id": match.room_id,
@@ -659,10 +699,10 @@ def _history_match_summary(match: DialogueMatch, *, user_id: int) -> dict:
         "topic_id": match.topic_id,
         "topic_title": _semantic_tree_root_name(match),
         "status": match.status,
-        "message_count": len(messages),
-        "last_message_preview": (preview_source or {}).get("content", "")[:120],
+        "message_count": message_count,
+        "last_message_preview": preview[:120],
         "last_activity_at": (
-            (preview_source or {}).get("created_at")
+            preview_created_at
             or match.closed_at
             or match.created_at
         ),
@@ -702,6 +742,84 @@ def _history_match_detail(match: DialogueMatch, *, user_id: int) -> dict:
     }
 
 
+def _history_ai_summary_queryset(user_id: int):
+    ai_turns = AIConversation.objects.filter(
+        user_id=user_id,
+        session_id=OuterRef("session_id"),
+    )
+    ai_turn_counts = ai_turns.values("session_id").annotate(
+        turn_count=Count("id"),
+        ai_response_count=Sum(
+            Case(
+                When(
+                    ai_response__isnull=False,
+                    then=Case(
+                        When(ai_response="", then=Value(0)),
+                        default=Value(1),
+                        output_field=IntegerField(),
+                    ),
+                ),
+                default=Value(0),
+                output_field=IntegerField(),
+            )
+        ),
+    )
+    return (
+        DialogueSessionRecord.objects.filter(user_id=user_id)
+        .annotate(
+            summary_turn_count=Coalesce(
+                Subquery(ai_turn_counts.values("turn_count")[:1]),
+                0,
+            ),
+            summary_ai_response_count=Coalesce(
+                Subquery(ai_turn_counts.values("ai_response_count")[:1]),
+                0,
+            ),
+            summary_last_message_preview=Coalesce(
+                Subquery(
+                    ai_turns.order_by("-created_at", "-id").values("user_prompt")[:1],
+                    output_field=TextField(),
+                ),
+                Value(""),
+                output_field=TextField(),
+            ),
+        )
+        .annotate(
+            summary_message_count=(
+                Coalesce("summary_turn_count", 0)
+                + Coalesce("summary_ai_response_count", 0)
+            )
+        )
+        .order_by("-last_activity_at", "-id")
+    )
+
+
+def _history_match_summary_queryset(user_id: int):
+    latest_messages = MatchMessage.objects.filter(match_id=OuterRef("pk")).order_by(
+        "-created_at",
+        "-id",
+    )
+    return (
+        DialogueMatch.objects.select_related("user_a", "user_b")
+        .filter(Q(user_a_id=user_id) | Q(user_b_id=user_id))
+        .annotate(
+            summary_message_count=Count("messages"),
+            summary_last_message_preview=Coalesce(
+                Subquery(
+                    latest_messages.values("content")[:1],
+                    output_field=TextField(),
+                ),
+                Value(""),
+                output_field=TextField(),
+            ),
+            summary_last_message_created_at=Subquery(
+                latest_messages.values("created_at")[:1]
+            ),
+        )
+        .order_by("-created_at", "-id")
+    )
+
+
 @lru_cache(maxsize=1)
 def _get_dialogue_runtime():
     from apps.matching.services.ai_agent import (
@@ -732,7 +850,7 @@ class AIConversationListCreate(generics.ListCreateAPIView):
         serializer.save(user=self.request.user)
 
 
-class AIConversationDetail(generics.RetrieveUpdateDestroyAPIView):
+class AIConversationDetail(generics.RetrieveAPIView):
     serializer_class = AIConversationSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -899,6 +1017,7 @@ class DialogueSessionDetailView(APIView):
 
 class DialogueSessionReplyView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [DialogueReplyRateThrottle]
 
     def post(self, request, session_id: str):
         _, DialoguePhase, DialogueSession = _get_dialogue_runtime()
@@ -1017,6 +1136,7 @@ class DialogueSessionSemanticTreeView(APIView):
 
 class DialogueSessionSemanticTreeAnalyzeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [DialogueSessionSemanticTreeAnalyzeRateThrottle]
 
     def post(self, request, session_id: str):
         from apps.matching.services.semantic_tree import (
@@ -1066,20 +1186,13 @@ class HistoryConversationListView(APIView):
 
         results = []
         if history_type in {"all", "ai"}:
-            for record in DialogueSessionRecord.objects.filter(
-                user=request.user,
-            ).order_by("-last_activity_at", "-id"):
+            for record in _history_ai_summary_queryset(request.user.id):
                 summary = _history_ai_summary(record)
                 if summary["message_count"]:
                     results.append(summary)
 
         if history_type in {"all", "match"}:
-            matches = (
-                DialogueMatch.objects.select_related("user_a", "user_b")
-                .filter(Q(user_a=request.user) | Q(user_b=request.user))
-                .order_by("-created_at", "-id")
-            )
-            for match in matches:
+            for match in _history_match_summary_queryset(request.user.id):
                 summary = _history_match_summary(match, user_id=request.user.id)
                 if summary["message_count"]:
                     results.append(summary)
@@ -1192,6 +1305,7 @@ class HistoryConversationSemanticTreeTimelineView(APIView):
 
 class HistoryConversationSemanticTreeAnalyzeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [HistoryConversationSemanticTreeAnalyzeRateThrottle]
 
     def post(self, request, kind: str, conversation_id: str):
         from apps.matching.services.semantic_tree import (
@@ -1517,6 +1631,7 @@ class MatchingRoomSemanticTreeTimelineView(APIView):
 
 class MatchingRoomSemanticTreeAnalyzeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [MatchingRoomSemanticTreeAnalyzeRateThrottle]
 
     def post(self, request, room_id: str):
         from apps.matching.services.semantic_tree import (
@@ -1711,6 +1826,7 @@ class PlatformFeedbackView(APIView):
         return Response(out.data, status=status.HTTP_201_CREATED)
 class GuestLoginView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [GuestLoginRateThrottle]
 
     def post(self, request):
         nickname = (request.data.get("nickname") or "Guest")[:30]

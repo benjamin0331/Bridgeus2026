@@ -3,7 +3,9 @@ from unittest.mock import AsyncMock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.db import connection
 from django.test import SimpleTestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
@@ -19,6 +21,11 @@ from api.models import (
     PlatformFeedback,
     PostDialogueResponse,
     UserStanceProfile,
+)
+from api.throttles import (
+    DialogueReplyRateThrottle,
+    GuestLoginRateThrottle,
+    HistoryConversationSemanticTreeAnalyzeRateThrottle,
 )
 from api.views import _resolve_stance_category
 
@@ -610,6 +617,37 @@ class DialogueSessionApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_ai_conversation_api_hides_embedding_and_detail_is_read_only(self):
+        conversation = AIConversation.objects.create(
+            user=self.user,
+            session_id="session-list-api",
+            topic_id=102,
+            user_prompt="核能可以補足再生能源不穩定",
+            ai_response="AI 回覆",
+            dialogue_phase="engagement",
+            embedding=make_test_embedding(1),
+        )
+
+        list_response = self.client.get("/api/conversations/")
+        self.assertEqual(list_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(list_response.data), 1)
+        self.assertNotIn("embedding", list_response.data[0])
+        self.assertEqual(list_response.data[0]["ai_response"], "AI 回覆")
+
+        detail_response = self.client.get(f"/api/conversations/{conversation.id}/")
+        self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
+        self.assertNotIn("embedding", detail_response.data)
+        self.assertEqual(detail_response.data["dialogue_phase"], "engagement")
+
+        put_response = self.client.put(
+            f"/api/conversations/{conversation.id}/",
+            {"user_prompt": "更新內容"},
+            format="json",
+        )
+        delete_response = self.client.delete(f"/api/conversations/{conversation.id}/")
+        self.assertEqual(put_response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        self.assertEqual(delete_response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
     def test_ai_semantic_tree_analyzes_only_user_prompts(self):
         create_response = self.client.post(
             "/api/dialogue/sessions/",
@@ -875,6 +913,26 @@ class HistoryApiTests(APITestCase):
         item = response.data["results"][0]
         self.assertEqual(item["room_id"], ai_record.session_id)
 
+    def test_history_list_uses_constant_queries(self):
+        self._create_ai_history(session_id="session-a")
+        self._create_ai_history(session_id="session-b")
+        self._create_match_history(room_id="room-a")
+        self._create_match_history(room_id="room-b")
+
+        with CaptureQueriesContext(connection) as first_ctx:
+            first_response = self.client.get("/api/history/conversations/")
+        self.assertEqual(first_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(first_response.data["count"], 4)
+
+        self._create_ai_history(session_id="session-c")
+        self._create_match_history(room_id="room-c")
+
+        with CaptureQueriesContext(connection) as second_ctx:
+            second_response = self.client.get("/api/history/conversations/")
+        self.assertEqual(second_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(second_response.data["count"], 6)
+        self.assertEqual(len(first_ctx), len(second_ctx))
+
     def test_ai_timeline_shows_only_nodes_analyzed_by_the_given_turn(self):
         ai_record, first_turn = self._create_ai_history()
 
@@ -933,6 +991,30 @@ class HistoryApiTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_history_semantic_tree_analyze_is_throttled(self):
+        ai_record, _ = self._create_ai_history()
+
+        with (
+            patch.dict(
+                HistoryConversationSemanticTreeAnalyzeRateThrottle.THROTTLE_RATES,
+                {"history_conversation_semantic_tree_analyze": "1/min"},
+                clear=False,
+            ),
+            patch(
+                "apps.matching.services.nuclear_node_classifier.build_candidate_items",
+                return_value=[],
+            ),
+        ):
+            first_response = self.client.post(
+                f"/api/history/conversations/ai/{ai_record.session_id}/semantic-tree/analyze/"
+            )
+            second_response = self.client.post(
+                f"/api/history/conversations/ai/{ai_record.session_id}/semantic-tree/analyze/"
+            )
+
+        self.assertEqual(first_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(second_response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
 
 
 class MatchingApiTests(APITestCase):
@@ -1866,6 +1948,61 @@ class MatchingApiTests(APITestCase):
         )
         self.assertNotIn("anthropic invalid key", reply_response.data["detail"])
         mocked_get_agent.assert_called_once_with("nuclear_energy_all")
+
+    @patch("api.views.get_dialogue_agent", return_value=FakeDialogueAgent())
+    def test_dialogue_reply_is_throttled(self, mocked_get_agent):
+        create_response = self.client.post(
+            "/api/dialogue/sessions/",
+            {
+                "topic_id": 102,
+                "topic_title": "核能發電在減碳中的角色",
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        session_id = create_response.data["session_id"]
+
+        with patch.dict(
+            DialogueReplyRateThrottle.THROTTLE_RATES,
+            {"dialogue_reply": "1/min"},
+            clear=False,
+        ):
+            first_response = self.client.post(
+                f"/api/dialogue/sessions/{session_id}/reply/",
+                {"message": "第一次回覆"},
+                format="json",
+            )
+            second_response = self.client.post(
+                f"/api/dialogue/sessions/{session_id}/reply/",
+                {"message": "第二次回覆"},
+                format="json",
+            )
+
+        self.assertEqual(first_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(second_response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        mocked_get_agent.assert_called_once_with("nuclear_energy_all")
+
+
+class GuestLoginApiTests(APITestCase):
+    def test_guest_login_is_throttled(self):
+        with patch.dict(
+            GuestLoginRateThrottle.THROTTLE_RATES,
+            {"guest_login": "1/hour"},
+            clear=False,
+        ):
+            first_response = self.client.post(
+                "/api/guest/",
+                {"nickname": "Guest One"},
+                format="json",
+            )
+            second_response = self.client.post(
+                "/api/guest/",
+                {"nickname": "Guest Two"},
+                format="json",
+            )
+
+        self.assertEqual(first_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(second_response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
 
 
 class PlatformFeedbackApiTests(APITestCase):

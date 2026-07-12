@@ -13,7 +13,23 @@ from .models import (
 class AIConversationSerializer(serializers.ModelSerializer):
     class Meta:
         model = AIConversation
-        fields = '__all__'
+        fields = [
+            "id",
+            "user",
+            "session_id",
+            "topic_id",
+            "user_prompt",
+            "ai_response",
+            "dialogue_phase",
+            "created_at",
+        ]
+        read_only_fields = [
+            "id",
+            "user",
+            "ai_response",
+            "dialogue_phase",
+            "created_at",
+        ]
 
 
 class DialogueSessionCreateSerializer(serializers.Serializer):

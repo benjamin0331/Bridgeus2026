@@ -112,10 +112,17 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
         except json.JSONDecodeError:
             return
 
+        if not isinstance(data, dict):
+            return
+
         if data.get("type") != "user_message":
             return
 
-        user_message = data.get("content", "").strip()
+        content = data.get("content")
+        if not isinstance(content, str):
+            return
+
+        user_message = content.strip()
         if not user_message:
             return
 
@@ -344,6 +351,9 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
         except json.JSONDecodeError:
             return
 
+        if not isinstance(data, dict):
+            return
+
         message_type = data.get("type")
         if message_type in {
             "accept_suggestion",
@@ -356,7 +366,11 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
         if message_type not in {None, "match_message", "user_message"}:
             return
 
-        content = data.get("content", "").strip()
+        content = data.get("content")
+        if not isinstance(content, str):
+            return
+
+        content = content.strip()
         if not content:
             return
 
