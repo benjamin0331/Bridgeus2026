@@ -8,9 +8,10 @@ from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import override_settings
+from django.utils import timezone
 from rest_framework_simplejwt.tokens import AccessToken
 
-from api.models import AIConversation, DialogueMatch, MatchMessage
+from api.models import AIConversation, DialogueMatch, DialogueSessionRecord, MatchMessage
 
 User = get_user_model()
 
@@ -68,6 +69,31 @@ async def test_dialogue_websocket_persists_completed_turn():
         user_stance_label="較支持核電",
         user_stance_score=6.5,
     )
+    # A real DialogueSessionRecord row, matching how DialogueSessionCreateView
+    # actually creates sessions — update_session_metadata locks and re-reads
+    # this row, it isn't upserted from cache content.
+    await DialogueSessionRecord.objects.acreate(
+        user=user,
+        session_id=session_id,
+        topic_id=102,
+        topic_title="台灣核能議題討論",
+        collection_name="nuclear_energy_all",
+        survey_context={"q9_embedding": make_test_embedding(1)},
+        session_state={
+            "topic": session.topic,
+            "topic_description": session.topic_description,
+            "agent_stance": session.agent_stance,
+            "agent_stance_summary": session.agent_stance_summary,
+            "user_stance_label": session.user_stance_label,
+            "user_stance_score": session.user_stance_score,
+            "user_initial_argument": session.user_initial_argument,
+            "user_reasoning_mode": session.user_reasoning_mode,
+            "focus_signal_count": session.focus_signal_count,
+            "dialogue_phase": session.dialogue_phase.value,
+            "stance_drift": None,
+        },
+        last_activity_at=timezone.now(),
+    )
     await sync_to_async(cache.set)(
         f"dialogue_session:{session_id}",
         {
@@ -88,7 +114,7 @@ async def test_dialogue_websocket_persists_completed_turn():
     )
 
     with (
-        patch("api.views.get_dialogue_agent", return_value=FakeStreamingDialogueAgent()),
+        patch("api.services.dialogue_session.get_dialogue_agent", return_value=FakeStreamingDialogueAgent()),
         patch("api.consumers.aget_embedding", new=AsyncMock(return_value=make_test_embedding(-1))),
     ):
         connected, _ = await communicator.connect()
@@ -113,6 +139,94 @@ async def test_dialogue_websocket_persists_completed_turn():
     assert saved_turn.topic_id == 102
     assert saved_turn.user_prompt == "核能真的比較穩定嗎？"
     assert saved_turn.ai_response == "AI reply to: 核能真的比較穩定嗎？"
+
+    record = await DialogueSessionRecord.objects.aget(session_id=session_id)
+    assert "history" not in record.session_state
+    assert record.session_state["stance_drift"]["drift_value"] == 2.0
+    assert await sync_to_async(cache.get)(f"dialogue_session:{session_id}") is None
+
+    await communicator.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_dialogue_websocket_restores_from_database_when_cache_is_empty():
+    """P5 acceptance: WS reconnect uses the same read-through helper as
+    REST, so a cache-less session (kill cache, or a reconnect after the TTL
+    window) restores full history from AIConversation turns instead of
+    closing the socket."""
+    from BridgeUs_Django.asgi import application
+    from apps.matching.services.ai_agent import DialogueSession
+
+    user = await create_user(username="ai_ws_reconnect", password="secret123")
+    session_id = uuid4().hex
+    session = DialogueSession(
+        topic="台灣核能議題討論",
+        topic_description="討論台灣是否應使用核能。",
+        agent_stance="較反對核電",
+        agent_stance_summary="以反方角度提出核安與核廢料疑慮。",
+        user_stance_label="較支持核電",
+        user_stance_score=6.5,
+    )
+    await DialogueSessionRecord.objects.acreate(
+        user=user,
+        session_id=session_id,
+        topic_id=102,
+        topic_title="台灣核能議題討論",
+        collection_name="nuclear_energy_all",
+        survey_context={"q9_embedding": make_test_embedding(1)},
+        session_state={
+            "topic": session.topic,
+            "topic_description": session.topic_description,
+            "agent_stance": session.agent_stance,
+            "agent_stance_summary": session.agent_stance_summary,
+            "user_stance_label": session.user_stance_label,
+            "user_stance_score": session.user_stance_score,
+            "user_initial_argument": session.user_initial_argument,
+            "user_reasoning_mode": session.user_reasoning_mode,
+            "focus_signal_count": session.focus_signal_count,
+            "dialogue_phase": session.dialogue_phase.value,
+            "stance_drift": None,
+        },
+        last_activity_at=timezone.now(),
+    )
+    await AIConversation.objects.acreate(
+        user=user,
+        session_id=session_id,
+        topic_id=102,
+        user_prompt="之前的訊息",
+        ai_response="之前的回覆",
+        dialogue_phase="engagement",
+    )
+    assert await sync_to_async(cache.get)(f"dialogue_session:{session_id}") is None
+
+    token = await _access_token_for(user)
+    communicator = WebsocketCommunicator(
+        application,
+        f"/ws/dialogue/{session_id}/?token={token}",
+    )
+
+    with (
+        patch("api.services.dialogue_session.get_dialogue_agent", return_value=FakeStreamingDialogueAgent()),
+        patch("api.consumers.aget_embedding", new=AsyncMock(return_value=make_test_embedding(-1))),
+    ):
+        connected, _ = await communicator.connect()
+        assert connected
+
+        cached = await sync_to_async(cache.get)(f"dialogue_session:{session_id}")
+        assert cached is not None
+        assert len(cached["session"]["history"]) == 2
+
+        await communicator.send_json_to(
+            {"type": "user_message", "content": "第二輪訊息"}
+        )
+        stream_message = await communicator.receive_json_from(timeout=3)
+        end_message = await communicator.receive_json_from(timeout=3)
+
+    assert stream_message["content"] == "AI reply to: 第二輪訊息"
+    assert end_message["type"] == "agent_stream_end"
+    assert await AIConversation.objects.filter(session_id=session_id).acount() == 2
 
     await communicator.disconnect()
 

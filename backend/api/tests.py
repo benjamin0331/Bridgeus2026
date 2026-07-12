@@ -1,5 +1,6 @@
 from datetime import timedelta
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -22,12 +23,12 @@ from api.models import (
     PostDialogueResponse,
     UserStanceProfile,
 )
+from api.services.stance_scoring import _resolve_stance_category
 from api.throttles import (
     DialogueReplyRateThrottle,
     GuestLoginRateThrottle,
     HistoryConversationSemanticTreeAnalyzeRateThrottle,
 )
-from api.views import _resolve_stance_category
 
 
 def fake_waste_items_response():
@@ -427,12 +428,18 @@ class DialogueSessionApiTests(APITestCase):
 
         self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
         session_id = create_response.data["session_id"]
-        session_record = cache.get(f"dialogue_session:{session_id}")
+        # Create no longer populates the cache (§5 of the P5 design) — the
+        # DB row is the only thing written at this point.
+        self.assertIsNone(cache.get(f"dialogue_session:{session_id}"))
+        session_state = DialogueSessionRecord.objects.get(
+            session_id=session_id,
+        ).session_state
 
-        self.assertEqual(session_record["session"]["user_stance_score"], 7.0)
-        self.assertEqual(session_record["session"]["user_stance_label"], "較支持核電")
-        self.assertEqual(session_record["session"]["agent_stance"], "較反對核電")
-        self.assertNotIn("user_stance_intensity", session_record["session"])
+        self.assertEqual(session_state["user_stance_score"], 7.0)
+        self.assertEqual(session_state["user_stance_label"], "較支持核電")
+        self.assertEqual(session_state["agent_stance"], "較反對核電")
+        self.assertNotIn("user_stance_intensity", session_state)
+        self.assertNotIn("history", session_state)
 
     def test_session_uses_q9_open_answer_as_initial_argument(self):
         create_response = self.client.post(
@@ -450,22 +457,22 @@ class DialogueSessionApiTests(APITestCase):
 
         self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
         session_id = create_response.data["session_id"]
-        session_record = cache.get(f"dialogue_session:{session_id}")
+        record = DialogueSessionRecord.objects.get(session_id=session_id)
 
         self.assertEqual(
-            session_record["session"]["user_initial_argument"],
+            record.session_state["user_initial_argument"],
             "我支持核電，因為它能穩定供電並協助減碳。",
         )
         self.assertEqual(
-            session_record["survey_context"]["survey_open_answers"]["Q10"],
+            record.survey_context["survey_open_answers"]["Q10"],
             "反對者最強的論點是核安與核廢料風險。",
         )
         self.assertEqual(
-            session_record["survey_context"]["semantic_vector_interface"]["status"],
+            record.survey_context["semantic_vector_interface"]["status"],
             "pending",
         )
         self.assertEqual(
-            session_record["survey_context"]["semantic_vector_interface"][
+            record.survey_context["semantic_vector_interface"][
                 "target_question_code"
             ],
             "Q9",
@@ -509,8 +516,8 @@ class DialogueSessionApiTests(APITestCase):
         self.assertEqual(saved_turn.ai_response, "AI reply to: 核能真的比其他方案更穩定嗎？")
         mocked_get_agent.assert_called_once_with("nuclear_energy_all")
 
-    @patch("chat.services.embedding.get_embedding", return_value=make_test_embedding(-1))
-    @patch("api.views.build_q9_embedding", return_value=make_test_embedding(1), create=True)
+    @patch("chat.services.embedding.get_embedding")
+    @patch("api.services.dialogue_session.build_q9_embedding", return_value=make_test_embedding(1), create=True)
     @patch("api.views.get_dialogue_agent", return_value=FakeDialogueAgent())
     def test_ai_reply_includes_session_stance_drift_value(
         self,
@@ -518,6 +525,13 @@ class DialogueSessionApiTests(APITestCase):
         mocked_q9_embedding,
         mocked_message_embedding,
     ):
+        # Second message uses a different embedding so the recomputed
+        # drift_value actually differs from the first (see the direction
+        # assertion below).
+        mocked_message_embedding.side_effect = [
+            make_test_embedding(-1),
+            make_test_embedding(3),
+        ]
         create_response = self.client.post(
             "/api/dialogue/sessions/",
             {
@@ -532,9 +546,9 @@ class DialogueSessionApiTests(APITestCase):
         )
         self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
         session_id = create_response.data["session_id"]
-        session_record = cache.get(f"dialogue_session:{session_id}")
+        record = DialogueSessionRecord.objects.get(session_id=session_id)
         self.assertEqual(
-            session_record["survey_context"]["q9_embedding"],
+            record.survey_context["q9_embedding"],
             make_test_embedding(1),
         )
 
@@ -547,13 +561,33 @@ class DialogueSessionApiTests(APITestCase):
         self.assertEqual(reply_response.status_code, status.HTTP_200_OK)
         self.assertEqual(reply_response.data["stance_drift"]["drift_value"], 2.0)
         self.assertIsNotNone(reply_response.data["stance_drift"]["measured_at"])
-        self.assertEqual(
-            cache.get(f"dialogue_session:{session_id}")["session"]["stance_drift"]["drift_value"],
-            2.0,
+        record.refresh_from_db()
+        self.assertEqual(record.session_state["stance_drift"]["drift_value"], 2.0)
+        self.assertNotIn("history", record.session_state)
+        # Reply invalidates rather than repopulates the cache (§5).
+        self.assertIsNone(cache.get(f"dialogue_session:{session_id}"))
+
+        # A second reply must see the first reply's stance_drift as its
+        # previous_value — this is the direction-always-"stable" bug the P5
+        # design calls out (§1): overwriting session_record["session"] with
+        # session.to_dict() before computing drift wipes the prior value.
+        second_reply = self.client.post(
+            f"/api/dialogue/sessions/{session_id}/reply/",
+            {"message": "但核能仍是穩定供電的重要選項。"},
+            format="json",
         )
+        self.assertEqual(second_reply.status_code, status.HTTP_200_OK)
+        self.assertEqual(second_reply.data["stance_drift"]["drift_value"], 0.0)
+        # Only correct if previous_value came from the first reply's 2.0 —
+        # with the pre-fix bug previous_value is always None and direction
+        # is hardcoded to "stable" regardless of the actual diff.
+        self.assertEqual(second_reply.data["stance_drift"]["direction"], "diverging")
+        record.refresh_from_db()
+        self.assertEqual(record.session_state["stance_drift"]["drift_value"], 0.0)
+
         mocked_q9_embedding.assert_called_once()
-        mocked_message_embedding.assert_called_once_with("核廢料和核安風險讓我開始擔心核電。")
-        mocked_get_agent.assert_called_once_with("nuclear_energy_all")
+        self.assertEqual(mocked_message_embedding.call_count, 2)
+        mocked_get_agent.assert_called_with("nuclear_energy_all")
 
     @patch("api.views.get_dialogue_agent", return_value=FakeDialogueAgent())
     def test_latest_session_restores_history_after_cache_loss(self, mocked_get_agent):
@@ -720,7 +754,178 @@ class DialogueSessionApiTests(APITestCase):
             )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # Analyze invalidates rather than repopulates the cache (§5); the
+        # semantic tree write is the meaningful assertion.
         self.assertIsNone(cache.get(f"dialogue_session:{session_id}"))
+        record = DialogueSessionRecord.objects.get(session_id=session_id)
+        self.assertTrue(record.semantic_tree_state)
+
+    @patch("api.views.get_dialogue_agent", return_value=FakeDialogueAgent())
+    def test_reply_and_analyze_interleaving_does_not_lose_history_or_tree(
+        self, mocked_get_agent,
+    ):
+        """P5 acceptance: reply x analyze concurrency loses neither history
+        nor the semantic tree. Field ownership (§6) makes this true even
+        under literal interleaving, not just non-overlapping calls: reply
+        only ever writes session_state, analyze only ever writes
+        semantic_tree_state, and history always lives in AIConversation
+        turns that neither write path touches."""
+        create_response = self.client.post(
+            "/api/dialogue/sessions/",
+            {"topic_id": 102, "topic_title": "核能發電在減碳中的角色"},
+            format="json",
+        )
+        session_id = create_response.data["session_id"]
+
+        reply1 = self.client.post(
+            f"/api/dialogue/sessions/{session_id}/reply/",
+            {"message": "核能可以補足再生能源不穩定"},
+            format="json",
+        )
+        self.assertEqual(reply1.status_code, status.HTTP_200_OK)
+
+        def fake_classify(text, anchors=None):
+            return fake_energy_items_response()["items"]
+
+        with patch(
+            "apps.matching.services.nuclear_node_classifier.build_candidate_items",
+            side_effect=fake_classify,
+        ):
+            analyze_response = self.client.post(
+                f"/api/dialogue/sessions/{session_id}/semantic-tree/analyze/"
+            )
+        self.assertEqual(analyze_response.status_code, status.HTTP_200_OK)
+
+        reply2 = self.client.post(
+            f"/api/dialogue/sessions/{session_id}/reply/",
+            {"message": "但核安風險仍然存在"},
+            format="json",
+        )
+        self.assertEqual(reply2.status_code, status.HTTP_200_OK)
+
+        # analyze's semantic_tree_state write must survive reply2's
+        # session_state write.
+        record = DialogueSessionRecord.objects.get(session_id=session_id)
+        self.assertTrue(record.semantic_tree_state)
+        self.assertNotIn("history", record.session_state)
+
+        # Both turns survive regardless of write ordering — history is
+        # never a field either write path can clobber.
+        self.assertEqual(
+            AIConversation.objects.filter(session_id=session_id).count(), 2,
+        )
+        cache.clear()
+        restore_response = self.client.get(f"/api/dialogue/sessions/{session_id}/")
+        self.assertEqual(restore_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(restore_response.data["history"]), 4)
+
+    def test_concurrent_reply_metadata_writes_do_not_lose_updates(self):
+        """P5 acceptance: reply x reply concurrency doesn't lose
+        focus_signal_count or downgrade user_reasoning_mode. Simulates two
+        writers who both read the row before either wrote (each holding a
+        stale metadata dict), then apply their writes in sequence — the
+        row-lock + reread + merge in update_session_metadata must still
+        produce the monotonic result, not whichever writer went last."""
+        from api.services.dialogue_session import update_session_metadata
+
+        session_id = uuid4().hex
+        DialogueSessionRecord.objects.create(
+            user=self.user,
+            session_id=session_id,
+            topic_id=102,
+            topic_title="核能發電在減碳中的角色",
+            collection_name="nuclear_energy_all",
+            session_state={
+                "topic": "核能發電在減碳中的角色",
+                "topic_description": "",
+                "agent_stance": "",
+                "agent_stance_summary": "",
+                "user_stance_label": "",
+                "user_stance_score": 4.0,
+                "user_initial_argument": "",
+                "user_reasoning_mode": "unknown",
+                "focus_signal_count": 0,
+                "dialogue_phase": "engagement",
+                "stance_drift": None,
+            },
+            last_activity_at=timezone.now(),
+        )
+
+        base_metadata = {
+            "topic": "核能發電在減碳中的角色",
+            "topic_description": "",
+            "agent_stance": "",
+            "agent_stance_summary": "",
+            "user_stance_label": "",
+            "user_stance_score": 4.0,
+            "user_initial_argument": "",
+            "dialogue_phase": "engagement",
+        }
+        # Writer A read the row first and computed its metadata from the
+        # stale (pre-B) snapshot: focus_signal_count=1, still "unknown".
+        writer_a_metadata = {
+            **base_metadata,
+            "user_reasoning_mode": "unknown",
+            "focus_signal_count": 1,
+            "stance_drift": {
+                "drift_value": 0.1, "direction": "stable", "measured_at": "t1",
+            },
+        }
+        # Writer B read after A's user message pushed focus_signal_count to
+        # 2 and flipped the mode.
+        writer_b_metadata = {
+            **base_metadata,
+            "user_reasoning_mode": "collaborative",
+            "focus_signal_count": 2,
+            "stance_drift": {
+                "drift_value": 0.2, "direction": "stable", "measured_at": "t2",
+            },
+        }
+
+        # B's write reaches the DB first (e.g. A was slower over the
+        # network); A writes second using its stale values. Without the
+        # lock-reread-merge, A's write would revert both fields.
+        update_session_metadata(
+            session_id=session_id, user_id=self.user.id, metadata=writer_b_metadata,
+        )
+        update_session_metadata(
+            session_id=session_id, user_id=self.user.id, metadata=writer_a_metadata,
+        )
+
+        record = DialogueSessionRecord.objects.get(session_id=session_id)
+        self.assertEqual(record.session_state["focus_signal_count"], 2)
+        self.assertEqual(record.session_state["user_reasoning_mode"], "collaborative")
+
+    def test_session_restore_falls_back_to_legacy_history_when_turns_are_empty(self):
+        """§8: an ancient record with no AIConversation turns but history
+        baked into session_state must still be readable — turns being empty
+        doesn't mean the conversation never happened."""
+        session_id = uuid4().hex
+        DialogueSessionRecord.objects.create(
+            user=self.user,
+            session_id=session_id,
+            topic_id=102,
+            topic_title="核能發電在減碳中的角色",
+            collection_name="nuclear_energy_all",
+            session_state={
+                "topic": "核能發電在減碳中的角色",
+                "dialogue_phase": "engagement",
+                "user_stance_score": 4.0,
+                "user_stance_label": "",
+                "history": [
+                    {"role": "user", "content": "很久以前的訊息"},
+                    {"role": "agent", "content": "很久以前的回覆"},
+                ],
+            },
+            last_activity_at=timezone.now(),
+        )
+
+        response = self.client.get(f"/api/dialogue/sessions/{session_id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["history"]), 2)
+        self.assertEqual(response.data["history"][0]["content"], "很久以前的訊息")
+        self.assertEqual(response.data["history"][1]["content"], "很久以前的回覆")
 
 
 class HistoryApiTests(APITestCase):
@@ -1907,14 +2112,16 @@ class MatchingApiTests(APITestCase):
 
         self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
         session_id = create_response.data["session_id"]
-        session_record = cache.get(f"dialogue_session:{session_id}")
+        session_state = DialogueSessionRecord.objects.get(
+            session_id=session_id,
+        ).session_state
 
         self.assertEqual(
-            session_record["session"]["topic"],
+            session_state["topic"],
             TOPIC_CONFIGS[102]["title"],
         )
         self.assertEqual(
-            session_record["session"]["topic_description"],
+            session_state["topic_description"],
             TOPIC_CONFIGS[102]["topic_description"],
         )
 
@@ -1931,6 +2138,10 @@ class MatchingApiTests(APITestCase):
 
         self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
         session_id = create_response.data["session_id"]
+        # Populate the cache via a read (create no longer does), so we can
+        # prove the failure path invalidates it below.
+        self.client.get(f"/api/dialogue/sessions/{session_id}/")
+        self.assertIsNotNone(cache.get(f"dialogue_session:{session_id}"))
 
         reply_response = self.client.post(
             f"/api/dialogue/sessions/{session_id}/reply/",
@@ -1948,6 +2159,14 @@ class MatchingApiTests(APITestCase):
         )
         self.assertNotIn("anthropic invalid key", reply_response.data["detail"])
         mocked_get_agent.assert_called_once_with("nuclear_energy_all")
+        # The user turn was created in DB before the LLM call failed, so the
+        # cached (now stale) history must be invalidated — otherwise a
+        # concurrent reader would see a session missing the user's message.
+        self.assertIsNone(cache.get(f"dialogue_session:{session_id}"))
+        self.assertEqual(
+            AIConversation.objects.filter(session_id=session_id).count(),
+            1,
+        )
 
     @patch("api.views.get_dialogue_agent", return_value=FakeDialogueAgent())
     def test_dialogue_reply_is_throttled(self, mocked_get_agent):
