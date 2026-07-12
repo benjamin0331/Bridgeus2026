@@ -15,6 +15,11 @@ from rest_framework_simplejwt.authentication import JWTStatelessUserAuthenticati
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.matching.services.semantic import build_q9_embedding
+from core.env import (
+    ANONYMOUS_MATCH_USER_NAME,
+    SESSION_TTL_SECONDS,
+    dialogue_session_cache_key,
+)
 
 from .models import (
     AIConversation,
@@ -52,22 +57,16 @@ from .serializers import (
     PostDialogueResponseSerializer,
 )
 
-SESSION_TTL_SECONDS = 60 * 60 * 12
 logger = logging.getLogger(__name__)
 DEFAULT_DIALOGUE_COLLECTION = os.getenv(
     "DEFAULT_DIALOGUE_COLLECTION",
     "general_knowledge",
 )
-ANONYMOUS_MATCH_USER_NAME = "匿名對話者"
-
-
-def _session_cache_key(session_id: str) -> str:
-    return f"dialogue_session:{session_id}"
 
 
 def _cache_dialogue_session_record(session_record: dict) -> None:
     cache.set(
-        _session_cache_key(session_record["session_id"]),
+        dialogue_session_cache_key(session_record["session_id"]),
         session_record,
         timeout=SESSION_TTL_SECONDS,
     )
@@ -141,7 +140,7 @@ def _restore_dialogue_session_record_for_user(
     session_id: str,
     user_id: int,
 ) -> tuple[dict | None, str]:
-    cached = cache.get(_session_cache_key(session_id))
+    cached = cache.get(dialogue_session_cache_key(session_id))
     if cached and cached.get("user_id") == user_id:
         return cached, "cache"
 

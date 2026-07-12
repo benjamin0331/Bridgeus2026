@@ -16,6 +16,8 @@ from datetime import timedelta
 
 from django.core.exceptions import ImproperlyConfigured
 
+from core.env import _env_bool
+
 try:
     from dotenv import load_dotenv
 except ImportError:  # pragma: no cover - optional during bootstrap
@@ -26,13 +28,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 if load_dotenv is not None:
     load_dotenv(BASE_DIR / ".env")
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _env_list(name: str, default: str = "") -> list[str]:

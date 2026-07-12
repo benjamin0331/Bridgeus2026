@@ -5,13 +5,13 @@ The rest of the matching service only handles persistence and lifecycle.
 """
 
 import math
-import os
 from dataclasses import dataclass
 from decimal import Decimal
 
 from scipy.spatial.distance import cosine
 
 from api.models import MatchQueueEntry, UserStanceProfile
+from core.env import _env_bool
 
 LIKERT_WEIGHT = 0.6
 SEMANTIC_WEIGHT = 0.4
@@ -60,13 +60,6 @@ class MatchScore:
 class ScoredCandidate:
     candidate: MatchQueueEntry
     score: MatchScore
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    raw_value = os.getenv(name)
-    if raw_value is None:
-        return default
-    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def allow_same_stance_fallback() -> bool:

@@ -32,9 +32,13 @@ from apps.matching.services.hh_analysis import (
 from chat.services.embedding import aget_embedding
 from chat.services.emotion import aget_analyze_emotion
 from chat.services.filter import check_content_sync
+from core.env import (
+    ANONYMOUS_MESSAGE_SENDER_NAME,
+    SESSION_TTL_SECONDS,
+    dialogue_session_cache_key,
+)
 
 User = get_user_model()
-SESSION_TTL_SECONDS = 60 * 60 * 12
 DEFAULT_AI_ASSIST_TIMEOUT_SECONDS = 2.0
 logger = logging.getLogger(__name__)
 
@@ -59,10 +63,6 @@ def ai_assist_timeout_seconds() -> float:
     except (TypeError, ValueError):
         return DEFAULT_AI_ASSIST_TIMEOUT_SECONDS
     return max(0.0, timeout)
-
-
-def _session_cache_key(session_id: str) -> str:
-    return f"dialogue_session:{session_id}"
 
 
 def _query_value(scope, key: str) -> str | None:
@@ -121,7 +121,7 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
         from apps.matching.services.ai_agent import DialoguePhase, DialogueSession
         from api.views import get_dialogue_agent
 
-        cache_key = _session_cache_key(self.session_id)
+        cache_key = dialogue_session_cache_key(self.session_id)
         session_record = await sync_to_async(cache.get)(cache_key)
 
         if not session_record:
@@ -838,7 +838,7 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
             "match_id": self.match.id,
             "room_id": self.room_id,
             "sender_id": self.user.id,
-            "sender_name": "匿名使用者",
+            "sender_name": ANONYMOUS_MESSAGE_SENDER_NAME,
             "content": message.content,
             "created_at": message.created_at.isoformat(),
         }
