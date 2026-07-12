@@ -1,5 +1,5 @@
 # HANDOFF_P7 — 最終整合 Review 與結案
-- 專案:BridgeUs backend refactor
+- 專案:Take A Bridge backend refactor
 - Part:7 / 最終整合 Review 與結案;Branch:`refactor/p7-integration`;日期:2026-07-12(兩輪,同日)
 - 使用模型與 App:Claude Fable 5 @ Claude Code
 
@@ -66,4 +66,4 @@
 - 驗收條件:feat/Light 上重跑本檔「測試」節全部指令綠
 - 建議 Context:新開;帶 CLOSEOUT.md;不帶其他
 - 是否需要 Review 本 Part:兩輪整合衝突解法都寫在 merge commit message,人工併回時順看即可
-- 啟動 Prompt:(併回)你是 BridgeUs backend refactor 的收尾執行者。開啟 repo /Users/light/code,先讀 backend/docs/refactor/CLOSEOUT.md。人工確認 `git diff refactor-baseline...refactor/p7-integration` 後,把 refactor/p7-integration 併回 feat/Light,重跑 HANDOFF_P7「測試」節全部指令確認綠,然後依團隊流程開 feat/Light → dev 的 PR。
+- 啟動 Prompt:(併回)你是 Take A Bridge backend refactor 的收尾執行者。開啟 repo /Users/light/code,先讀 backend/docs/refactor/CLOSEOUT.md。人工確認 `git diff refactor-baseline...refactor/p7-integration` 後,把 refactor/p7-integration 併回 feat/Light,重跑 HANDOFF_P7「測試」節全部指令確認綠,然後依團隊流程開 feat/Light → dev 的 PR。

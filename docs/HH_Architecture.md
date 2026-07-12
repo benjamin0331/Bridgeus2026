@@ -1,4 +1,4 @@
-# BridgeUs 橋得攏 — Human-Human 對話系統架構
+# Take A Bridge 橋得攏 — Human-Human 對話系統架構
 
 ## 一、架構總覽
 

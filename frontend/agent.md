@@ -1,4 +1,4 @@
-# BridgeUs Frontend Agent Handoff
+# Take A Bridge Frontend Agent Handoff
 
 ## Current Snapshot
 
@@ -52,7 +52,7 @@ If checking full integration locally, also run backend ASGI from `/Users/light/c
 
 ```bash
 uv run python manage.py warm_nlp_models
-uv run uvicorn BridgeUs_Django.asgi:application --host 0.0.0.0 --port 8005
+uv run uvicorn take_a_bridge.asgi:application --host 0.0.0.0 --port 8005
 ```
 
 ## Git Notes

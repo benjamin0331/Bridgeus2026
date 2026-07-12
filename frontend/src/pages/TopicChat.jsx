@@ -82,7 +82,7 @@ function mapHistoryToMessages(history, userName) {
   return history.map((message, index) => ({
     id: `${message.role}-${index}`,
     type: message.role === 'agent' ? 'agent' : 'user',
-    userName: message.role === 'agent' ? 'BridgeUs' : userName,
+    userName: message.role === 'agent' ? 'Take A Bridge' : userName,
     text: message.content,
   }));
 }
@@ -1172,7 +1172,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
             {
               id: newMessageId,
               type: 'agent',
-              userName: 'BridgeUs',
+              userName: 'Take A Bridge',
               text: data.content,
             },
           ];
@@ -2111,7 +2111,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
                 <div className="message-row">
                   <div className="message-user-info">
                     <img src="/icon.jpg" alt="Avatar" className="message-avatar" />
-                    <span className="message-username">BridgeUs</span>
+                    <span className="message-username">Take A Bridge</span>
                   </div>
                   <div className="message-bubble">正在整理回應...</div>
                 </div>

@@ -2,7 +2,7 @@
 
 ## Current Layout
 - Root workspace: `/Users/light/code`.
-- Django backend: `backend/`. Settings live in `backend/BridgeUs_Django/settings.py`, API endpoints live in `backend/api/`, matching logic lives in `backend/apps/matching/services/`, and knowledge-base scripts live in `backend/scripts/`.
+- Django backend: `backend/`. Settings live in `backend/take_a_bridge/settings.py`, API endpoints live in `backend/api/`, matching logic lives in `backend/apps/matching/services/`, and knowledge-base scripts live in `backend/scripts/`.
 - React frontend: `frontend/`. Routing starts in `frontend/src/App.jsx`, API access is centralized in `frontend/src/api/client.js`, and the dialogue/matching UI lives in `frontend/src/pages/TopicChat.jsx`.
 - Old folders such as `BridgeUs_Django_withLLM` and `BridgeUs` were removed from the active project. Do not edit or recreate those paths unless the user explicitly asks for archival recovery.
 
@@ -26,7 +26,7 @@
   - `uv run python manage.py createsuperuser`
   - `uv run python manage.py runserver 0.0.0.0:8005 --noreload`
   - `uv run python manage.py warm_nlp_models`
-  - `uv run uvicorn BridgeUs_Django.asgi:application --host 0.0.0.0 --port 8005`
+  - `uv run uvicorn take_a_bridge.asgi:application --host 0.0.0.0 --port 8005`
   - `uv run python scripts/build_knowledge_base.py --data-dir data/nuclear_energy --collection nuclear_energy_all`
 - Environment is loaded from `backend/.env`. Do not commit real secrets or print secret values.
 - `DB_ENGINE=sqlite` is fine for local smoke tests. Use `DB_ENGINE=postgres` with PostgreSQL + pgvector for realistic matching/chat persistence testing.
@@ -65,7 +65,7 @@
   - `npm run build`
 - Vite proxies `/api` and `/ws` to `VITE_PROXY_TARGET`, defaulting to `http://127.0.0.1:8005`.
 - Matching and AI dialogue UI are both in `frontend/src/pages/TopicChat.jsx`.
-- Logout/session cleanup should clear `access`, `refresh`, and `bridgeus_user` together.
+- Logout/session cleanup should clear `access`, `refresh`, and `take_a_bridge_user` together.
 
 ## Verification
 - Backend smoke checks:

@@ -1,6 +1,6 @@
-# BridgeUs Frontend
+# Take A Bridge Frontend
 
-React + Vite frontend for BridgeUs. It supports backend-driven topic/survey loading, AI dialogue mode, and anonymous human matching mode.
+React + Vite frontend for Take A Bridge. It supports backend-driven topic/survey loading, AI dialogue mode, and anonymous human matching mode.
 
 ## Location
 

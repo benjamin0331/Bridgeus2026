@@ -1,4 +1,4 @@
-# BridgeUs Backend Refactor — Agent 詳細執行計畫
+# Take A Bridge Backend Refactor — Agent 詳細執行計畫
 
 > 本文件設計為「可直接貼給 Codex App 或 Claude App 的 Agent」使用。
 > 搭配文件:`Backend_CodeReview_Refactor準備報告.md`(問題來源)、`Refactor_計畫總表.md`(人類閱讀版)。
@@ -133,7 +133,7 @@
   2. **Serializer 白名單**:`AIConversationSerializer` 改白名單 fields,`embedding` 不輸出、分析欄位 read-only;`AIConversationDetail` 移除 Update/Destroy(改 `RetrieveAPIView`)——若前端有用到 PUT/DELETE,先 grep frontend 確認,有用到就只做 read-only 欄位。
   3. **WS payload 防禦**:兩個 consumer 的 `receive` 加 `isinstance(data, dict)` 與 content 型別檢查。
   4. **限流**:DRF throttle 設定——`GuestLoginView` 加 AnonRateThrottle(建議 10/hour)、`DialogueSessionReplyView` 與三個 semantic-tree analyze view 加 UserRateThrottle(建議 30/min、analyze 6/min);數值以 env 可調。
-- **執行前讀取**:報告對應 4 節;`api/views.py` 指定 view、`api/serializers.py:7-11`、`api/consumers.py:102-118 與 330-352`、`BridgeUs_Django/settings.py` REST_FRAMEWORK 段;HANDOFF_P2(只看測試指令)。
+- **執行前讀取**:報告對應 4 節;`api/views.py` 指定 view、`api/serializers.py:7-11`、`api/consumers.py:102-118 與 330-352`、`take_a_bridge/settings.py` REST_FRAMEWORK 段;HANDOFF_P2(只看測試指令)。
 - **預期輸出**:4 個 commit、每項至少 1 個測試、HANDOFF_P3。
 - **驗收標準**:History 列表在 assertNumQueries 下查詢數為常數(不隨紀錄數線性成長);embedding 不再出現在 list API 回應;`[1]` payload 不再讓 consumer 拋例外;throttle 觸發回 429。
 - **App/模型**:Codex App / GPT-5.4(備用:Claude App / Haiku 4.5)。
@@ -291,7 +291,7 @@
 
 ```markdown
 # HANDOFF_P{n} — {Part 名稱}
-- 專案:BridgeUs backend refactor
+- 專案:Take A Bridge backend refactor
 - Part:{n} / {名稱};Branch:{branch};日期:{date}
 - 使用模型與 App:{model} @ {app}
 
@@ -335,7 +335,7 @@
 每個 HANDOFF 的「啟動 Prompt」按此骨架填:
 
 ```
-你是 BridgeUs backend refactor 的 Part {n} 執行者。
+你是 Take A Bridge backend refactor 的 Part {n} 執行者。
 開啟 repo {path},切到 branch refactor/m{模組}-p{n}-{slug}(從當前 feat/Light 切出;a/b 拆分的 Part 共用同一分支)。
 先讀:(1) backend/docs/refactor/handoffs/HANDOFF_P{n-1}.md
      (2) backend/docs/refactor/EXECUTION_PLAN.md 的「Part {n}」章節

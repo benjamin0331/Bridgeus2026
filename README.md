@@ -1,6 +1,6 @@
-# BridgeUs (橋得攏)
+# Take A Bridge (橋得攏)
 
-BridgeUs is a heterogeneous-viewpoint dialogue platform for structured discussion across different stances. The current implementation focuses on the Taiwan nuclear-energy topic and supports two user-facing paths:
+Take A Bridge is a heterogeneous-viewpoint dialogue platform for structured discussion across different stances. The current implementation focuses on the Taiwan nuclear-energy topic and supports two user-facing paths:
 
 - Human-AI dialogue with an AI agent taking the opposing stance.
 - Anonymous human-human matching based on survey stance scores and optional Q9 semantic distance.
@@ -49,7 +49,7 @@ uv run python manage.py migrate
 uv run python manage.py createsuperuser
 uv run python scripts/build_knowledge_base.py --data-dir data/nuclear_energy --collection nuclear_energy_all
 uv run python manage.py warm_nlp_models
-uv run uvicorn BridgeUs_Django.asgi:application --host 0.0.0.0 --port 8005
+uv run uvicorn take_a_bridge.asgi:application --host 0.0.0.0 --port 8005
 ```
 
 For simple HTTP-only development, this also works:
@@ -228,7 +228,7 @@ Current defaults:
 
 ## Project Context
 
-BridgeUs is an NSTC undergraduate research project for structured depolarization dialogue. The research period is planned for 2026/07 - 2027/02. Advisor: 張昭憲（淡江大學資管系副教授）.
+Take A Bridge is an NSTC undergraduate research project for structured depolarization dialogue. The research period is planned for 2026/07 - 2027/02. Advisor: 張昭憲（淡江大學資管系副教授）.
 
 Current engineering priority: make the survey, matching, AI dialogue, and anonymous chat lifecycle stable before adding long-running post-dialogue analysis and CCND visualization.
 

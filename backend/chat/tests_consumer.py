@@ -45,7 +45,7 @@ async def _make_conversation(user_a, user_b, topic_id=1):
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_normal_message_relayed_to_peer():
     """Clean message passes filter, relays to both participants with correct schema."""
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="alice_ci1", password="x")
     bob = await create_user(username="bob_ci1", password="x")
@@ -73,7 +73,7 @@ async def test_normal_message_relayed_to_peer():
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_nlp_analysis_saved_to_db():
     """Background NLP task writes embedding (384-dim) and emotion_score to DB after relay."""
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
     from chat.models import Message
 
     alice = await create_user(username="alice_ci2", password="x")
@@ -108,7 +108,7 @@ async def test_nlp_analysis_saved_to_db():
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_blocked_message_not_relayed_sender_gets_prompt():
     """Blacklisted content: Alice gets content_blocked system_prompt; Bob receives nothing."""
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="alice_ci3", password="x")
     bob = await create_user(username="bob_ci3", password="x")
@@ -154,7 +154,7 @@ async def _make_conversation_with_anchor(user_a, user_b, topic_id=1):
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_off_topic_sends_ai_suggestion_redirect(monkeypatch):
     """Off-topic detection now sends ai_suggestion (not system_prompt) with LLM-generated text."""
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="ot_a1", password="x")
     bob = await create_user(username="ot_b1", password="x")
@@ -196,7 +196,7 @@ async def test_off_topic_sends_ai_suggestion_redirect(monkeypatch):
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_off_topic_llm_failure_falls_back_to_template(monkeypatch):
     """When LLM fails, redirect falls back to OFF_TOPIC_MESSAGES template."""
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
     from chat.consumers import OFF_TOPIC_MESSAGES
 
     alice = await create_user(username="ot_fb_a", password="x")
@@ -233,7 +233,7 @@ async def test_off_topic_llm_failure_falls_back_to_template(monkeypatch):
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_off_topic_saves_aisuggestion_record(monkeypatch):
     """Off-topic redirect creates an AISuggestion with original_content=None."""
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="ot_db_a", password="x")
     bob = await create_user(username="ot_db_b", password="x")
@@ -272,7 +272,7 @@ async def test_off_topic_saves_aisuggestion_record(monkeypatch):
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_redirect_accept_records_action_no_relay(monkeypatch):
     """Accepting a redirect suggestion records action in DB but does NOT relay any content."""
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="ot_acc_a", password="x")
     bob = await create_user(username="ot_acc_b", password="x")
@@ -313,7 +313,7 @@ async def test_redirect_accept_records_action_no_relay(monkeypatch):
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_redirect_ignore_records_action_no_relay(monkeypatch):
     """Ignoring a redirect suggestion records action in DB but does NOT relay any content."""
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="ot_ign_a", password="x")
     bob = await create_user(username="ot_ign_b", password="x")
@@ -355,7 +355,7 @@ async def test_redirect_ignore_records_action_no_relay(monkeypatch):
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_inactivity_watcher_sends_direction_to_both():
     """After mutual silence, both users receive ai_suggestion with category=direction."""
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="inact_a1", password="x")
     bob = await create_user(username="inact_b1", password="x")
@@ -397,7 +397,7 @@ async def test_inactivity_watcher_sends_direction_to_both():
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_inactivity_watcher_fires_only_once_without_activity():
     """Watcher fires exactly once per inactivity window; continued silence does NOT re-trigger."""
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="inact_once_a", password="x")
     bob = await create_user(username="inact_once_b", password="x")
@@ -439,7 +439,7 @@ async def test_inactivity_watcher_fires_only_once_without_activity():
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_inactivity_watcher_resets_on_activity():
     """A message from either user resets the inactivity timer."""
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="inact_rst_a", password="x")
     bob = await create_user(username="inact_rst_b", password="x")
@@ -484,7 +484,7 @@ async def test_inactivity_watcher_resets_on_activity():
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_inactivity_direction_llm_failure_uses_fallback():
     """When LLM fails, direction suggestion uses DIRECTION_FALLBACK_MESSAGES template."""
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
     from chat.consumers import DIRECTION_FALLBACK_MESSAGES
 
     alice = await create_user(username="inact_fb_a", password="x")
@@ -517,7 +517,7 @@ async def test_inactivity_direction_llm_failure_uses_fallback():
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_inactivity_direction_saves_aisuggestion_for_both_users():
     """Direction suggestion creates one AISuggestion record per user."""
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="inact_db_a", password="x")
     bob = await create_user(username="inact_db_b", password="x")
@@ -558,7 +558,7 @@ async def test_inactivity_direction_saves_aisuggestion_for_both_users():
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_direction_accept_records_action_no_relay():
     """Accepting a direction suggestion records the action but does NOT relay content."""
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="dir_acc_a", password="x")
     bob = await create_user(username="dir_acc_b", password="x")
@@ -596,7 +596,7 @@ async def test_direction_accept_records_action_no_relay():
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_direction_ignore_records_action_no_relay():
     """Ignoring a direction suggestion records the action but does NOT relay content."""
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="dir_ign_a", password="x")
     bob = await create_user(username="dir_ign_b", password="x")
@@ -641,7 +641,7 @@ async def test_direction_ignore_records_action_no_relay():
 async def test_inactivity_max_three_triggers():
     """Watcher fires at most _INACTIVITY_MAX_TRIGGERS times, then exits."""
     import chat.consumers as consumers_mod
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="imax_a", password="x")
     bob = await create_user(username="imax_b", password="x")
@@ -695,7 +695,7 @@ async def test_inactivity_max_three_triggers():
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_inactivity_grace_period_suppresses_trigger():
     """No direction suggestion fires within the grace period."""
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="igrace_a", password="x")
     bob = await create_user(username="igrace_b", password="x")
@@ -733,7 +733,7 @@ async def test_inactivity_grace_period_suppresses_trigger():
 async def test_inactivity_min_interval_prevents_rapid_refiring():
     """Second trigger is suppressed until _INACTIVITY_MIN_INTERVAL_SECONDS elapses."""
     import chat.consumers as consumers_mod
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="iminint_a", password="x")
     bob = await create_user(username="iminint_b", password="x")
@@ -782,7 +782,7 @@ async def test_inactivity_min_interval_prevents_rapid_refiring():
 async def test_inactivity_pauses_on_disconnect():
     """Watcher exits when any user disconnects; no further triggers fire."""
     import chat.consumers as consumers_mod
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="idisc_a", password="x")
     bob = await create_user(username="idisc_b", password="x")
@@ -836,7 +836,7 @@ async def test_inactivity_pauses_on_disconnect():
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_rephrase_llm_failure_gives_modify_ignore_actions():
     """When LLM fails to rephrase, fallback template is used with only modify/ignore actions."""
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
     from chat.consumers import _REPHRASE_FALLBACK_TEMPLATE
 
     alice = await create_user(username="rpfb_a", password="x")
@@ -871,7 +871,7 @@ async def test_rephrase_llm_failure_gives_modify_ignore_actions():
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_modify_second_emotion_check_re_intercepts():
     """Modify response re-runs emotion check; still high emotion → second ai_suggestion."""
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="mod2_a", password="x")
     bob = await create_user(username="mod2_b", password="x")
@@ -912,7 +912,7 @@ async def test_modify_second_emotion_check_re_intercepts():
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_modify_force_relay_at_max_intercepts():
     """After _REPHRASE_MAX_INTERCEPTS, modify is force-relayed to Bob regardless of emotion."""
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="force_a", password="x")
     bob = await create_user(username="force_b", password="x")
@@ -957,7 +957,7 @@ async def test_modify_force_relay_at_max_intercepts():
 async def test_aisuggestion_research_fields_written():
     """AISuggestion has trigger_score, response_time_ms, final_content, context_message_ids."""
     import pytest as _pytest
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="fields_a", password="x")
     bob = await create_user(username="fields_b", password="x")

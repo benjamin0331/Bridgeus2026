@@ -1,1 +1,1 @@
-"""Core utilities for BridgeUs_Django."""
+"""Core utilities for take_a_bridge."""

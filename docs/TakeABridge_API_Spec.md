@@ -1,4 +1,4 @@
-# BridgeUs API Specification
+# Take A Bridge API Specification
 
 > **Version**: 0.1.0 (Draft)
 > **Base URL**: `/api/v1/`

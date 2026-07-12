@@ -1,5 +1,5 @@
 # HANDOFF_P0 — 基線建立
-- 專案: BridgeUs backend refactor
+- 專案: Take A Bridge backend refactor
 - Part: 0 / 基線建立; Branch: feat/Light; 日期: 2026-07-11 22:51:35 CST
 - 使用模型與 App: Codex (GPT-5) @ Codex App
 
@@ -45,4 +45,4 @@
 - 驗收條件: 產出 `backend/docs/refactor/p1_lock_design.md`；設計文件必須覆蓋 room 與 AI session 兩條 analyze 路徑，並明確記錄選定方案與否決選項。
 - 建議 Context: 新開; 帶入 `HANDOFF_P0.md`、`CODE_REVIEW.md` 上述兩節、`semantic_tree.py:1278-1417`; 不帶其他 code review 章節、全 repo 掃描結果或歷史對話
 - 是否需要 Review 本 Part: 否
-- 啟動 Prompt: 你是 BridgeUs backend refactor 的 Part 1a 執行者。開啟 repo `/Users/light/code`，切到 branch `refactor/m5-p1-semantic-tree-lock`(從當前 `feat/Light` 切出；若已存在則沿用，同一分支供 1a/1b 共用)。先讀:(1) `backend/docs/refactor/handoffs/HANDOFF_P0.md` (2) `backend/docs/refactor/CODE_REVIEW.md` 的 `P1 — 鎖內呼叫 OpenAI,鎖可能被持有近 100 秒` 與 `P2 — AI session 語意樹分析無鎖 + 狀態 last-write-wins` (3) `backend/apps/matching/services/semantic_tree.py:1278-1417`。不要讀其他歷史文件或全 repo 掃描。你的任務: 產出 `backend/docs/refactor/p1_lock_design.md`，設計 `analyze_pending_room_messages` 與 `analyze_pending_ai_conversations` 的鎖切分方案，寫清楚交易 1 / 鎖外 LLM 呼叫 / 交易 2 寫回驗證流程，並記錄衝突處理規則與否決方案。驗收: 設計文件必須同時涵蓋 room 與 AI session，且後續實作者可直接依文件改碼。完成後: 不改產品程式碼；若時間不足，優先把未完成邊界寫回新的 handoff 或設計文件註記。
+- 啟動 Prompt: 你是 Take A Bridge backend refactor 的 Part 1a 執行者。開啟 repo `/Users/light/code`，切到 branch `refactor/m5-p1-semantic-tree-lock`(從當前 `feat/Light` 切出；若已存在則沿用，同一分支供 1a/1b 共用)。先讀:(1) `backend/docs/refactor/handoffs/HANDOFF_P0.md` (2) `backend/docs/refactor/CODE_REVIEW.md` 的 `P1 — 鎖內呼叫 OpenAI,鎖可能被持有近 100 秒` 與 `P2 — AI session 語意樹分析無鎖 + 狀態 last-write-wins` (3) `backend/apps/matching/services/semantic_tree.py:1278-1417`。不要讀其他歷史文件或全 repo 掃描。你的任務: 產出 `backend/docs/refactor/p1_lock_design.md`，設計 `analyze_pending_room_messages` 與 `analyze_pending_ai_conversations` 的鎖切分方案，寫清楚交易 1 / 鎖外 LLM 呼叫 / 交易 2 寫回驗證流程，並記錄衝突處理規則與否決方案。驗收: 設計文件必須同時涵蓋 room 與 AI session，且後續實作者可直接依文件改碼。完成後: 不改產品程式碼；若時間不足，優先把未完成邊界寫回新的 handoff 或設計文件註記。

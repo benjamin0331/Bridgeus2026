@@ -1,5 +1,5 @@
 [project]
-name = "bridgeus-django-withllm"
+name = "take-a-bridge"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -43,6 +43,6 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-DJANGO_SETTINGS_MODULE = "BridgeUs_Django.settings"
+DJANGO_SETTINGS_MODULE = "take_a_bridge.settings"
 asyncio_mode = "auto"
 pythonpath = ["."]

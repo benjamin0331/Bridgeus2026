@@ -1,6 +1,6 @@
-# BridgeUs Backend
+# Take A Bridge Backend
 
-Django backend for BridgeUs. It provides JWT auth, backend-managed topic/survey configuration, AI dialogue sessions, anonymous matching, WebSocket chat, persistence, and the RAG dialogue agent.
+Django backend for Take A Bridge. It provides JWT auth, backend-managed topic/survey configuration, AI dialogue sessions, anonymous matching, WebSocket chat, persistence, and the RAG dialogue agent.
 
 ## Location
 
@@ -43,7 +43,7 @@ Run ASGI server on the expected backend port:
 
 ```bash
 uv run python manage.py warm_nlp_models
-uv run uvicorn BridgeUs_Django.asgi:application --host 0.0.0.0 --port 8005
+uv run uvicorn take_a_bridge.asgi:application --host 0.0.0.0 --port 8005
 ```
 
 HTTP-only fallback:
@@ -108,7 +108,7 @@ that depends on database-side vector search or realistic matching persistence.
 
 ## Main Files
 
-- Settings: `BridgeUs_Django/settings.py`
+- Settings: `take_a_bridge/settings.py`
 - HTTP routes: `api/urls.py`
 - API views and stance scoring: `api/views.py`
 - WebSocket consumers: `api/consumers.py`

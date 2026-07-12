@@ -1,5 +1,5 @@
 """
-語料庫數值分析腳本 — BridgeUs H-H 模組
+語料庫數值分析腳本 — Take A Bridge H-H 模組
 
 輸入：h:/P_BridgeUS/handmade_without_100_101拷貝.csv（單欄 content，10753 筆）
 輸出：h:/P_BridgeUS/corpus_analysis_result.csv
@@ -67,7 +67,7 @@ def main():
     args = parser.parse_args()
 
     print("=" * 68)
-    print("BridgeUs — 語料庫數值分析")
+    print("Take A Bridge — 語料庫數值分析")
     print(f"時間 : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"輸入 : {CSV_INPUT}")
     print(f"輸出 : {CSV_OUTPUT}")

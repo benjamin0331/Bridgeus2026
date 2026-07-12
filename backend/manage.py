@@ -6,7 +6,7 @@ import sys
 
 def main():
     """Run administrative tasks."""
-    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'BridgeUs_Django.settings')
+    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'take_a_bridge.settings')
     try:
         from django.core.management import execute_from_command_line
     except ImportError as exc:

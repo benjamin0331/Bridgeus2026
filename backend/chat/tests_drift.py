@@ -274,7 +274,7 @@ async def test_200_char_trigger_creates_drift_record():
     Pre-seed 3 messages with embeddings so calculate_drift has data to work with,
     independent of whether the current message's NLP task completes first.
     """
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="trig_alice", password="x")
     bob = await create_user(username="trig_bob", password="x")

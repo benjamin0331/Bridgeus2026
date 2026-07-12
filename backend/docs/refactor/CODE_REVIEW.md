@@ -1,4 +1,4 @@
-# BridgeUs Backend Code Review — Refactor 準備報告
+# Take A Bridge Backend Code Review — Refactor 準備報告
 
 - **日期**:2026-07-11
 - **範圍**:`backend/` 全部 Python 程式碼(約 11,500 行,不含 migrations / venv)

@@ -56,7 +56,7 @@ async def _make_active_match(alice, bob):
 @pytest.mark.django_db(transaction=True)
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_dialogue_websocket_persists_completed_turn():
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
     from apps.matching.services.ai_agent import DialogueSession
 
     user = await create_user(username="ai_ws_user", password="secret123")
@@ -156,7 +156,7 @@ async def test_dialogue_websocket_restores_from_database_when_cache_is_empty():
     REST, so a cache-less session (kill cache, or a reconnect after the TTL
     window) restores full history from AIConversation turns instead of
     closing the socket."""
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
     from apps.matching.services.ai_agent import DialogueSession
 
     user = await create_user(username="ai_ws_reconnect", password="secret123")
@@ -235,7 +235,7 @@ async def test_dialogue_websocket_restores_from_database_when_cache_is_empty():
 @pytest.mark.django_db(transaction=True)
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_dialogue_websocket_ignores_non_object_payload_without_crashing():
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
     from apps.matching.services.ai_agent import DialogueSession
 
     user = await create_user(username="ai_ws_payload_user", password="secret123")
@@ -295,7 +295,7 @@ async def test_dialogue_websocket_ignores_non_object_payload_without_crashing():
 @pytest.mark.django_db(transaction=True)
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_match_room_websocket_persists_and_broadcasts_message():
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="match_ws_alice", password="secret123")
     bob = await create_user(username="match_ws_bob", password="secret123")
@@ -350,7 +350,7 @@ async def test_match_room_websocket_persists_and_broadcasts_message():
 @pytest.mark.django_db(transaction=True)
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_match_room_websocket_ignores_non_string_content_without_crashing():
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="match_ws_bad_content_alice", password="secret123")
     bob = await create_user(username="match_ws_bad_content_bob", password="secret123")
@@ -391,7 +391,7 @@ async def test_match_room_websocket_ignores_non_string_content_without_crashing(
 @pytest.mark.django_db(transaction=True)
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_match_room_ai_assist_blocks_blacklisted_message():
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="assist_block_alice", password="secret123")
     bob = await create_user(username="assist_block_bob", password="secret123")
@@ -428,7 +428,7 @@ async def test_match_room_ai_assist_blocks_blacklisted_message():
 @pytest.mark.django_db(transaction=True)
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_match_room_ai_assist_sends_rephrase_suggestion_without_relay():
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
     from api.models import MatchAISuggestion
 
     alice = await create_user(username="assist_rephrase_alice", password="secret123")
@@ -475,7 +475,7 @@ async def test_match_room_ai_assist_sends_rephrase_suggestion_without_relay():
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_match_room_high_emotion_without_second_person_is_not_intercepted():
     """High-arousal factual venting (no 你/您/妳) should relay, not trigger rephrase."""
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="vent_alice", password="secret123")
     bob = await create_user(username="vent_bob", password="secret123")
@@ -508,7 +508,7 @@ async def test_match_room_high_emotion_without_second_person_is_not_intercepted(
 @pytest.mark.django_db(transaction=True)
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_match_room_ai_assist_accepts_suggestion_and_relays_suggested_content():
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
     from api.models import MatchAISuggestion
 
     alice = await create_user(username="assist_accept_alice", password="secret123")
@@ -550,7 +550,7 @@ async def test_match_room_ai_assist_accepts_suggestion_and_relays_suggested_cont
 @pytest.mark.django_db(transaction=True)
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_match_room_ai_assist_modifies_suggestion_after_second_emotion_check():
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
     from api.models import MatchAISuggestion
 
     alice = await create_user(username="assist_modify_alice", password="secret123")
@@ -594,7 +594,7 @@ async def test_match_room_ai_assist_modifies_suggestion_after_second_emotion_che
 @pytest.mark.django_db(transaction=True)
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_match_room_ai_assist_relays_when_emotion_analysis_times_out():
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="assist_timeout_alice", password="secret123")
     bob = await create_user(username="assist_timeout_bob", password="secret123")
@@ -632,7 +632,7 @@ async def test_match_room_ai_assist_relays_when_emotion_analysis_times_out():
 @pytest.mark.django_db(transaction=True)
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 async def test_match_room_ai_assist_rephrase_fallback_disallows_accept():
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="assist_fallback_alice", password="secret123")
     bob = await create_user(username="assist_fallback_bob", password="secret123")
@@ -661,7 +661,7 @@ async def test_match_room_ai_assist_rephrase_fallback_disallows_accept():
 async def test_match_room_pushes_sender_drift_after_each_message():
     """Each user message recomputes and pushes that speaker's own drift (mirrors the
     H-AI per-turn cadence, no 200-char throttle) and only to the sender."""
-    from BridgeUs_Django.asgi import application
+    from take_a_bridge.asgi import application
 
     alice = await create_user(username="drift_alice", password="secret123")
     bob = await create_user(username="drift_bob", password="secret123")

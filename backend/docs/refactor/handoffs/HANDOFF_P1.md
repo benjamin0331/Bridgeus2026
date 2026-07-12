@@ -1,5 +1,5 @@
 # HANDOFF_P1 — semantic_tree lock refactor
-- 專案: BridgeUs backend refactor
+- 專案: Take A Bridge backend refactor
 - Part: 1 / 高風險並發修復(semantic_tree 鎖重構); Branch: refactor/m5-p1-semantic-tree-lock; 日期: 2026-07-11 23:17:17 CST
 - 使用模型與 App: Codex (GPT-5) @ Codex App
 
@@ -51,4 +51,4 @@
 - 驗收條件: REST 與 WS 對同一輸入有相同過濾/攔截行為，既有 websocket 測試全綠。
 - 建議 Context: 新開; 帶入 HANDOFF_P0 的測試指令、EXECUTION_PLAN Part 2、Part 2 指定檔案區段; 不帶 semantic_tree 內容。
 - 是否需要 Review 本 Part: P7 逐行。
-- 啟動 Prompt: 你是 BridgeUs backend refactor 的 Part 2 執行者。開啟 repo `/Users/light/code`，切到 branch `refactor/m5-p2-message-pipeline`。先讀:(1) `backend/docs/refactor/handoffs/HANDOFF_P0.md` 的測試指令 (2) `backend/docs/refactor/EXECUTION_PLAN.md` 的「Part 2」章節 (3) Part 2 指定的 `api/views.py`、`api/consumers.py`、`chat/services/filter.py` 區段。不要讀其他歷史文件或全 repo 掃描。你的任務: 統一 REST 與 WS 發訊息安全管線並補測試。驗收: REST 與 WS 對同一輸入有相同過濾/攔截行為，既有 websocket 測試全綠。完成後: 跑指定測試，把摘要寫進 `HANDOFF_P2.md`，commit 並停止。
+- 啟動 Prompt: 你是 Take A Bridge backend refactor 的 Part 2 執行者。開啟 repo `/Users/light/code`，切到 branch `refactor/m5-p2-message-pipeline`。先讀:(1) `backend/docs/refactor/handoffs/HANDOFF_P0.md` 的測試指令 (2) `backend/docs/refactor/EXECUTION_PLAN.md` 的「Part 2」章節 (3) Part 2 指定的 `api/views.py`、`api/consumers.py`、`chat/services/filter.py` 區段。不要讀其他歷史文件或全 repo 掃描。你的任務: 統一 REST 與 WS 發訊息安全管線並補測試。驗收: REST 與 WS 對同一輸入有相同過濾/攔截行為，既有 websocket 測試全綠。完成後: 跑指定測試，把摘要寫進 `HANDOFF_P2.md`，commit 並停止。

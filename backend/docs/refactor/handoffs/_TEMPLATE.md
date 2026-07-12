@@ -1,5 +1,5 @@
 # HANDOFF_P{n} — {Part 名稱}
-- 專案: BridgeUs backend refactor
+- 專案: Take A Bridge backend refactor
 - Part: {n} / {名稱}; Branch: {branch}; 日期: {date}
 - 使用模型與 App: {model} @ {app}
 

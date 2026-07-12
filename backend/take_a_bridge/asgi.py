@@ -1,6 +1,6 @@
 import os
 
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'BridgeUs_Django.settings')
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'take_a_bridge.settings')
 
 from django.core.asgi import get_asgi_application
 

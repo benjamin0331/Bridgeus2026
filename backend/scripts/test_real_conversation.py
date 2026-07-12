@@ -1,5 +1,5 @@
 """
-真實對話輸入測試 — BridgeUs H-H 模組全管道驗證
+真實對話輸入測試 — Take A Bridge H-H 模組全管道驗證
 
 輸入來源：2026-05-30 benjamin 實際輸入紀錄（核能議題對話）
 測試管道：
@@ -50,7 +50,7 @@ def has_second_person(text: str) -> bool:
 
 def main():
     print("=" * 72)
-    print("BridgeUs — 真實對話輸入全管道測試")
+    print("Take A Bridge — 真實對話輸入全管道測試")
     print(f"使用者  : benjamin（核能議題）")
     print(f"訊息數  : {len(MESSAGES)} 則")
     print(f"議題錨點: {TOPIC_ANCHOR_TEXT}")

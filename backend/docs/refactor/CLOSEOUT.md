@@ -1,4 +1,4 @@
-# BridgeUs Backend Refactor — 結案報告(P7)
+# Take A Bridge Backend Refactor — 結案報告(P7)
 
 - 日期:2026-07-12(第一輪整合 P1~P5;同日第二輪補整合 P6,即本版)
 - 執行:Claude Fable 5 @ Claude Code(P7 最終整合 Review)

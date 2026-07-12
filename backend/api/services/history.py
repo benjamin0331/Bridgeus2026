@@ -70,7 +70,7 @@ def _history_ai_messages(record: DialogueSessionRecord) -> list[dict]:
                     "id": f"ai-{turn.id}-agent",
                     "source_id": str(turn.id),
                     "role": "agent",
-                    "sender_label": "BridgeUs",
+                    "sender_label": "Take A Bridge",
                     "content": turn.ai_response,
                     "created_at": turn.created_at,
                 }

@@ -1,4 +1,4 @@
-# BridgeUs Backend Refactor — 計畫總表(人類閱讀版)
+# Take A Bridge Backend Refactor — 計畫總表(人類閱讀版)
 
 搭配:`Refactor_Agent執行計畫.md`(給 Agent 的完整版)、`Backend_CodeReview_Refactor準備報告.md`(問題來源)。
 

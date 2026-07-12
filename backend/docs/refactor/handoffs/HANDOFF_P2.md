@@ -1,5 +1,5 @@
 # HANDOFF_P2 — 安全管線統一(REST 發訊息)
-- 專案: BridgeUs backend refactor
+- 專案: Take A Bridge backend refactor
 - Part: 2 / 安全管線統一; Branch: refactor/m4-p2-message-pipeline; 日期: 2026-07-11
 - 使用模型與 App: Claude Sonnet 5 @ Claude Code
 
@@ -50,4 +50,4 @@
 - 驗收條件: `cd backend && uv run pytest api/tests.py api/tests_websocket.py -q` 全綠(teardown-only 的 flush ERROR 可忽略，見上「測試」一節說明)。
 - 建議 Context: 新開；帶入本文件 + Part 3 指定的程式碼區段；不帶 message_pipeline.py 實作細節(Part 3 與其無交集)。
 - 是否需要 Review 本 Part: P7 中等(依 Review 策略總表)。
-- 啟動 Prompt: 你是 BridgeUs backend refactor 的 Part 3 執行者。開啟 repo `/Users/light/code`，切到 branch `refactor/m4-p3-perf-api-fixes`(從當前 feat/Light 切出，注意 Part 3 必須排在 Part 2 併回之後)。先讀:(1) `backend/docs/refactor/handoffs/HANDOFF_P2.md`(只看測試指令) (2) `backend/docs/refactor/EXECUTION_PLAN.md` 的「Part 3」章節。你的任務: 依序修 History N+1、serializer 白名單、WS payload 防禦、限流四項，各自獨立 commit。完成後: 跑 `cd backend && uv run pytest api/tests.py api/tests_websocket.py -q`，摘要寫進 HANDOFF_P3，commit 並停止。
+- 啟動 Prompt: 你是 Take A Bridge backend refactor 的 Part 3 執行者。開啟 repo `/Users/light/code`，切到 branch `refactor/m4-p3-perf-api-fixes`(從當前 feat/Light 切出，注意 Part 3 必須排在 Part 2 併回之後)。先讀:(1) `backend/docs/refactor/handoffs/HANDOFF_P2.md`(只看測試指令) (2) `backend/docs/refactor/EXECUTION_PLAN.md` 的「Part 3」章節。你的任務: 依序修 History N+1、serializer 白名單、WS payload 防禦、限流四項，各自獨立 commit。完成後: 跑 `cd backend && uv run pytest api/tests.py api/tests_websocket.py -q`，摘要寫進 HANDOFF_P3，commit 並停止。

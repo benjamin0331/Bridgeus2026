@@ -1,4 +1,4 @@
-# CONTEXT.md — BridgeUs 開發狀態
+# CONTEXT.md — Take A Bridge 開發狀態
 
 > 最後更新：2026-07-05
 > 用途：每次對話開始先讀此檔。**「待提交變更」區塊** = 尚未 commit 的工作，下次 commit 直接依此即可；commit 完就把該項移除。
@@ -15,7 +15,7 @@ _（未追蹤的資料/設定檔 `.claude/`、`chroma_data/`、`*.csv`、`0530�
 
 ## 專案目標
 
-BridgeUs（橋得攏）— AI 驅動的去極化對話平台。
+Take A Bridge（橋得攏）— AI 驅動的去極化對話平台。
 核心功能：異質觀點配對、AI Agent 對話（RAG + LLM）、CCND 概念認知網路圖視覺化。
 對話模式：H-H（真人對真人）、H-AI（真人對 AI Agent）。
 
@@ -108,7 +108,7 @@ uv run pytest api/tests.py::PlatformFeedbackApiTests -v   # Part F（6 項）
 ```bash
 # 後端
 cd backend
-uvicorn BridgeUs_Django.asgi:application --host 0.0.0.0 --port 8000 --reload
+uvicorn take_a_bridge.asgi:application --host 0.0.0.0 --port 8000 --reload
 # 前端
 cd frontend
 npm run dev      # Vite，port 5173
@@ -123,7 +123,7 @@ npm run dev      # Vite，port 5173
 - [ ] CCND 前端視覺化 / WebSocket 推送收尾
 - [ ] M6：立場偏移量化報告、觀點知識庫沉澱
 - [ ] 清理 `chat` app dead code（drift/session/stalemate/topic/ai_assist + 對應 tests）
-- [ ] `docs/BridgeUs_API_Spec.md` 更新（新增 `platform-feedback`、`post-questionnaire` 等）
+- [ ] `docs/TakeABridge_API_Spec.md` 更新（新增 `platform-feedback`、`post-questionnaire` 等）
 
 **基礎設施**
 - [ ] Docker Compose（PostgreSQL + Redis）

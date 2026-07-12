@@ -40,7 +40,7 @@ function App() {
         return null;
       }
 
-      const storedUser = localStorage.getItem('bridgeus_user');
+      const storedUser = localStorage.getItem('take_a_bridge_user');
       return storedUser ? JSON.parse(storedUser) : null;
     } catch (error) {
       console.error('Failed to restore user session:', error);
@@ -70,11 +70,11 @@ function App() {
 
   useEffect(() => {
     if (user) {
-      localStorage.setItem('bridgeus_user', JSON.stringify(user));
+      localStorage.setItem('take_a_bridge_user', JSON.stringify(user));
       return;
     }
 
-    localStorage.removeItem('bridgeus_user');
+    localStorage.removeItem('take_a_bridge_user');
   }, [user]);
 
   useEffect(() => {

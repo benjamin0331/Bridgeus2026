@@ -1,5 +1,5 @@
 # HANDOFF_P5 — AI Session 狀態單一化(turns 為權威)
-- 專案: BridgeUs backend refactor
+- 專案: Take A Bridge backend refactor
 - Part: 5b / Session single-source-of-truth 實作; Branch: refactor/m3-p5-session-state; 日期: 2026-07-12
 - 使用模型與 App: Claude Sonnet 5 @ Claude Code
 

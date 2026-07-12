@@ -31,7 +31,7 @@ function LoginPage({ setUser, authMessage = '' }) {
         id: tokenPayload?.user_id ?? userId
       };
 
-      localStorage.setItem('bridgeus_user', JSON.stringify(nextUser));
+      localStorage.setItem('take_a_bridge_user', JSON.stringify(nextUser));
       setUser(nextUser);
       navigate('/', { replace: true });
 
@@ -58,8 +58,8 @@ function LoginPage({ setUser, authMessage = '' }) {
       {/* 登入卡片主體 */}
       <div className="login-card">
         <div className="login-header">
-          <img src="/logo.png" alt="BridgeUs Logo" className="login-logo" />
-          <h1>BridgeUs</h1>
+          <img src="/logo.png" alt="Take A Bridge Logo" className="login-logo" />
+          <h1>Take A Bridge</h1>
           <p>請輸入您的帳號密碼</p>
         </div>
 
