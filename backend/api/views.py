@@ -1406,7 +1406,10 @@ class MatchingRoomMessagesView(APIView):
 
     def post(self, request, room_id: str):
         from apps.matching.services.matcher import get_room_messages
-        from .models import MatchMessage
+        from apps.matching.services.message_pipeline import (
+            BLOCKED_MESSAGE,
+            post_match_message,
+        )
 
         match = _get_room_match_for_user(room_id=room_id, user_id=request.user.id)
         if not match:
@@ -1427,11 +1430,16 @@ class MatchingRoomMessagesView(APIView):
         serializer = MatchingRoomMessageCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        MatchMessage.objects.create(
+        result = post_match_message(
             match=match,
             sender=request.user,
             content=serializer.validated_data["content"].strip(),
         )
+        if result.blocked:
+            return Response(
+                {"detail": BLOCKED_MESSAGE},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         messages = get_room_messages(match=match)
         return Response(
