@@ -11,7 +11,9 @@ from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 
+from api.dialogue_topics import get_topic_anchor_descriptions, get_topic_anchors
 from api.models import AIConversation, DialogueMatch, DialogueSessionRecord
+from core.env import dialogue_session_cache_key as _dialogue_session_cache_key
 
 
 DEFAULT_MODEL = "gpt-5.4-mini"
@@ -32,33 +34,11 @@ OWNER_USER_B = "user_b"
 OWNER_AI_USER = "user"
 PENDING_CLAIM_TTL_SECONDS = 150
 
-FIXED_ANCHORS = [
-    {"id": "anchor_safety", "name": "核能安全"},
-    {"id": "anchor_economy", "name": "經濟成本"},
-    {"id": "anchor_energy", "name": "能源問題"},
-    {"id": "anchor_environment", "name": "環境保護"},
-    {"id": "anchor_governance", "name": "民主治理"},
-    {"id": "anchor_waste", "name": "核廢處理"},
-]
 
-ANCHOR_DESCRIPTIONS = {
-    "anchor_safety": "事故風險、老舊延役、地震帶、反應爐技術、輻射外洩、安全審查。",
-    "anchor_economy": "發電成本、維護成本、除役成本、補貼、電價、投資效益。",
-    "anchor_energy": "供電穩定、缺電風險、基載、能源配置、再生能源互補。",
-    "anchor_environment": "減碳、空污、生態衝擊、土地使用、氣候風險。",
-    "anchor_governance": "資訊公開、民意溝通、政府信任、程序正義、決策透明、主權與責任。",
-    "anchor_waste": "核廢料處置、最終儲存、地方承擔、長期管理、處置場風險。",
-}
-
-
-def get_topic_anchors(topic_id: int | None) -> list[dict[str, str]]:
-    from api.dialogue_topics import TOPIC_CONFIGS
-    return TOPIC_CONFIGS.get(topic_id or 0, {}).get("anchors") or FIXED_ANCHORS
-
-
-def get_topic_anchor_descriptions(topic_id: int | None) -> dict[str, str]:
-    from api.dialogue_topics import TOPIC_CONFIGS
-    return TOPIC_CONFIGS.get(topic_id or 0, {}).get("anchor_descriptions") or ANCHOR_DESCRIPTIONS
+def _require_anchors(anchors: list[dict[str, str]] | None) -> list[dict[str, str]]:
+    if not anchors:
+        raise ValueError("Semantic-tree anchors are required.")
+    return anchors
 
 # Internal node ids the model must never emit as a human-readable path segment.
 _INTERNAL_ID_RE = re.compile(r"^(anchor|agent|category|point|virtual)_[a-z0-9_-]+$", re.IGNORECASE)
@@ -154,11 +134,11 @@ def create_anchor_node(anchor: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def create_initial_tree(root_name: str = "核電", anchors: list | None = None) -> dict[str, Any]:
-    resolved = anchors or FIXED_ANCHORS
+def create_initial_tree(root_name: str, anchors: list | None = None) -> dict[str, Any]:
+    resolved = _require_anchors(anchors)
     return {
         "id": "root",
-        "name": root_name or "核電",
+        "name": root_name,
         "type": "root",
         "children": [create_anchor_node(anchor) for anchor in resolved],
     }
@@ -175,7 +155,7 @@ def create_owner_tree_state(owner_key: str, root_name: str, anchors: list | None
 
 
 def _empty_match_state(root_name: str, anchors: list | None = None) -> dict[str, Any]:
-    resolved = anchors or FIXED_ANCHORS
+    resolved = _require_anchors(anchors)
     return {
         "version": SEMANTIC_TREE_STATE_VERSION,
         "mode": MATCH_TREE_MODE,
@@ -188,7 +168,7 @@ def _empty_match_state(root_name: str, anchors: list | None = None) -> dict[str,
 
 
 def _empty_ai_state(root_name: str, anchors: list | None = None) -> dict[str, Any]:
-    resolved = anchors or FIXED_ANCHORS
+    resolved = _require_anchors(anchors)
     return {
         "version": SEMANTIC_TREE_STATE_VERSION,
         "mode": AI_TREE_MODE,
@@ -225,7 +205,7 @@ def _ensure_owner_tree_state(
         tree_data = create_initial_tree(root_name, anchors)
         owner_state["treeData"] = tree_data
 
-    if root_name and tree_data.get("name") in {None, "", "核電"}:
+    if root_name and tree_data.get("name") != root_name:
         tree_data["name"] = root_name
 
     owner_state["analyzedSourceIds"] = _normalize_source_ids(
@@ -328,7 +308,7 @@ def _normalize_tree_node_types(node: dict[str, Any], depth: int = 0) -> None:
 
 
 def _ensure_fixed_anchors(tree_data: dict[str, Any], anchors: list | None = None) -> None:
-    resolved = anchors or FIXED_ANCHORS
+    resolved = _require_anchors(anchors)
     children = [child for child in tree_data.get("children", []) if isinstance(child, dict)]
     child_by_id = {child.get("id"): child for child in children}
     ordered_children = []
@@ -541,8 +521,8 @@ def build_openai_request(
     anchor_descriptions: dict[str, str] | None = None,
     model: str | None = None,
 ) -> dict[str, Any]:
-    resolved_anchors = anchors or FIXED_ANCHORS
-    resolved_descriptions = anchor_descriptions or ANCHOR_DESCRIPTIONS
+    resolved_anchors = _require_anchors(anchors)
+    resolved_descriptions = anchor_descriptions or {}
     anchor_list = "\n".join(
         f"{anchor['id']}: {anchor['name']} - {resolved_descriptions.get(anchor['id'], '議題分類。')}"
         for anchor in resolved_anchors
@@ -686,7 +666,7 @@ def validate_analysis_items(
     *,
     min_confidence: float = MIN_CONFIDENCE,
 ) -> dict[str, list[dict[str, Any]]]:
-    resolved_anchors = anchors or FIXED_ANCHORS
+    resolved_anchors = _require_anchors(anchors)
     anchor_map = {anchor["id"]: anchor for anchor in resolved_anchors}
     anchor_names = {anchor["name"] for anchor in resolved_anchors}
     items = []
@@ -991,7 +971,7 @@ def analyze_with_openai(
     request_body = build_openai_request(
         text=cleaned_text,
         tree=tree,
-        anchors=anchors or FIXED_ANCHORS,
+        anchors=_require_anchors(anchors),
         anchor_descriptions=anchor_descriptions,
         model=resolved_model,
     )
@@ -1018,7 +998,7 @@ def analyze_with_openai(
 
     parsed = parse_openai_response(response_body)
     return {
-        **validate_analysis_items(parsed, tree, anchors or FIXED_ANCHORS),
+        **validate_analysis_items(parsed, tree, _require_anchors(anchors)),
         "model": resolved_model,
     }
 
@@ -1049,7 +1029,7 @@ def analyze_text_for_tree(
     locally fine-tuned classifier pipeline; every other topic keeps using the
     generative OpenAI path.
     """
-    resolved_anchors = anchors or FIXED_ANCHORS
+    resolved_anchors = _require_anchors(anchors)
     if uses_local_classifier(topic_id):
         from apps.matching.services import nuclear_node_classifier
 
@@ -1286,10 +1266,6 @@ def semantic_tree_batch_size() -> int:
         return max(1, int(os.getenv("SEMANTIC_TREE_ANALYZE_BATCH_SIZE", "5")))
     except ValueError:
         return 5
-
-
-def _dialogue_session_cache_key(session_id: str) -> str:
-    return f"dialogue_session:{session_id}"
 
 
 def _session_record_payload_from_model(record: DialogueSessionRecord) -> dict[str, Any]:

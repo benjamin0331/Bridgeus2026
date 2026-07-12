@@ -11,7 +11,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
-from api.dialogue_topics import SURVEY_CONFIGS, TOPIC_CONFIGS
+from api.dialogue_topics import SURVEY_CONFIGS, TOPIC_CONFIGS, get_topic_anchors
 from api.models import (
     AIConversation,
     DialogueMatch,
@@ -29,6 +29,8 @@ from api.throttles import (
     GuestLoginRateThrottle,
     HistoryConversationSemanticTreeAnalyzeRateThrottle,
 )
+
+NUCLEAR_ANCHORS = get_topic_anchors(102)
 
 
 def fake_waste_items_response():
@@ -152,22 +154,44 @@ def make_test_embedding(first_value):
 
 
 class SemanticTreeServiceTests(SimpleTestCase):
+    def test_topic_semantic_tree_config_requires_known_topic(self):
+        from api.dialogue_topics import get_topic_title
+
+        with self.assertRaisesRegex(ValueError, "Unknown topic config"):
+            get_topic_title(9999)
+
+    def test_topic_semantic_tree_config_requires_anchors(self):
+        from api.dialogue_topics import get_topic_anchors
+
+        with patch.dict(
+            TOPIC_CONFIGS,
+            {
+                9998: {
+                    "title": "測試議題",
+                    "topic_description": "缺少 anchors 的測試議題",
+                    "collection_name": "test_collection",
+                    "date": "2026/07/12",
+                }
+            },
+        ):
+            with self.assertRaisesRegex(ValueError, "missing semantic-tree anchors"):
+                get_topic_anchors(9998)
+
     def test_builds_openai_request_with_fixed_anchors_and_prompt_rules(self):
         from apps.matching.services.semantic_tree import (
-            FIXED_ANCHORS,
             build_openai_request,
             create_initial_tree,
         )
 
         request = build_openai_request(
             text="核廢料處理會帶來長期負擔，也讓經濟成本上升。",
-            tree=create_initial_tree("核電"),
-            anchors=FIXED_ANCHORS,
+            tree=create_initial_tree("核電", NUCLEAR_ANCHORS),
+            anchors=NUCLEAR_ANCHORS,
         )
         request_text = str(request)
 
         self.assertEqual(
-            [anchor["name"] for anchor in FIXED_ANCHORS],
+            [anchor["name"] for anchor in NUCLEAR_ANCHORS],
             ["核能安全", "經濟成本", "能源問題", "環境保護", "民主治理", "核廢處理"],
         )
         self.assertEqual(request["text"]["format"]["type"], "json_schema")
@@ -188,7 +212,7 @@ class SemanticTreeServiceTests(SimpleTestCase):
             validate_analysis_items,
         )
 
-        tree = create_initial_tree("核電")
+        tree = create_initial_tree("核電", NUCLEAR_ANCHORS)
         result = validate_analysis_items(
             {
                 "items": [
@@ -214,6 +238,7 @@ class SemanticTreeServiceTests(SimpleTestCase):
                 ]
             },
             tree,
+            NUCLEAR_ANCHORS,
         )
 
         self.assertEqual(len(result["items"]), 1)
@@ -267,7 +292,8 @@ class SemanticTreeServiceTests(SimpleTestCase):
                     },
                 ]
             },
-            create_initial_tree("核電"),
+            create_initial_tree("核電", NUCLEAR_ANCHORS),
+            NUCLEAR_ANCHORS,
         )
 
         self.assertEqual(len(result["items"]), 0)
@@ -326,7 +352,8 @@ class SemanticTreeServiceTests(SimpleTestCase):
                     },
                 ]
             },
-            create_initial_tree("核電"),
+            create_initial_tree("核電", NUCLEAR_ANCHORS),
+            NUCLEAR_ANCHORS,
         )
 
         self.assertEqual(len(result["items"]), 2)

@@ -100,6 +100,12 @@ Enable pgvector in the database:
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
+SQLite is for quick local smoke tests only. `VectorField` values can be stored
+there by the local test setup, but SQLite does not provide pgvector SQL
+operators or indexes. Current matching similarity is calculated in Python, so
+SQLite works for those smoke paths; use PostgreSQL + pgvector for any feature
+that depends on database-side vector search or realistic matching persistence.
+
 ## Main Files
 
 - Settings: `BridgeUs_Django/settings.py`

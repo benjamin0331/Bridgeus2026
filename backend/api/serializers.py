@@ -1,9 +1,10 @@
 from rest_framework import serializers
 
+from core.env import ANONYMOUS_MESSAGE_SENDER_NAME
+
 from .dialogue_topics import get_dialogue_survey
 from .models import (
     AIConversation,
-    DiscomfortReport,
     MatchMessage,
     PlatformFeedback,
     PostDialogueResponse,
@@ -182,7 +183,7 @@ class MatchMessageSerializer(serializers.ModelSerializer):
     sender_name = serializers.SerializerMethodField()
 
     def get_sender_name(self, obj):
-        return "匿名使用者"
+        return ANONYMOUS_MESSAGE_SENDER_NAME
 
     class Meta:
         model = MatchMessage

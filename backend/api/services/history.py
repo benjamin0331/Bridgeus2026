@@ -12,7 +12,7 @@ from django.db.models import (
 )
 from django.db.models.functions import Coalesce
 
-from api.dialogue_topics import TOPIC_CONFIGS
+from api.dialogue_topics import get_topic_title
 from api.models import (
     AIConversation,
     DialogueMatch,
@@ -29,7 +29,7 @@ def _semantic_tree_root_name(match: DialogueMatch) -> str:
 
 
 def _semantic_tree_root_name_for_topic_id(topic_id: int | None) -> str:
-    return TOPIC_CONFIGS.get(topic_id, {}).get("title") or "核電"
+    return get_topic_title(topic_id)
 
 
 def _get_history_ai_record_for_user(*, session_id: str, user_id: int):

@@ -16,17 +16,13 @@ from api.services.stance_scoring import (
     _resolve_stance_category,
     _resolve_stances,
 )
+from core.env import SESSION_TTL_SECONDS, dialogue_session_cache_key as _session_cache_key
 
-SESSION_TTL_SECONDS = 60 * 60 * 12
 logger = logging.getLogger(__name__)
 DEFAULT_DIALOGUE_COLLECTION = os.getenv(
     "DEFAULT_DIALOGUE_COLLECTION",
     "general_knowledge",
 )
-
-
-def _session_cache_key(session_id: str) -> str:
-    return f"dialogue_session:{session_id}"
 
 
 def _cache_dialogue_session_record(session_record: dict) -> None:

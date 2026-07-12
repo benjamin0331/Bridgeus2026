@@ -2,8 +2,7 @@ from django.db.models import Q
 
 from api.models import DialogueMatch, MatchStanceDrift
 from api.serializers import MatchingRoomMessagesSerializer, MatchingStateSerializer
-
-ANONYMOUS_MATCH_USER_NAME = "匿名對話者"
+from core.env import ANONYMOUS_MATCH_USER_NAME
 
 
 def _get_other_user(match: DialogueMatch, *, user_id: int):

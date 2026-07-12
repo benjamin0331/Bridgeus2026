@@ -15,7 +15,6 @@ from .models import (
     DialogueMatch,
     DialogueSessionRecord,
     DiscomfortReport,
-    Issue,
     PlatformFeedback,
     PostDialogueResponse,
 )
@@ -1112,50 +1111,6 @@ class GuestLoginView(APIView):
                 "refresh": str(refresh),
                 "user_id": user.id,
                 "username": username,
-            },
-            status=status.HTTP_201_CREATED,
-        )
-
-
-class IssueListCreateView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request):
-        qs = Issue.objects.all()
-        author_id = request.query_params.get("author")
-        if author_id:
-            qs = qs.filter(author_id=author_id)
-        data = [
-            {
-                "id": i.id,
-                "title": i.title,
-                "body": i.body,
-                "author_id": i.author_id,
-                "created_at": i.created_at,
-            }
-            for i in qs
-        ]
-        return Response(data)
-
-    def post(self, request):
-        title = request.data.get("title", "").strip()
-        if not title:
-            return Response(
-                {"detail": "title 必填"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        issue = Issue.objects.create(
-            author=request.user,
-            title=title,
-            body=request.data.get("body", ""),
-        )
-        return Response(
-            {
-                "id": issue.id,
-                "title": issue.title,
-                "body": issue.body,
-                "author_id": issue.author_id,
-                "created_at": issue.created_at,
             },
             status=status.HTTP_201_CREATED,
         )

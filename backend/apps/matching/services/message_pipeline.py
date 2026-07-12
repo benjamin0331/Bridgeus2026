@@ -26,6 +26,7 @@ from apps.matching.services.hh_ai import hh_ai_assist_enabled
 from chat.services.embedding import get_embedding
 from chat.services.emotion import analyze_emotion
 from chat.services.filter import check_content_sync
+from core.env import ANONYMOUS_MESSAGE_SENDER_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ def message_payload(match, message) -> dict:
         "match_id": match.id,
         "room_id": match.room_id,
         "sender_id": message.sender_id,
-        "sender_name": "匿名使用者",
+        "sender_name": ANONYMOUS_MESSAGE_SENDER_NAME,
         "content": message.content,
         "created_at": message.created_at.isoformat(),
     }
