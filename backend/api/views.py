@@ -1,8 +1,10 @@
 import logging
 import os
+import uuid as _uuid_mod
 from functools import lru_cache
 from uuid import uuid4
 
+from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.db.models import Q
 from django.utils import timezone
@@ -10,6 +12,7 @@ from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTStatelessUserAuthentication
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.matching.services.semantic import build_q9_embedding
 
@@ -18,6 +21,7 @@ from .models import (
     DialogueMatch,
     DialogueSessionRecord,
     DiscomfortReport,
+    Issue,
     MatchStanceDrift,
     PlatformFeedback,
     PostDialogueResponse,
@@ -28,6 +32,7 @@ from .dialogue_topics import (
     get_dialogue_survey,
     get_dialogue_topics,
 )
+from .timeline_access import LOCKED_DETAIL, timeline_unlock_state
 from .serializers import (
     AIConversationSerializer,
     DialogueReplySerializer,
@@ -39,6 +44,7 @@ from .serializers import (
     MatchingRoomMessageCreateSerializer,
     MatchingRoomMessagesSerializer,
     MatchingRoomSemanticTreeSerializer,
+    MatchingRoomSemanticTreeTimelineSerializer,
     MatchingStateSerializer,
     MatchingTopicSerializer,
     PlatformFeedbackSerializer,
@@ -313,23 +319,12 @@ def _resolve_stances(
         user_stance_score=user_stance_score,
     )
 
-    if stance_category == "support":
-        return (
-            "較支持核電",
-            "較反對核電",
-            "認為核電的安全、成本與核廢料風險仍被低估，不應輕率視為能源轉型解方。",
-        )
-    if stance_category == "oppose":
-        return (
-            "較反對核電",
-            "較支持核電",
-            "認為核電在減碳與穩定供電上仍具必要性，不應過早排除。",
-        )
-
+    labels = TOPIC_CONFIGS.get(topic_id, {}).get("stance_labels", {})
+    entry = labels.get(stance_category) or labels.get("neutral") or {}
     return (
-        "立場中立或尚未明確",
-        "提出相反觀點",
-        "會根據使用者當前的考量重點，補上另一側對安全、成本、環境與供電穩定性的判斷。",
+        entry.get("user_label", "立場中立或尚未明確"),
+        entry.get("agent_stance", "提出相反觀點"),
+        entry.get("agent_stance_summary", ""),
     )
 
 
@@ -676,6 +671,11 @@ def _history_ai_summary(record: DialogueSessionRecord) -> dict:
         "kind": "ai",
         "id": record.session_id,
         "session_id": record.session_id,
+        # Alias of session_id — AI sessions don't have a real "room", but
+        # exposing the same key as match conversations lets the frontend
+        # treat both kinds uniformly instead of branching on kind. Computed
+        # here rather than stored, so it's never missing for older records.
+        "room_id": record.session_id,
         "topic_id": record.topic_id,
         "topic_title": record.topic_title,
         "status": record.status,
@@ -705,7 +705,23 @@ def _history_match_summary(match: DialogueMatch, *, user_id: int) -> dict:
     }
 
 
-def _history_ai_detail(record: DialogueSessionRecord) -> dict:
+def _timeline_access_fields(*, user_id: int, kind: str, conversation_id: str, conversation) -> dict:
+    """Tell the frontend whether to offer the timeline slider at all, so a locked
+    participant never even sees the entry point (the API enforces it anyway)."""
+    state = timeline_unlock_state(
+        user_id=user_id,
+        kind=kind,
+        conversation_id=conversation_id,
+        conversation=conversation,
+    )
+    return {
+        "timeline_unlocked": state["unlocked"],
+        "timeline_lock_reason": state["reason"],
+        "timeline_unlocks_at": state["unlocks_at"],
+    }
+
+
+def _history_ai_detail(record: DialogueSessionRecord, *, user_id: int) -> dict:
     from apps.matching.services.semantic_tree import semantic_tree_session_payload
 
     session_record = _dialogue_session_cache_payload_from_record(record)
@@ -719,6 +735,12 @@ def _history_ai_detail(record: DialogueSessionRecord) -> dict:
         **_history_ai_summary(record),
         "messages": messages,
         "semantic_tree": MatchingRoomSemanticTreeSerializer(semantic_tree).data,
+        **_timeline_access_fields(
+            user_id=user_id,
+            kind="ai",
+            conversation_id=record.session_id,
+            conversation=record,
+        ),
     }
 
 
@@ -735,6 +757,12 @@ def _history_match_detail(match: DialogueMatch, *, user_id: int) -> dict:
         **_history_match_summary(match, user_id=user_id),
         "messages": messages,
         "semantic_tree": MatchingRoomSemanticTreeSerializer(semantic_tree).data,
+        **_timeline_access_fields(
+            user_id=user_id,
+            kind="match",
+            conversation_id=match.room_id,
+            conversation=match,
+        ),
     }
 
 
@@ -1195,7 +1223,7 @@ class HistoryConversationDetailView(APIView):
                     {"detail": "找不到這筆 AI 對話紀錄。"},
                     status=status.HTTP_404_NOT_FOUND,
                 )
-            return Response(_history_ai_detail(record))
+            return Response(_history_ai_detail(record, user_id=request.user.id))
 
         if kind == "match":
             match = _get_room_match_for_user(
@@ -1212,6 +1240,263 @@ class HistoryConversationDetailView(APIView):
         return Response(
             {"detail": "kind 必須是 ai 或 match。"},
             status=status.HTTP_404_NOT_FOUND,
+        )
+
+
+def _timeline_locked_response(*, user_id: int, kind: str, conversation_id: str, conversation):
+    """Return a 403 Response unless this participant has cleared the CCND
+    timeline gate; None means "allowed, carry on".
+
+    Replaying the CCND before the participant has answered the CCND self-report
+    items (questionnaire C3 and Part F's F4 ux_ccnd) would contaminate them —
+    see api.timeline_access for the full rule.
+    """
+    state = timeline_unlock_state(
+        user_id=user_id,
+        kind=kind,
+        conversation_id=conversation_id,
+        conversation=conversation,
+    )
+    if state["unlocked"]:
+        return None
+
+    return Response(
+        {
+            "detail": LOCKED_DETAIL,
+            "timeline_unlocked": False,
+            "timeline_lock_reason": state["reason"],
+            "timeline_unlocks_at": state["unlocks_at"],
+        },
+        status=status.HTTP_403_FORBIDDEN,
+    )
+
+
+class HistoryConversationSemanticTreeTimelineView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, kind: str, conversation_id: str):
+        from apps.matching.services.semantic_tree import (
+            semantic_tree_session_timeline_payload,
+            semantic_tree_timeline_payload,
+        )
+
+        as_of_message_id = (request.query_params.get("as_of_message_id") or "").strip()
+        if not as_of_message_id:
+            return Response(
+                {"detail": "缺少 as_of_message_id 參數。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if kind == "ai":
+            record = _get_history_ai_record_for_user(
+                session_id=conversation_id,
+                user_id=request.user.id,
+            )
+            if record is None:
+                return Response(
+                    {"detail": "找不到這筆 AI 對話紀錄。"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            locked = _timeline_locked_response(
+                user_id=request.user.id,
+                kind=kind,
+                conversation_id=record.session_id,
+                conversation=record,
+            )
+            if locked is not None:
+                return locked
+
+            session_record = _dialogue_session_cache_payload_from_record(record)
+            payload = semantic_tree_session_timeline_payload(
+                session_record=session_record,
+                session_id=record.session_id,
+                root_name=_semantic_tree_root_name_for_topic_id(record.topic_id),
+                source_message_id=as_of_message_id,
+            )
+        elif kind == "match":
+            match = _get_room_match_for_user(
+                room_id=conversation_id,
+                user_id=request.user.id,
+            )
+            if match is None:
+                return Response(
+                    {"detail": "找不到這個配對房間。"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            locked = _timeline_locked_response(
+                user_id=request.user.id,
+                kind=kind,
+                conversation_id=match.room_id,
+                conversation=match,
+            )
+            if locked is not None:
+                return locked
+
+            payload = semantic_tree_timeline_payload(
+                match=match,
+                root_name=_semantic_tree_root_name(match),
+                current_user_id=request.user.id,
+                source_message_id=as_of_message_id,
+            )
+        else:
+            return Response(
+                {"detail": "kind 必須是 ai 或 match。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if payload is None:
+            return Response(
+                {"detail": "這則訊息還沒有被分析過。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(MatchingRoomSemanticTreeTimelineSerializer(payload).data)
+
+
+class CCNDSnapshotAnalysisView(APIView):
+    """Researcher-only aggregate CCND metrics for one finished conversation.
+
+    IsAdminUser on purpose: per-segment new-concept counts and adjacent-snapshot
+    Jaccard ARE the study's dependent variables. Handing them to a participant
+    would show them the construct being measured, which is exactly what the
+    timeline gate exists to prevent. Staff may inspect any conversation, so this
+    deliberately does NOT scope the lookup to request.user.
+
+    Returns one analysis per test subject (H-H yields two, one per participant;
+    H-AI one), matching the export_ccnd_snapshots CLI.
+    """
+
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request, kind: str, conversation_id: str):
+        from apps.matching.services.ccnd_snapshot_analysis import iter_subject_analyses
+
+        try:
+            segments = max(1, int(request.query_params.get("segments", 3)))
+        except (TypeError, ValueError):
+            segments = 3
+
+        if kind == "ai":
+            conversation = DialogueSessionRecord.objects.filter(
+                session_id=conversation_id,
+            ).first()
+        elif kind == "match":
+            conversation = DialogueMatch.objects.filter(room_id=conversation_id).first()
+        else:
+            return Response(
+                {"detail": "kind 必須是 ai 或 match。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if conversation is None:
+            return Response(
+                {"detail": "找不到這筆對話紀錄。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response(
+            {
+                "kind": kind,
+                "conversation_id": conversation_id,
+                "n_segments": segments,
+                "subjects": list(
+                    iter_subject_analyses(conversation, n_segments=segments)
+                ),
+            }
+        )
+
+
+class CCNDInsightsView(APIView):
+    """Participant-facing view of their OWN concept expansion for one conversation.
+
+    Same numbers as the staff endpoint, but three things differ and all three
+    matter:
+
+    1. Gated behind the M6 flow (identical gate as the timeline). Only once the
+       participant has answered C3 and Part F's F4 can they be shown what was
+       measured, otherwise we contaminate those very items.
+    2. The subject is the REQUESTING user, not analyze_conversation_ccnd's
+       user_a default. Without this, user_b in an H-H match would be served
+       user_a's analysis.
+    3. partner_side is stripped. It carries the other participant's lit anchors
+       and node names — their cognitive map — which a participant must never see.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, kind: str, conversation_id: str):
+        from apps.matching.services.ccnd_snapshot_analysis import (
+            analyze_conversation_ccnd,
+        )
+        from apps.matching.services.semantic_tree import (
+            OWNER_AI_USER,
+            _owner_key_for_user,
+        )
+
+        if kind == "ai":
+            conversation = _get_history_ai_record_for_user(
+                session_id=conversation_id,
+                user_id=request.user.id,
+            )
+            if conversation is None:
+                return Response(
+                    {"detail": "找不到這筆 AI 對話紀錄。"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            subject_owner_key = OWNER_AI_USER
+            resolved_id = conversation.session_id
+        elif kind == "match":
+            conversation = _get_room_match_for_user(
+                room_id=conversation_id,
+                user_id=request.user.id,
+            )
+            if conversation is None:
+                return Response(
+                    {"detail": "找不到這個配對房間。"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            # the requesting participant is the subject — never default to user_a
+            subject_owner_key = _owner_key_for_user(conversation, request.user.id)
+            resolved_id = conversation.room_id
+        else:
+            return Response(
+                {"detail": "kind 必須是 ai 或 match。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        locked = _timeline_locked_response(
+            user_id=request.user.id,
+            kind=kind,
+            conversation_id=resolved_id,
+            conversation=conversation,
+        )
+        if locked is not None:
+            return locked
+
+        analysis = analyze_conversation_ccnd(
+            conversation,
+            subject_owner_key=subject_owner_key,
+        )
+        return Response(
+            {
+                "kind": kind,
+                "conversation_id": resolved_id,
+                "n_segments": analysis["n_segments"],
+                "summary": analysis["summary"],
+                "novelty": analysis["novelty"],
+                "similarity": analysis["similarity"],
+                "snapshots": [
+                    {
+                        "label": snapshot["label"],
+                        "macro_count": snapshot["macro_count"],
+                        "micro_count": snapshot["micro_count"],
+                        "cumulative_hit_count": snapshot["cumulative_hit_count"],
+                    }
+                    for snapshot in analysis["snapshots"]
+                ],
+                # NOTE: analysis["partner_side"] is deliberately NOT returned.
+            }
         )
 
 
@@ -1259,7 +1544,7 @@ class HistoryConversationSemanticTreeAnalyzeView(APIView):
             _cache_dialogue_session_record(session_record)
             return Response(
                 {
-                    **_history_ai_detail(record),
+                    **_history_ai_detail(record, user_id=request.user.id),
                     "semantic_tree": MatchingRoomSemanticTreeSerializer(semantic_tree).data,
                 }
             )
@@ -1496,6 +1781,53 @@ class MatchingRoomSemanticTreeView(APIView):
         return Response(MatchingRoomSemanticTreeSerializer(payload).data)
 
 
+class MatchingRoomSemanticTreeTimelineView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, room_id: str):
+        from apps.matching.services.semantic_tree import semantic_tree_timeline_payload
+
+        as_of_message_id = (request.query_params.get("as_of_message_id") or "").strip()
+        if not as_of_message_id:
+            return Response(
+                {"detail": "缺少 as_of_message_id 參數。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        match = _get_room_match_for_user(room_id=room_id, user_id=request.user.id)
+        if not match:
+            return Response(
+                {"detail": "找不到這個配對房間。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        locked = _timeline_locked_response(
+            user_id=request.user.id,
+            kind="match",
+            conversation_id=match.room_id,
+            conversation=match,
+        )
+        if locked is not None:
+            return locked
+
+        match = _touch_room_match_for_user_activity(
+            match=match,
+            user_id=request.user.id,
+        )
+        payload = semantic_tree_timeline_payload(
+            match=match,
+            root_name=_semantic_tree_root_name(match),
+            current_user_id=request.user.id,
+            source_message_id=as_of_message_id,
+        )
+        if payload is None:
+            return Response(
+                {"detail": "這則訊息還沒有被分析過。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(MatchingRoomSemanticTreeTimelineSerializer(payload).data)
+
+
 class MatchingRoomSemanticTreeAnalyzeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -1690,3 +2022,66 @@ class PlatformFeedbackView(APIView):
 
         out = PlatformFeedbackOutputSerializer(feedback)
         return Response(out.data, status=status.HTTP_201_CREATED)
+class GuestLoginView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        nickname = (request.data.get("nickname") or "Guest")[:30]
+        username = f"guest_{_uuid_mod.uuid4().hex[:8]}"
+        user = User.objects.create_user(username=username, password=None)
+        user.first_name = nickname
+        user.save(update_fields=["first_name"])
+        refresh = RefreshToken.for_user(user)
+        return Response(
+            {
+                "access": str(refresh.access_token),
+                "refresh": str(refresh),
+                "user_id": user.id,
+                "username": username,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class IssueListCreateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        qs = Issue.objects.all()
+        author_id = request.query_params.get("author")
+        if author_id:
+            qs = qs.filter(author_id=author_id)
+        data = [
+            {
+                "id": i.id,
+                "title": i.title,
+                "body": i.body,
+                "author_id": i.author_id,
+                "created_at": i.created_at,
+            }
+            for i in qs
+        ]
+        return Response(data)
+
+    def post(self, request):
+        title = request.data.get("title", "").strip()
+        if not title:
+            return Response(
+                {"detail": "title 必填"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        issue = Issue.objects.create(
+            author=request.user,
+            title=title,
+            body=request.data.get("body", ""),
+        )
+        return Response(
+            {
+                "id": issue.id,
+                "title": issue.title,
+                "body": issue.body,
+                "author_id": issue.author_id,
+                "created_at": issue.created_at,
+            },
+            status=status.HTTP_201_CREATED,
+        )

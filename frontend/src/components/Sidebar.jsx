@@ -33,7 +33,15 @@ function Sidebar({ navigate, isTopicPage = false }) {
 
         {/* 側邊欄功能選單：包含通知、收藏、歷史對話與設定 */}
         <div className="sidebar-menu-icons">
-          <img src="/bell.png" alt="Notification" className="utility-icon" />
+          <button
+            className="sidebar-icon-btn"
+            type="button"
+            onClick={() => handleNavigate('/achievement')}
+            aria-label="成就"
+            title="成就"
+          >
+            <img src="/Achievement.png" alt="" className="utility-icon" />
+          </button>
           <img src="/star.png" alt="Favorite" className="utility-icon" />
           <button
             className="sidebar-icon-btn"

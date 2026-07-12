@@ -1,0 +1,19 @@
+Thank you for downloading the beta version for this character!
+It currently contains 4-frame walk and idle animations in 4 directions. All Frames are 64x80 pixels. 
+
+I plan to include this character in a future update. There might be some small changes in the final version, such as 
+subtle changes in the color palette or changes in frame sizes. 
+
+
+You can use these assets in commercial and non-commercial projects.  
+You can edit theses assets. 
+You can't redistribute or resell theses assets, even if they have been modified. 
+
+Credit is very much appreciated. If you like this tileset please consider leaving a Rating!
+
+https://schwarnhild.itch.io/pocket-islands-tileset-32x32
+
+I'd love to see what you create. If you have questions or suggestions let me know
+Twitter: @schwarnhild
+Email: schwarnhild@googlemail.com
+schwarnhild.itch.io/

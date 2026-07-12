@@ -13,8 +13,22 @@ urlpatterns = [
         views.HistoryConversationDetailView.as_view(),
     ),
     path(
+        'history/conversations/<str:kind>/<str:conversation_id>/semantic-tree/timeline/',
+        views.HistoryConversationSemanticTreeTimelineView.as_view(),
+    ),
+    path(
         'history/conversations/<str:kind>/<str:conversation_id>/semantic-tree/analyze/',
         views.HistoryConversationSemanticTreeAnalyzeView.as_view(),
+    ),
+    # staff-only: research metrics across any conversation / any subject
+    path(
+        'history/conversations/<str:kind>/<str:conversation_id>/semantic-tree/snapshot-analysis/',
+        views.CCNDSnapshotAnalysisView.as_view(),
+    ),
+    # participant-facing: their OWN concept expansion, gated behind the M6 flow
+    path(
+        'history/conversations/<str:kind>/<str:conversation_id>/ccnd-insights/',
+        views.CCNDInsightsView.as_view(),
     ),
     path('dialogue/topics/', views.DialogueTopicListView.as_view()),
     path(
@@ -58,6 +72,10 @@ urlpatterns = [
         views.MatchingRoomSemanticTreeView.as_view(),
     ),
     path(
+        'matching/rooms/<str:room_id>/semantic-tree/timeline/',
+        views.MatchingRoomSemanticTreeTimelineView.as_view(),
+    ),
+    path(
         'matching/rooms/<str:room_id>/semantic-tree/analyze/',
         views.MatchingRoomSemanticTreeAnalyzeView.as_view(),
     ),
@@ -77,4 +95,6 @@ urlpatterns = [
         'platform-feedback/',
         views.PlatformFeedbackView.as_view(),
     ),
+    path('guest/', views.GuestLoginView.as_view()),
+    path('issues/', views.IssueListCreateView.as_view()),
 ]

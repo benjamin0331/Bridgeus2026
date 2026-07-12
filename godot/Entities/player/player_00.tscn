@@ -1,0 +1,91 @@
+[gd_scene format=3 uid="uid://cawtmw8w8bom1"]
+
+[ext_resource type="Script" uid="uid://cocyvj6e8qhj" path="res://Entities/player/player_00.gd" id="1_ww14a"]
+[ext_resource type="Texture2D" uid="uid://c2kjn41gd413i" path="res://Assets/Luneblade - Little Axion (Free)/Sprite Sheet/Idle.png" id="2_dls3q"]
+
+[sub_resource type="SceneReplicationConfig" id="SceneReplicationConfig_dls3q"]
+properties/0/path = NodePath(".:position")
+properties/0/spawn = true
+properties/0/replication_mode = 1
+properties/1/path = NodePath("AnimatedSprite2D:flip_h")
+properties/1/spawn = true
+properties/1/replication_mode = 1
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_axrsb"]
+atlas = ExtResource("2_dls3q")
+region = Rect2(0, 0, 144, 144)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_kgqsh"]
+atlas = ExtResource("2_dls3q")
+region = Rect2(144, 0, 144, 144)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_jqlbg"]
+atlas = ExtResource("2_dls3q")
+region = Rect2(288, 0, 144, 144)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_hakie"]
+atlas = ExtResource("2_dls3q")
+region = Rect2(432, 0, 144, 144)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_hqs2u"]
+atlas = ExtResource("2_dls3q")
+region = Rect2(576, 0, 144, 144)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_qt66o"]
+atlas = ExtResource("2_dls3q")
+region = Rect2(720, 0, 144, 144)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_4j3yx"]
+atlas = ExtResource("2_dls3q")
+region = Rect2(864, 0, 144, 144)
+
+[sub_resource type="SpriteFrames" id="SpriteFrames_luksa"]
+animations = [{
+"frames": [{
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_axrsb")
+}, {
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_kgqsh")
+}, {
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_jqlbg")
+}, {
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_hakie")
+}, {
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_hqs2u")
+}, {
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_qt66o")
+}, {
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_4j3yx")
+}],
+"loop": 1,
+"name": &"idle",
+"speed": 11.0
+}]
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_dls3q"]
+radius = 12.0
+
+[node name="player_00" type="CharacterBody2D" unique_id=1048721048]
+position = Vector2(241, 135)
+script = ExtResource("1_ww14a")
+
+[node name="MultiplayerSynchronizer" type="MultiplayerSynchronizer" parent="." unique_id=1082824679]
+replication_config = SubResource("SceneReplicationConfig_dls3q")
+
+[node name="AnimatedSprite2D" type="AnimatedSprite2D" parent="." unique_id=147085099]
+sprite_frames = SubResource("SpriteFrames_luksa")
+animation = &"idle"
+autoplay = "idle"
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="." unique_id=543940754]
+position = Vector2(0, -3)
+shape = SubResource("CircleShape2D_dls3q")
+
+[node name="Camera2D" type="Camera2D" parent="." unique_id=1965342445]
+zoom = Vector2(2, 2)
