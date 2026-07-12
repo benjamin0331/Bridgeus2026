@@ -35,6 +35,7 @@ from .dialogue_topics import (
     TOPIC_CONFIGS,
     get_dialogue_survey,
     get_dialogue_topics,
+    get_topic_title,
 )
 from .serializers import (
     AIConversationSerializer,
@@ -546,7 +547,7 @@ def _semantic_tree_root_name(match: DialogueMatch) -> str:
 
 
 def _semantic_tree_root_name_for_topic_id(topic_id: int | None) -> str:
-    return TOPIC_CONFIGS.get(topic_id, {}).get("title") or "核電"
+    return get_topic_title(topic_id)
 
 
 def _get_dialogue_session_record_for_user(*, session_id: str, user_id: int):

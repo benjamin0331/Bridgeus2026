@@ -7,15 +7,18 @@ record when it was created and which chat message triggered it, directly
 on the node — not just buried in a leaf node's `messages` history, since
 category nodes never get a `messages` entry at all.
 """
+from api.dialogue_topics import get_topic_anchors
 from apps.matching.services.semantic_tree import (
     apply_analysis_items_to_tree,
     create_initial_tree,
     find_node_by_id,
 )
 
+NUCLEAR_ANCHORS = get_topic_anchors(102)
+
 
 def test_new_point_node_records_created_at_and_message_id():
-    tree = create_initial_tree("核電")
+    tree = create_initial_tree("核電", NUCLEAR_ANCHORS)
     item = {
         "claimText": "核四延役安全爭議",
         "anchorId": "anchor_safety",
@@ -34,7 +37,7 @@ def test_new_point_node_records_created_at_and_message_id():
 
 
 def test_new_category_node_also_records_created_at_and_message_id():
-    tree = create_initial_tree("核電")
+    tree = create_initial_tree("核電", NUCLEAR_ANCHORS)
     item = {
         "claimText": "地下處置已證實可行",
         "anchorId": "anchor_waste",
@@ -54,7 +57,7 @@ def test_new_category_node_also_records_created_at_and_message_id():
 
 
 def test_merging_into_an_existing_node_does_not_change_its_original_creation_metadata():
-    tree = create_initial_tree("核電")
+    tree = create_initial_tree("核電", NUCLEAR_ANCHORS)
     item = {
         "claimText": "核四延役安全爭議",
         "anchorId": "anchor_safety",
@@ -77,7 +80,7 @@ def test_merging_into_an_existing_node_does_not_change_its_original_creation_met
 
 
 def test_missing_source_message_leaves_message_id_blank():
-    tree = create_initial_tree("核電")
+    tree = create_initial_tree("核電", NUCLEAR_ANCHORS)
     item = {
         "claimText": "核四延役安全爭議",
         "anchorId": "anchor_safety",

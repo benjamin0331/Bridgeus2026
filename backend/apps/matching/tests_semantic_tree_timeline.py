@@ -8,12 +8,15 @@ event log: drop any node whose messages are all after the cutoff (it
 hadn't been created yet), and trim the rest to only messages at/before the
 cutoff.
 """
+from api.dialogue_topics import get_topic_anchors
 from apps.matching.services.semantic_tree import (
     apply_analysis_items_to_tree,
     create_initial_tree,
     reconstruct_tree_as_of,
     resolve_cutoff_for_message,
 )
+
+NUCLEAR_ANCHORS = get_topic_anchors(102)
 
 
 def _item(claim_text, point_name, stance, anchor_id="anchor_safety"):
@@ -31,7 +34,7 @@ def _item(claim_text, point_name, stance, anchor_id="anchor_safety"):
 def _build_dialogue_tree():
     """msg_001 creates a node, msg_002 is a stance-update merge on it,
     msg_003 creates a second, unrelated node."""
-    tree = create_initial_tree("核電")
+    tree = create_initial_tree("核電", NUCLEAR_ANCHORS)
     apply_analysis_items_to_tree(
         tree,
         [_item("核四延役安全爭議", "核四延役爭議", "反對")],
