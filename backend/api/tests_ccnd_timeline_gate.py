@@ -278,3 +278,97 @@ def test_snapshot_analysis_404_for_unknown_conversation(db):
     api = APIClient()
     api.force_authenticate(user=staff)
     assert api.get(_analysis_url("nope")).status_code == 404
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# participant-facing insights (same numbers, gated + subject-scoped + partner-stripped)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _insights_url(session_id=SESSION_ID):
+    return f"/api/history/conversations/ai/{session_id}/ccnd-insights/"
+
+
+def test_insights_locked_before_part_f(client, session):
+    assert client.get(_insights_url()).status_code == 403
+
+
+def test_insights_unlocked_after_part_f(client, session, user):
+    _complete_questionnaire(user, session_id=SESSION_ID)
+    res = client.get(_insights_url())
+    assert res.status_code == 200
+    summary = res.data["summary"]
+    assert summary["final_macro_count"] == 1
+    assert summary["macro_denominator"] == 6
+    assert summary["final_micro_count"] == 1
+    # raw layer for the expandable section
+    assert [e["node_name"] for e in res.data["novelty"]["first_appearance"]] == ["事故風險"]
+    assert "pairs" in res.data["similarity"]
+
+
+def test_insights_never_leaks_partner_side(client, session, user):
+    """A participant must not be handed the other person's cognitive map."""
+    _complete_questionnaire(user, session_id=SESSION_ID)
+    res = client.get(_insights_url())
+    assert res.status_code == 200
+    assert "partner_side" not in res.data
+
+
+@pytest.mark.django_db
+def test_insights_subject_is_the_requesting_user_not_user_a():
+    """H-H: user_b must get user_b's own analysis, not analyze_conversation_ccnd's
+    user_a default."""
+    from api.models import DialogueMatch
+
+    user_a = User.objects.create_user(username="a", password="pw")
+    user_b = User.objects.create_user(username="b", password="pw")
+    now = timezone.now()
+    room_id = "room-subject-test"
+
+    def side(anchor_id, anchor_name, node_name):
+        return {
+            "ownerKey": "x",
+            "treeData": {
+                "id": "root", "name": "核電", "type": "root",
+                "children": [{
+                    "id": anchor_id, "name": anchor_name, "type": "anchor",
+                    "hiddenUntilUsed": False,
+                    "children": [{
+                        "id": "agent_1", "name": node_name, "type": "point",
+                        "children": [],
+                        "messages": [{
+                            "text": node_name, "stance": "中立", "mode": "new",
+                            "recordedAt": now.isoformat(),
+                            "sourceMessageId": "1",
+                            "sourceTimestamp": now.isoformat(),
+                        }],
+                    }],
+                }],
+            },
+            "analyzedSourceIds": ["1"],
+            "analysisHistory": [{"sourceId": "1", "analyzedAt": now.isoformat()}],
+        }
+
+    match = DialogueMatch.objects.create(
+        topic_id=101, user_a=user_a, user_b=user_b,
+        user_a_score=6, user_b_score=2,
+        room_id=room_id,
+        status=DialogueMatch.Status.CLOSED,
+        closed_at=now,
+        stats={"semantic_tree": {
+            "version": 2, "mode": "participant_trees", "anchors": [],
+            "participants": {
+                "user_a": side("anchor_safety", "核能安全", "A的節點"),
+                "user_b": side("anchor_waste", "核廢處理", "B的節點"),
+            },
+        }},
+    )
+    CCNDTimelineUnlock.objects.create(user=user_b, kind="match", conversation_id=room_id)
+
+    api = APIClient()
+    api.force_authenticate(user=user_b)
+    res = api.get(f"/api/history/conversations/match/{match.room_id}/ccnd-insights/")
+
+    assert res.status_code == 200
+    names = [e["node_name"] for e in res.data["novelty"]["first_appearance"]]
+    assert names == ["B的節點"]          # own side
+    assert "A的節點" not in str(res.data)  # partner's side nowhere in the payload

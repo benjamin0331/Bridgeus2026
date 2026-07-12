@@ -20,10 +20,15 @@ urlpatterns = [
         'history/conversations/<str:kind>/<str:conversation_id>/semantic-tree/analyze/',
         views.HistoryConversationSemanticTreeAnalyzeView.as_view(),
     ),
-    # staff-only: research metrics, never exposed to participants
+    # staff-only: research metrics across any conversation / any subject
     path(
         'history/conversations/<str:kind>/<str:conversation_id>/semantic-tree/snapshot-analysis/',
         views.CCNDSnapshotAnalysisView.as_view(),
+    ),
+    # participant-facing: their OWN concept expansion, gated behind the M6 flow
+    path(
+        'history/conversations/<str:kind>/<str:conversation_id>/ccnd-insights/',
+        views.CCNDInsightsView.as_view(),
     ),
     path('dialogue/topics/', views.DialogueTopicListView.as_view()),
     path(

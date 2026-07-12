@@ -1320,6 +1320,99 @@ class CCNDSnapshotAnalysisView(APIView):
         )
 
 
+class CCNDInsightsView(APIView):
+    """Participant-facing view of their OWN concept expansion for one conversation.
+
+    Same numbers as the staff endpoint, but three things differ and all three
+    matter:
+
+    1. Gated behind the M6 flow (identical gate as the timeline). Only once the
+       participant has answered C3 and Part F's F4 can they be shown what was
+       measured, otherwise we contaminate those very items.
+    2. The subject is the REQUESTING user, not analyze_conversation_ccnd's
+       user_a default. Without this, user_b in an H-H match would be served
+       user_a's analysis.
+    3. partner_side is stripped. It carries the other participant's lit anchors
+       and node names — their cognitive map — which a participant must never see.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, kind: str, conversation_id: str):
+        from apps.matching.services.ccnd_snapshot_analysis import (
+            analyze_conversation_ccnd,
+        )
+        from apps.matching.services.semantic_tree import (
+            OWNER_AI_USER,
+            _owner_key_for_user,
+        )
+
+        if kind == "ai":
+            conversation = _get_history_ai_record_for_user(
+                session_id=conversation_id,
+                user_id=request.user.id,
+            )
+            if conversation is None:
+                return Response(
+                    {"detail": "找不到這筆 AI 對話紀錄。"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            subject_owner_key = OWNER_AI_USER
+            resolved_id = conversation.session_id
+        elif kind == "match":
+            conversation = _get_room_match_for_user(
+                room_id=conversation_id,
+                user_id=request.user.id,
+            )
+            if conversation is None:
+                return Response(
+                    {"detail": "找不到這個配對房間。"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            # the requesting participant is the subject — never default to user_a
+            subject_owner_key = _owner_key_for_user(conversation, request.user.id)
+            resolved_id = conversation.room_id
+        else:
+            return Response(
+                {"detail": "kind 必須是 ai 或 match。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        locked = _timeline_locked_response(
+            user_id=request.user.id,
+            kind=kind,
+            conversation_id=resolved_id,
+            conversation=conversation,
+        )
+        if locked is not None:
+            return locked
+
+        analysis = analyze_conversation_ccnd(
+            conversation,
+            subject_owner_key=subject_owner_key,
+        )
+        return Response(
+            {
+                "kind": kind,
+                "conversation_id": resolved_id,
+                "n_segments": analysis["n_segments"],
+                "summary": analysis["summary"],
+                "novelty": analysis["novelty"],
+                "similarity": analysis["similarity"],
+                "snapshots": [
+                    {
+                        "label": snapshot["label"],
+                        "macro_count": snapshot["macro_count"],
+                        "micro_count": snapshot["micro_count"],
+                        "cumulative_hit_count": snapshot["cumulative_hit_count"],
+                    }
+                    for snapshot in analysis["snapshots"]
+                ],
+                # NOTE: analysis["partner_side"] is deliberately NOT returned.
+            }
+        )
+
+
 class HistoryConversationSemanticTreeAnalyzeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
