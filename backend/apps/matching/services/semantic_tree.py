@@ -4,12 +4,14 @@ import re
 import urllib.error
 import urllib.request
 from copy import deepcopy
+from datetime import datetime, timedelta
 from typing import Any
 
+from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 
-from api.models import AIConversation, DialogueMatch
+from api.models import AIConversation, DialogueMatch, DialogueSessionRecord
 
 
 DEFAULT_MODEL = "gpt-5.4-mini"
@@ -28,6 +30,7 @@ AI_TREE_MODE = "ai_user_tree"
 OWNER_USER_A = "user_a"
 OWNER_USER_B = "user_b"
 OWNER_AI_USER = "user"
+PENDING_CLAIM_TTL_SECONDS = 150
 
 FIXED_ANCHORS = [
     {"id": "anchor_safety", "name": "核能安全"},
@@ -167,6 +170,7 @@ def create_owner_tree_state(owner_key: str, root_name: str, anchors: list | None
         "treeData": create_initial_tree(root_name, anchors),
         "analyzedSourceIds": [],
         "analysisHistory": [],
+        "pendingClaims": {},
     }
 
 
@@ -230,6 +234,8 @@ def _ensure_owner_tree_state(
     )
     if not isinstance(owner_state.get("analysisHistory"), list):
         owner_state["analysisHistory"] = []
+    if not isinstance(owner_state.get("pendingClaims"), dict):
+        owner_state["pendingClaims"] = {}
 
     _normalize_tree_node_types(tree_data)
     _ensure_fixed_anchors(tree_data, anchors)
@@ -1282,71 +1288,231 @@ def semantic_tree_batch_size() -> int:
         return 5
 
 
+def _dialogue_session_cache_key(session_id: str) -> str:
+    return f"dialogue_session:{session_id}"
+
+
+def _session_record_payload_from_model(record: DialogueSessionRecord) -> dict[str, Any]:
+    return {
+        "user_id": record.user_id,
+        "session_id": record.session_id,
+        "topic_id": record.topic_id,
+        "topic_title": record.topic_title,
+        "collection_name": record.collection_name,
+        "survey_context": record.survey_context or {},
+        "session": record.session_state or {},
+        SEMANTIC_TREE_STATS_KEY: record.semantic_tree_state or {},
+    }
+
+
+def _parse_claimed_at(value: Any):
+    raw = clean_text(value)
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _split_active_claims(claims: Any) -> tuple[dict[str, str], set[str]]:
+    if not isinstance(claims, dict):
+        return {}, set()
+
+    cutoff = timezone.now() - timedelta(seconds=PENDING_CLAIM_TTL_SECONDS)
+    active: dict[str, str] = {}
+    active_ids: set[str] = set()
+    for source_id, claimed_at in claims.items():
+        normalized_id = clean_text(source_id)
+        parsed_at = _parse_claimed_at(claimed_at)
+        if not normalized_id or parsed_at is None:
+            continue
+        if timezone.is_naive(parsed_at):
+            parsed_at = timezone.make_aware(parsed_at, timezone.get_current_timezone())
+        if parsed_at >= cutoff:
+            active[normalized_id] = parsed_at.isoformat()
+            active_ids.add(normalized_id)
+    return active, active_ids
+
+
+def _clear_claims(owner_state: dict[str, Any], source_ids: list[str]) -> None:
+    claims = owner_state.get("pendingClaims")
+    if not isinstance(claims, dict):
+        owner_state["pendingClaims"] = {}
+        return
+    for source_id in source_ids:
+        claims.pop(clean_text(source_id), None)
+    owner_state["pendingClaims"] = claims
+
+
+def _append_analysis_history(
+    *,
+    owner_state: dict[str, Any],
+    source_id: str,
+    source_type: str,
+    source_text: str,
+    model: str,
+    applied_items: list[dict[str, Any]],
+    invalid_items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    entry = {
+        "sourceId": source_id,
+        "sourceType": source_type,
+        "analyzedAt": timezone.now().isoformat(),
+        "model": model,
+        "sourceText": source_text,
+        "appliedItems": applied_items,
+        "invalidItems": invalid_items,
+    }
+    owner_state["analysisHistory"].append(entry)
+    owner_state["analyzedSourceIds"].append(source_id)
+    return entry
+
+
+def _analyze_claimed_sources(
+    *,
+    topic_id: int | None,
+    tree_snapshot: dict[str, Any],
+    anchors: list[dict[str, str]],
+    anchor_descriptions: dict[str, str],
+    pending_sources: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
+    analysis_entries: list[dict[str, Any]] = []
+    analyzed_source_ids: list[str] = []
+    owner_state = {
+        "treeData": tree_snapshot,
+        "analysisHistory": [],
+        "analyzedSourceIds": [],
+    }
+
+    for source in pending_sources:
+        try:
+            result = analyze_text_for_tree(
+                topic_id=topic_id,
+                text=source["text"],
+                tree=tree_snapshot,
+                anchors=anchors,
+                anchor_descriptions=anchor_descriptions,
+            )
+        except Exception:
+            break
+
+        apply_result = apply_analysis_items_to_tree(
+            tree_snapshot,
+            result.get("items", []),
+            source_message=source["source_message"],
+        )
+        entry = _append_analysis_history(
+            owner_state=owner_state,
+            source_id=source["source_id"],
+            source_type=source["source_type"],
+            source_text=source["text"],
+            model=result.get("model") or get_openai_model(),
+            applied_items=apply_result["appliedItems"],
+            invalid_items=result.get("invalidItems", []),
+        )
+        analysis_entries.append(entry)
+        analyzed_source_ids.append(source["source_id"])
+
+    return analysis_entries, analyzed_source_ids, tree_snapshot
+
+
 def analyze_pending_room_messages(
     *,
     match: DialogueMatch,
     root_name: str,
     current_user_id: int | None = None,
 ) -> dict[str, Any]:
+    openai_key_missing = not uses_local_classifier(match.topic_id) and not get_openai_api_key()
+
     with transaction.atomic():
         locked_match = DialogueMatch.objects.select_for_update().get(pk=match.pk)
         state = get_semantic_tree_state(locked_match, root_name=root_name)
         anchor_descriptions = get_topic_anchor_descriptions(locked_match.topic_id)
         current_owner_key = _owner_key_for_user(locked_match, current_user_id)
-        pending_messages = [
-            (message, owner_key)
+        owner_state = state["participants"][current_owner_key]
+        analyzed_ids = set(owner_state["analyzedSourceIds"])
+        active_claims, active_claim_ids = _split_active_claims(owner_state.get("pendingClaims"))
+        claim_changed = active_claims != owner_state.get("pendingClaims")
+        candidate_messages = [
+            message
             for message in locked_match.messages.order_by("created_at", "id")
             for owner_key in [_owner_key_for_message(locked_match, message.sender_id)]
             if owner_key
             and owner_key == current_owner_key
             and clean_text(message.id)
-            not in set(state["participants"][owner_key]["analyzedSourceIds"])
+            and clean_text(message.id) not in analyzed_ids
+        ]
+        pending_messages = [
+            message
+            for message in candidate_messages
+            if clean_text(message.id) not in active_claim_ids
         ][: semantic_tree_batch_size()]
 
-        if (
-            pending_messages
-            and not uses_local_classifier(locked_match.topic_id)
-            and not get_openai_api_key()
-        ):
+        if pending_messages and openai_key_missing:
+            if claim_changed:
+                owner_state["pendingClaims"] = active_claims
+                save_semantic_tree_state(locked_match, state)
             raise MissingOpenAIApiKey("server 缺少 OPENAI_API_KEY，無法呼叫 OpenAI。")
 
-        analyzed_count = 0
-        for message, owner_key in pending_messages:
-            owner_state = state["participants"][owner_key]
-            source_message = _message_to_source(message)
-            result = analyze_text_for_tree(
-                topic_id=locked_match.topic_id,
-                text=message.content,
-                tree=owner_state["treeData"],
-                anchors=state["anchors"],
-                anchor_descriptions=anchor_descriptions,
+        if not pending_messages:
+            if claim_changed:
+                owner_state["pendingClaims"] = active_claims
+                save_semantic_tree_state(locked_match, state)
+            return semantic_tree_payload(
+                match=locked_match,
+                root_name=root_name,
+                current_user_id=current_user_id,
+                analysis_status="in_progress" if candidate_messages else "ready",
+                analyzed_count=0,
             )
-            apply_result = apply_analysis_items_to_tree(
-                owner_state["treeData"],
-                result.get("items", []),
-                source_message=source_message,
-            )
-            owner_state["analysisHistory"].append(
-                {
-                    "sourceId": clean_text(message.id),
-                    "sourceType": "match_message",
-                    "analyzedAt": timezone.now().isoformat(),
-                    "model": result.get("model") or get_openai_model(),
-                    "sourceText": message.content,
-                    "appliedItems": apply_result["appliedItems"],
-                    "invalidItems": result.get("invalidItems", []),
-                }
-            )
-            owner_state["analyzedSourceIds"].append(clean_text(message.id))
-            analyzed_count += 1
 
+        claimed_at = timezone.now().isoformat()
+        claimed_source_ids = [clean_text(message.id) for message in pending_messages]
+        owner_state["pendingClaims"] = {
+            **active_claims,
+            **{source_id: claimed_at for source_id in claimed_source_ids},
+        }
+        save_semantic_tree_state(locked_match, state)
+        base_analyzed_ids = list(owner_state["analyzedSourceIds"])
+        tree_snapshot = deepcopy(owner_state["treeData"])
+        pending_sources = [
+            {
+                "source_id": clean_text(message.id),
+                "source_type": "match_message",
+                "text": message.content,
+                "source_message": _message_to_source(message),
+            }
+            for message in pending_messages
+        ]
+        topic_id = locked_match.topic_id
+        anchors = deepcopy(state["anchors"])
+
+    analysis_entries, analyzed_source_ids, tree_snapshot = _analyze_claimed_sources(
+        topic_id=topic_id,
+        tree_snapshot=tree_snapshot,
+        anchors=anchors,
+        anchor_descriptions=anchor_descriptions,
+        pending_sources=pending_sources,
+    )
+
+    with transaction.atomic():
+        locked_match = DialogueMatch.objects.select_for_update().get(pk=match.pk)
+        state = get_semantic_tree_state(locked_match, root_name=root_name)
+        owner_state = state["participants"][current_owner_key]
+        conflict = owner_state["analyzedSourceIds"] != base_analyzed_ids
+        if not conflict:
+            owner_state["treeData"] = tree_snapshot
+            owner_state["analysisHistory"].extend(analysis_entries)
+            owner_state["analyzedSourceIds"].extend(analyzed_source_ids)
+        _clear_claims(owner_state, claimed_source_ids)
         save_semantic_tree_state(locked_match, state)
         return semantic_tree_payload(
             match=locked_match,
             root_name=root_name,
             current_user_id=current_user_id,
-            analysis_status="ready",
-            analyzed_count=analyzed_count,
+            analysis_status="conflict_retry" if conflict else "ready",
+            analyzed_count=0 if conflict else len(analyzed_source_ids),
         )
 
 
@@ -1357,60 +1523,113 @@ def analyze_pending_ai_conversations(
     user_id: int,
     root_name: str,
 ) -> dict[str, Any]:
-    state = get_ai_semantic_tree_state(session_record, root_name=root_name)
-    anchor_descriptions = get_topic_anchor_descriptions(session_record.get("topic_id"))
-    owner_state = state["participants"][OWNER_AI_USER]
-    analyzed_ids = set(owner_state["analyzedSourceIds"])
-    pending_turns = [
-        turn
-        for turn in AIConversation.objects.filter(
-            user_id=user_id,
+    topic_id = session_record.get("topic_id")
+    openai_key_missing = not uses_local_classifier(topic_id) and not get_openai_api_key()
+
+    with transaction.atomic():
+        locked_record = DialogueSessionRecord.objects.select_for_update().get(
             session_id=session_id,
-        ).order_by("created_at", "id")
-        if clean_text(turn.user_prompt) and clean_text(turn.id) not in analyzed_ids
-    ][: semantic_tree_batch_size()]
-
-    if (
-        pending_turns
-        and not uses_local_classifier(session_record.get("topic_id"))
-        and not get_openai_api_key()
-    ):
-        raise MissingOpenAIApiKey("server 缺少 OPENAI_API_KEY，無法呼叫 OpenAI。")
-
-    analyzed_count = 0
-    for turn in pending_turns:
-        source_message = _ai_turn_to_source(turn)
-        result = analyze_text_for_tree(
-            topic_id=session_record.get("topic_id"),
-            text=turn.user_prompt,
-            tree=owner_state["treeData"],
-            anchors=state["anchors"],
-            anchor_descriptions=anchor_descriptions,
+            user_id=user_id,
         )
-        apply_result = apply_analysis_items_to_tree(
-            owner_state["treeData"],
-            result.get("items", []),
-            source_message=source_message,
-        )
-        owner_state["analysisHistory"].append(
+        topic_id = locked_record.topic_id
+        openai_key_missing = not uses_local_classifier(topic_id) and not get_openai_api_key()
+        record_payload = _session_record_payload_from_model(locked_record)
+        state = get_ai_semantic_tree_state(record_payload, root_name=root_name)
+        anchor_descriptions = get_topic_anchor_descriptions(topic_id)
+        owner_state = state["participants"][OWNER_AI_USER]
+        analyzed_ids = set(owner_state["analyzedSourceIds"])
+        active_claims, active_claim_ids = _split_active_claims(owner_state.get("pendingClaims"))
+        claim_changed = active_claims != owner_state.get("pendingClaims")
+        candidate_turns = [
+            turn
+            for turn in AIConversation.objects.filter(
+                user_id=user_id,
+                session_id=session_id,
+            ).order_by("created_at", "id")
+            if clean_text(turn.user_prompt)
+            and clean_text(turn.id)
+            and clean_text(turn.id) not in analyzed_ids
+        ]
+        pending_turns = [
+            turn
+            for turn in candidate_turns
+            if clean_text(turn.id) not in active_claim_ids
+        ][: semantic_tree_batch_size()]
+
+        if pending_turns and openai_key_missing:
+            if claim_changed:
+                owner_state["pendingClaims"] = active_claims
+                locked_record.semantic_tree_state = state
+                locked_record.save(update_fields=["semantic_tree_state", "updated_at"])
+            raise MissingOpenAIApiKey("server 缺少 OPENAI_API_KEY，無法呼叫 OpenAI。")
+
+        if not pending_turns:
+            if claim_changed:
+                owner_state["pendingClaims"] = active_claims
+                locked_record.semantic_tree_state = state
+                locked_record.save(update_fields=["semantic_tree_state", "updated_at"])
+            record_payload[SEMANTIC_TREE_STATS_KEY] = state
+            return semantic_tree_session_payload(
+                session_record=record_payload,
+                session_id=session_id,
+                root_name=root_name,
+                analysis_status="in_progress" if candidate_turns else "ready",
+                analyzed_count=0,
+            )
+
+        claimed_at = timezone.now().isoformat()
+        claimed_source_ids = [clean_text(turn.id) for turn in pending_turns]
+        owner_state["pendingClaims"] = {
+            **active_claims,
+            **{source_id: claimed_at for source_id in claimed_source_ids},
+        }
+        locked_record.semantic_tree_state = state
+        locked_record.save(update_fields=["semantic_tree_state", "updated_at"])
+        base_analyzed_ids = list(owner_state["analyzedSourceIds"])
+        tree_snapshot = deepcopy(owner_state["treeData"])
+        pending_sources = [
             {
-                "sourceId": clean_text(turn.id),
-                "sourceType": "ai_user_prompt",
-                "analyzedAt": timezone.now().isoformat(),
-                "model": result.get("model") or get_openai_model(),
-                "sourceText": turn.user_prompt,
-                "appliedItems": apply_result["appliedItems"],
-                "invalidItems": result.get("invalidItems", []),
+                "source_id": clean_text(turn.id),
+                "source_type": "ai_user_prompt",
+                "text": turn.user_prompt,
+                "source_message": _ai_turn_to_source(turn),
             }
-        )
-        owner_state["analyzedSourceIds"].append(clean_text(turn.id))
-        analyzed_count += 1
+            for turn in pending_turns
+        ]
+        anchors = deepcopy(state["anchors"])
 
-    save_ai_semantic_tree_state(session_record, state)
+    analysis_entries, analyzed_source_ids, tree_snapshot = _analyze_claimed_sources(
+        topic_id=topic_id,
+        tree_snapshot=tree_snapshot,
+        anchors=anchors,
+        anchor_descriptions=anchor_descriptions,
+        pending_sources=pending_sources,
+    )
+
+    with transaction.atomic():
+        locked_record = DialogueSessionRecord.objects.select_for_update().get(
+            session_id=session_id,
+            user_id=user_id,
+        )
+        record_payload = _session_record_payload_from_model(locked_record)
+        state = get_ai_semantic_tree_state(record_payload, root_name=root_name)
+        owner_state = state["participants"][OWNER_AI_USER]
+        conflict = owner_state["analyzedSourceIds"] != base_analyzed_ids
+        if not conflict:
+            owner_state["treeData"] = tree_snapshot
+            owner_state["analysisHistory"].extend(analysis_entries)
+            owner_state["analyzedSourceIds"].extend(analyzed_source_ids)
+        _clear_claims(owner_state, claimed_source_ids)
+        locked_record.semantic_tree_state = state
+        locked_record.save(update_fields=["semantic_tree_state", "updated_at"])
+        record_payload = _session_record_payload_from_model(locked_record)
+
+    cache.delete(_dialogue_session_cache_key(session_id))
+    session_record[SEMANTIC_TREE_STATS_KEY] = record_payload.get(SEMANTIC_TREE_STATS_KEY) or {}
     return semantic_tree_session_payload(
-        session_record=session_record,
+        session_record=record_payload,
         session_id=session_id,
         root_name=root_name,
-        analysis_status="ready",
-        analyzed_count=analyzed_count,
+        analysis_status="conflict_retry" if conflict else "ready",
+        analyzed_count=0 if conflict else len(analyzed_source_ids),
     )

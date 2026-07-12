@@ -1050,8 +1050,6 @@ class DialogueSessionSemanticTreeAnalyzeView(APIView):
                 status=exc.status_code,
             )
 
-        _cache_dialogue_session_record(session_record)
-        _persist_dialogue_session_record(session_record)
         return Response(MatchingRoomSemanticTreeSerializer(payload).data)
 
 
@@ -1231,9 +1229,7 @@ class HistoryConversationSemanticTreeAnalyzeView(APIView):
                     status=exc.status_code,
                 )
 
-            record.semantic_tree_state = session_record.get("semantic_tree") or {}
-            record.save(update_fields=["semantic_tree_state", "updated_at"])
-            _cache_dialogue_session_record(session_record)
+            record.refresh_from_db(fields=["semantic_tree_state", "updated_at"])
             return Response(
                 {
                     **_history_ai_detail(record),
