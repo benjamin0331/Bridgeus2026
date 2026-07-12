@@ -248,17 +248,19 @@ async def test_dialogue_websocket_ignores_non_object_payload_without_crashing():
         user_stance_label="較支持核電",
         user_stance_score=6.5,
     )
-    await sync_to_async(cache.set)(
-        f"dialogue_session:{session_id}",
-        {
-            "user_id": user.id,
-            "session_id": session_id,
-            "topic_id": 102,
-            "topic_title": "台灣核能議題討論",
-            "collection_name": "nuclear_energy_all",
-            "survey_context": {"q9_embedding": make_test_embedding(1)},
-            "session": session.to_dict(),
+    await DialogueSessionRecord.objects.acreate(
+        user=user,
+        session_id=session_id,
+        topic_id=102,
+        topic_title="台灣核能議題討論",
+        collection_name="nuclear_energy_all",
+        survey_context={"q9_embedding": make_test_embedding(1)},
+        session_state={
+            key: value
+            for key, value in session.to_dict().items()
+            if key != "history"
         },
+        last_activity_at=timezone.now(),
     )
 
     token = await _access_token_for(user)
@@ -268,7 +270,7 @@ async def test_dialogue_websocket_ignores_non_object_payload_without_crashing():
     )
 
     with (
-        patch("api.views.get_dialogue_agent", return_value=FakeStreamingDialogueAgent()),
+        patch("api.services.dialogue_session.get_dialogue_agent", return_value=FakeStreamingDialogueAgent()),
         patch("api.consumers.aget_embedding", new=AsyncMock(return_value=make_test_embedding(-1))),
     ):
         assert (await communicator.connect())[0]
