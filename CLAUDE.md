@@ -71,8 +71,8 @@ This is an **NSTC (國科會) undergraduate research grant project** (115 年度
 ## Tech Stack
 
 ### Backend
-- **Language**: Python 3.11+
-- **Framework**: Django 5.x + Django REST Framework
+- **Language**: Python 3.12+
+- **Framework**: Django 6.0.4 + Django REST Framework
 - **WebSocket**: Django Channels (ASGI, with Redis as channel layer)
 - **Auth**: JWT (djangorestframework-simplejwt)
 
