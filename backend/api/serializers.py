@@ -218,6 +218,9 @@ class MatchingRoomSemanticTreeTimelineSerializer(serializers.Serializer):
     asOfTimestamp = serializers.CharField(max_length=64)
     treeData = serializers.JSONField()
     anchors = serializers.JSONField()
+    # Nodes this specific message created ([{id, name, stance}]), so the slider
+    # can say "這則新增了哪些節點" instead of leaving the diff purely visual.
+    bornNodes = serializers.JSONField(required=False)
 
 
 class MatchingRoomSemanticTreeSerializer(serializers.Serializer):

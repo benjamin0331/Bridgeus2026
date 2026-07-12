@@ -375,6 +375,29 @@ def find_nodes_born_from_message(
     return born
 
 
+def born_nodes_payload(
+    tree: dict[str, Any] | None,
+    source_message_id: str,
+) -> list[dict[str, Any]]:
+    """Light, UI-facing shape of the nodes a given message created.
+
+    Note the time axis: this is keyed on `sourceMessageId` (a property of the
+    message itself), NOT on recordedAt/analyzedAt. The timeline reconstructs the
+    tree using the analysis clock (`recordedAt`), but "which nodes did this
+    message give birth to" must never be derived from that clock — keeping the
+    two axes apart is what stops batch-analysis timing from distorting the
+    figure.
+    """
+    return [
+        {
+            "id": clean_text(node.get("id")),
+            "name": clean_text(node.get("name")),
+            "stance": clean_text(node.get("stance")),
+        }
+        for node in find_nodes_born_from_message(tree, source_message_id)
+    ]
+
+
 def resolve_cutoff_for_message(
     analysis_history: list[dict[str, Any]] | None,
     source_message_id: str,
@@ -1203,6 +1226,7 @@ def semantic_tree_timeline_payload(
         "asOfTimestamp": cutoff,
         "treeData": snapshot,
         "anchors": state["anchors"],
+        "bornNodes": born_nodes_payload(snapshot, source_message_id),
     }
 
 
@@ -1238,6 +1262,7 @@ def semantic_tree_session_timeline_payload(
         "asOfTimestamp": cutoff,
         "treeData": snapshot,
         "anchors": state["anchors"],
+        "bornNodes": born_nodes_payload(snapshot, source_message_id),
     }
 
 

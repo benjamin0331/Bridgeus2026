@@ -85,6 +85,8 @@ function HistoryPage() {
   // 突然閃成空的（timelineIndex 還沒變，displayedTreeData 也還沒變）。
   const [previewIndex, setPreviewIndex] = useState(null);
   const [timelineTreeData, setTimelineTreeData] = useState(null);
+  // 這則訊息「新生」的節點（後端 bornNodes，依 sourceMessageId 判定）。
+  const [bornNodes, setBornNodes] = useState([]);
   const [isTimelineLoading, setIsTimelineLoading] = useState(false);
   const [timelineError, setTimelineError] = useState('');
   const [analysisError, setAnalysisError] = useState('');
@@ -146,6 +148,7 @@ function HistoryPage() {
       setAnalysisError('');
       setTimelineIndex(null);
       setTimelineTreeData(null);
+      setBornNodes([]);
       setTimelineError('');
       timelineRequestIdRef.current += 1;
       try {
@@ -243,6 +246,8 @@ function HistoryPage() {
     // 拖到最新一格不用另外呼叫 timeline API——displayedTreeData 在 isViewingLatest
     // 為真時本來就是直接讀最新的 treePayload，timelineIndex 一更新畫面就會自動跟上。
     if (index === timelineMessages.length - 1) {
+      // 回到即時狀態沒有「這則新增了什麼」可言。
+      setBornNodes([]);
       return;
     }
 
@@ -264,10 +269,12 @@ function HistoryPage() {
         return;
       }
       setTimelineTreeData(response.data?.treeData || null);
+      setBornNodes(response.data?.bornNodes || []);
     } catch (requestError) {
       if (requestId !== timelineRequestIdRef.current) {
         return;
       }
+      setBornNodes([]);
       // 保留畫面上一個成功顯示的樹狀圖，不要清空，只提示這個時間點暫時看不到。
       setTimelineError(
         requestError?.response?.status === 404
@@ -388,7 +395,17 @@ function HistoryPage() {
           isAnalyzing={isAnalyzing}
           analysisStatus={treePayload?.analysisStatus || 'ready'}
         />
-        {hasAnalyzedTree(treePayload) && timelineMessages.length > 1 && (
+        {/* 時間軸在對話後問卷（含 Part F）完成前是鎖住的——受試者若能先回顧自己的
+            CCND，就會在回答 C3／F4 這些 CCND 自陳題前看到被測量的東西。後端也會擋，
+            這裡只是不顯示入口。 */}
+        {detail && !detail.timeline_unlocked && hasAnalyzedTree(treePayload) && (
+          <div className="history-timeline-bar history-timeline-locked">
+            <span className="history-timeline-label">
+              完成對話後問卷（含平台體驗回饋）後，就能在這裡逐則回顧想法脈絡圖的變化。
+            </span>
+          </div>
+        )}
+        {detail?.timeline_unlocked && hasAnalyzedTree(treePayload) && timelineMessages.length > 1 && (
           <div className="history-timeline-bar">
             <div className="history-timeline-row">
               <span className="history-timeline-label">
@@ -417,6 +434,13 @@ function HistoryPage() {
               onKeyUp={handleTimelineCommit}
               disabled={isTimelineLoading}
             />
+            {!isLabelAtLatest && !isTimelineLoading && (
+              <span className="history-timeline-born">
+                {bornNodes.length
+                  ? `這則新增了 ${bornNodes.length} 個節點：${bornNodes.map((node) => node.name).join('、')}`
+                  : '這則沒有新增節點（併入既有節點或沒有新的主張）。'}
+              </span>
+            )}
             {timelineError && <span className="history-timeline-error">{timelineError}</span>}
           </div>
         )}

@@ -11,6 +11,7 @@ from rest_framework.test import APIClient, APITestCase
 from api.dialogue_topics import SURVEY_CONFIGS, TOPIC_CONFIGS
 from api.models import (
     AIConversation,
+    CCNDTimelineUnlock,
     DialogueMatch,
     DialogueSessionRecord,
     MatchMessage,
@@ -21,6 +22,21 @@ from api.models import (
     UserStanceProfile,
 )
 from api.views import _resolve_stance_category
+
+
+def unlock_timeline(user, kind, conversation_id):
+    """The CCND timeline is gated until the participant finishes the M6 flow
+    (see api.timeline_access — it would otherwise leak the measured construct
+    before they answer C3/F4). The tests below exercise the tree-reconstruction
+    logic rather than the gate, so grant them the researcher override.
+    Gate behaviour itself is covered in api/tests_ccnd_timeline_gate.py.
+    """
+    CCNDTimelineUnlock.objects.create(
+        user=user,
+        kind=kind,
+        conversation_id=conversation_id,
+        reason="test fixture",
+    )
 
 
 def fake_waste_items_response():
@@ -877,6 +893,7 @@ class HistoryApiTests(APITestCase):
 
     def test_ai_timeline_shows_only_nodes_analyzed_by_the_given_turn(self):
         ai_record, first_turn = self._create_ai_history()
+        unlock_timeline(self.user, "ai", ai_record.session_id)
 
         with patch(
             "apps.matching.services.nuclear_node_classifier.build_candidate_items",
@@ -1474,6 +1491,7 @@ class MatchingApiTests(APITestCase):
 
     def test_semantic_tree_timeline_shows_only_nodes_born_by_the_given_message(self):
         match, room_id = self._create_match()
+        unlock_timeline(self.user, "match", room_id)
         first_message = MatchMessage.objects.create(
             match=match,
             sender=self.user,
@@ -1529,6 +1547,7 @@ class MatchingApiTests(APITestCase):
 
     def test_semantic_tree_timeline_returns_404_for_unanalyzed_message(self):
         _, room_id = self._create_match()
+        unlock_timeline(self.user, "match", room_id)
 
         response = self.client.get(
             f"/api/matching/rooms/{room_id}/semantic-tree/timeline/",
