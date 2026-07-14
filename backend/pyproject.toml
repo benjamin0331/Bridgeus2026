@@ -1,0 +1,48 @@
+[project]
+name = "take-a-bridge"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=0.89.0",
+    "channels>=4.3.2",
+    "channels-redis>=4.2.0",
+    "chromadb>=1.5.5",
+    "daphne>=4.2.1",
+    "django>=6.0.4",
+    "django-cors-headers>=4.9.0",
+    "djangorestframework>=3.17.1",
+    "djangorestframework-simplejwt>=5.5.1",
+    "gunicorn>=23.0.0",
+    "jieba>=0.42.1",
+    "keybert>=0.9.0",
+    "langchain-anthropic>=1.4.0",
+    "langchain-chroma>=1.1.0",
+    "langchain-core>=1.2.23",
+    "langchain-huggingface>=1.2.1",
+    "langchain-text-splitters>=1.1.1",
+    "pgvector>=0.4.2",
+    "python-dotenv>=1.2.2",
+    "psycopg[binary]>=3.2.12",
+    "redis>=6.2.0",
+    "scipy>=1.17.1",
+    "sentence-transformers>=5.3.0",
+    "tokenizers>=0.22.2",
+    "torch>=2.11.0",
+    "transformers>=5.4.0",
+    "uvicorn[standard]>=0.44.0",
+    "whitenoise>=6.11.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.25.0",
+    "pytest-django>=4.9.0",
+]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "take_a_bridge.settings"
+asyncio_mode = "auto"
+pythonpath = ["."]
