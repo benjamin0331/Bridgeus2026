@@ -7,6 +7,7 @@ MiniLM-L12-v2, 384-dim; see chat/services/embedding.py) so ViewpointNode.embeddi
 is comparable against MatchMessage.embedding / AIConversation.embedding.
 """
 
+from django.conf import settings
 from django.contrib.postgres.fields import ArrayField
 from django.db import models
 from pgvector.django import VectorField
@@ -35,6 +36,11 @@ class DialogueSummary(models.Model):
 
 
 class ViewpointNode(models.Model):
+    class ReviewStatus(models.TextChoices):
+        PENDING = "pending", "待審核"
+        APPROVED = "approved", "已通過"
+        REJECTED = "rejected", "已退回"
+
     summary = models.ForeignKey(
         DialogueSummary,
         on_delete=models.CASCADE,
@@ -61,9 +67,27 @@ class ViewpointNode(models.Model):
     citation_count = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # Step 4 人工終審（見 apps/summary/pipeline/quality_filter.py 模組 docstring）。
+    review_status = models.CharField(
+        max_length=16,
+        choices=ReviewStatus.choices,
+        default=ReviewStatus.PENDING,
+        db_index=True,
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_viewpoints",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_notes = models.TextField(blank=True)
+
     class Meta:
         indexes = [
             models.Index(fields=["topic_id", "dimension"]),
+            models.Index(fields=["review_status"]),
         ]
 
     def __str__(self):

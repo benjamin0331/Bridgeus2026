@@ -4,6 +4,7 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import './TopicChat.css';
 import ConversationTreePanel from '../components/ConversationTreePanel';
 import SurveyModal from '../components/SurveyModal';
+import StanceReuseModal from '../components/StanceReuseModal';
 import api from '../api/client';
 
 const MATCHING_POLL_INTERVAL_MS = 3000;
@@ -82,7 +83,7 @@ function mapHistoryToMessages(history, userName) {
   return history.map((message, index) => ({
     id: `${message.role}-${index}`,
     type: message.role === 'agent' ? 'agent' : 'user',
-    userName: message.role === 'agent' ? 'Take A Bridge' : userName,
+    userName: message.role === 'agent' ? 'BridgeUs' : userName,
     text: message.content,
   }));
 }
@@ -211,6 +212,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const [surveyOpenAnswers, setSurveyOpenAnswers] = useState({});
   const [isSurveyLoading, setIsSurveyLoading] = useState(true);
   const [surveyError, setSurveyError] = useState('');
+  const [savedStanceProfile, setSavedStanceProfile] = useState(null);
+  const [stanceRedoConfirmed, setStanceRedoConfirmed] = useState(false);
 
   const [sessionId, setSessionId] = useState(null);
   const [inputValue, setInputValue] = useState('');
@@ -362,6 +365,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setChatError('');
     setIsSending(false);
     setIsAgentStreaming(false);
+    setStanceRedoConfirmed(false);
     setShowSurvey(true);
   }, [resetAiSemanticTreeState]);
 
@@ -559,6 +563,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setSurveyAnswers({});
     setSurveyOpenAnswers({});
     setSurveyError('');
+    setSavedStanceProfile(null);
+    setStanceRedoConfirmed(false);
     setShowSurvey(!isMatchingMode);
     setSessionId(null);
     setInputValue('');
@@ -638,6 +644,37 @@ function TopicChat({ user, issues, issuesLoaded }) {
     };
 
     fetchSurvey();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentIssue, id]);
+
+  useEffect(() => {
+    if (!currentIssue) {
+      setSavedStanceProfile(null);
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const fetchStanceProfile = async () => {
+      try {
+        const response = await api.get(
+          `/api/dialogue/topics/${id}/stance-profile/`,
+        );
+        if (!cancelled) {
+          setSavedStanceProfile(response.data);
+        }
+      } catch {
+        // Best-effort: on failure just fall back to always showing the survey.
+        if (!cancelled) {
+          setSavedStanceProfile({ exists: false });
+        }
+      }
+    };
+
+    fetchStanceProfile();
 
     return () => {
       cancelled = true;
@@ -1172,7 +1209,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
             {
               id: newMessageId,
               type: 'agent',
-              userName: 'Take A Bridge',
+              userName: 'BridgeUs',
               text: data.content,
             },
           ];
@@ -1317,6 +1354,13 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const handleSurveySubmit = async ({ answers, openAnswers }) => {
     setSurveyAnswers(answers);
     setSurveyOpenAnswers(openAnswers);
+    setStanceRedoConfirmed(false);
+    setSavedStanceProfile((prev) => ({
+      ...(prev || {}),
+      exists: true,
+      survey_answers: answers,
+      survey_open_answers: openAnswers,
+    }));
 
     if (!isMatchingMode) {
       wsRef.current?.close();
@@ -1610,7 +1654,23 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setMatchAssistNotice(null);
     setPendingMatchSuggestion(null);
     setMatchSuggestionDraft(null);
+    setStanceRedoConfirmed(false);
     setShowSurvey(true);
+  };
+
+  const handleRedoSurvey = () => {
+    setStanceRedoConfirmed(true);
+  };
+
+  const handleReuseStance = () => {
+    if (!savedStanceProfile?.exists) {
+      return;
+    }
+
+    void handleSurveySubmit({
+      answers: savedStanceProfile.survey_answers || {},
+      openAnswers: savedStanceProfile.survey_open_answers || {},
+    });
   };
 
   const renderMatchingCard = () => {
@@ -2021,15 +2081,27 @@ function TopicChat({ user, issues, issuesLoaded }) {
   return (
     <div className="chat-page-container">
       {showSurvey && (
-        <SurveyModal
-          isOpen={showSurvey}
-          survey={survey}
-          isLoading={isSurveyLoading}
-          error={surveyError}
-          isSubmitting={isMatchingMode ? isMatchingActionLoading : false}
-          submitError={isMatchingMode ? matchingError : ''}
-          onSubmit={handleSurveySubmit}
-        />
+        savedStanceProfile?.exists && !stanceRedoConfirmed ? (
+          <StanceReuseModal
+            isOpen
+            stanceScore={savedStanceProfile.stance_score}
+            stanceCategory={savedStanceProfile.stance_category}
+            updatedAt={savedStanceProfile.updated_at}
+            isBusy={isMatchingMode ? isMatchingActionLoading : false}
+            onRedo={handleRedoSurvey}
+            onReuse={handleReuseStance}
+          />
+        ) : (
+          <SurveyModal
+            isOpen={showSurvey}
+            survey={survey}
+            isLoading={isSurveyLoading}
+            error={surveyError}
+            isSubmitting={isMatchingMode ? isMatchingActionLoading : false}
+            submitError={isMatchingMode ? matchingError : ''}
+            onSubmit={handleSurveySubmit}
+          />
+        )
       )}
 
       {!isRightPanelOpen && (
@@ -2111,7 +2183,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
                 <div className="message-row">
                   <div className="message-user-info">
                     <img src="/icon.jpg" alt="Avatar" className="message-avatar" />
-                    <span className="message-username">Take A Bridge</span>
+                    <span className="message-username">BridgeUs</span>
                   </div>
                   <div className="message-bubble">正在整理回應...</div>
                 </div>
@@ -2213,7 +2285,20 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
         <div className="right-minor-feature-row" aria-label="對話即時指標">
           <div className="minor-feature-box metric-card">
-            <span className="metric-label">我的論述移動</span>
+            <span className="metric-label metric-label-with-info">
+              <span className="metric-label-text">我的論述移動</span>
+              <span
+                className="metric-info"
+                tabIndex={0}
+                role="note"
+                aria-label="論述移動說明：顯示你的發言與最初立場陳述的語意差距。數值上升代表你的論述正在展開、觸及新的角度——這反映討論的廣度，不代表你被說服或立場動搖。"
+              >
+                i
+                <span className="metric-info-tooltip" role="tooltip">
+                  顯示你的發言與最初立場陳述的語意差距。數值上升代表你的論述正在展開、觸及新的角度——這反映討論的廣度，不代表你被說服或立場動搖。
+                </span>
+              </span>
+            </span>
             <strong className="metric-value">
               {driftValueDisplay}
             </strong>

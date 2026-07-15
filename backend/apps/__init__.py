@@ -1,1 +1,1 @@
-"""Application packages for take_a_bridge."""
+"""Application packages for BridgeUs_Django."""

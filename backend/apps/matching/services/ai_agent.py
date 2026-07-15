@@ -119,12 +119,12 @@ def load_system_prompt(filename: str = _DEFAULT_PROMPT_FILE) -> str:
 
 class DialoguePhase(Enum):
     """
-    對話階段，目前由後端依使用者輪次推導。
+    對話階段，由後端根據語義距離變化趨勢判定。
 
-    現行判定邏輯：
+    判定邏輯（由 M5 NLP 模組計算，此處僅定義 enum）：
     - engagement:     前 3 輪固定，或語義距離尚未建立基線
-    - confrontation:  第 4 到第 8 輪
-    - convergence:    第 9 輪以後
+    - confrontation:  語義距離穩定或擴大（雙方仍在交鋒）
+    - convergence:    最近 3 輪語義距離持續縮小（雙方趨向共識）
     """
     ENGAGEMENT = "engagement"
     CONFRONTATION = "confrontation"
@@ -133,7 +133,9 @@ class DialoguePhase(Enum):
     @classmethod
     def from_turn_count(cls, turn_count: int) -> "DialoguePhase":
         """
-        Production phase derivation used by REST and WebSocket AI replies.
+        Fallback：當 M5 尚未接入時，用輪次簡單判定。
+
+        正式版應由 M5 語義距離斜率決定，此方法僅供開發測試。
         """
         if turn_count <= 3:
             return cls.ENGAGEMENT

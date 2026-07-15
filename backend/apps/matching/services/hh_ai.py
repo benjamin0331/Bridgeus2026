@@ -12,8 +12,6 @@ import random
 
 from asgiref.sync import sync_to_async
 
-from core.env import _env_bool
-
 logger = logging.getLogger(__name__)
 
 REPHRASE_FALLBACK = "你的發言可能帶有較強烈的情緒，建議修改後再發送。"
@@ -29,6 +27,13 @@ _REDIRECT_FALLBACKS = [
     "目前的討論似乎偏離了主題，可以試著回到核心議題的討論。",
     "這個方向有點遠離議題了，試著把焦點拉回來？",
 ]
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def hh_ai_assist_enabled() -> bool:

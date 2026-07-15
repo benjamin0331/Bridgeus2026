@@ -1,5 +1,5 @@
 """
-情緒偵測閾值校準腳本 — Take A Bridge H-H 對話模組
+情緒偵測閾值校準腳本 — BridgeUs H-H 對話模組
 
 【模組定位】
 本模組為「AI 改述建議」模組，屬於輔助介入，非強制攔截。
@@ -88,7 +88,7 @@ def is_intercepted(score: float, has_2p: bool, threshold: float) -> bool:
 
 def main():
     print("=" * 72)
-    print("Take A Bridge — 情緒偵測閾值校準報告")
+    print("BridgeUs — 情緒偵測閾值校準報告")
     print(f"模型 : lxyuan/distilbert-base-multilingual-cased-sentiments-student")
     print(f"規則 : 情緒分數 >= {THRESHOLD}  AND  含第二人稱（你／您／妳）")
     print(f"優先 : Recall（攔截攻擊）> Precision（避免誤觸）")

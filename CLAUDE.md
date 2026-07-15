@@ -1,4 +1,4 @@
-# CLAUDE.md — Take A Bridge (橋得攏) Project Context
+# CLAUDE.md — BridgeUs (橋得攏) Project Context
 
 ## 每次對話開始時的必要步驟
 
@@ -8,7 +8,7 @@
 
 ## Project Overview
 
-Take A Bridge (橋得攏) is an **heterogeneous-viewpoint dialogue platform** designed to combat echo chambers and social polarization. It matches users with opposing stances on public issues, facilitating structured depolarization dialogue through both human-human and human-AI agent interactions.
+BridgeUs (橋得攏) is an **heterogeneous-viewpoint dialogue platform** designed to combat echo chambers and social polarization. It matches users with opposing stances on public issues, facilitating structured depolarization dialogue through both human-human and human-AI agent interactions.
 
 核心假設：與具備高品質知識架構及無情緒干擾的 AI 對話，能達到與真人異質對話同等甚至更穩定的去極化效果。
 
@@ -71,8 +71,8 @@ This is an **NSTC (國科會) undergraduate research grant project** (115 年度
 ## Tech Stack
 
 ### Backend
-- **Language**: Python 3.12+
-- **Framework**: Django 6.0.4 + Django REST Framework
+- **Language**: Python 3.11+
+- **Framework**: Django 5.x + Django REST Framework
 - **WebSocket**: Django Channels (ASGI, with Redis as channel layer)
 - **Auth**: JWT (djangorestframework-simplejwt)
 
@@ -240,7 +240,7 @@ dist/
 ## Development Guidelines
 
 ### API Contract
-- 所有模組間溝通透過已定義的 API Spec（`docs/TakeABridge_API_Spec.md`）
+- 所有模組間溝通透過已定義的 API Spec（`docs/BridgeUs_API_Spec.md`）
 - 尚未完成的依賴模組使用 mock response 解耦
 - API 變更需先更新 spec，再實作
 
@@ -268,11 +268,11 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 ### File Structure (Target)
 ```
-take-a-bridge/
+bridgeus/
 ├── CLAUDE.md                  ← 你正在看的這個檔案
 ├── README.md
 ├── docs/
-│   └── TakeABridge_API_Spec.md   ← 模組間 API 合約
+│   └── BridgeUs_API_Spec.md   ← 模組間 API 合約
 ├── backend/
 │   ├── manage.py
 │   ├── config/                ← Django project settings

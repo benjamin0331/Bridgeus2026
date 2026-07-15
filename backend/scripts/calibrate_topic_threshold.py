@@ -1,5 +1,5 @@
 """
-離題偵測閾值校準腳本 — Take A Bridge H-H 對話模組
+離題偵測閾值校準腳本 — BridgeUs H-H 對話模組
 
 【模組定位】
 偵測使用者是否偏離議題，觸發時私下傳送「引導回主題」的 AI 建議。
@@ -115,7 +115,7 @@ WINDOW_SCENARIOS = [
 
 def main():
     print("=" * 72)
-    print("Take A Bridge — 離題偵測閾值校準報告")
+    print("BridgeUs — 離題偵測閾值校準報告")
     print(f"模型 : paraphrase-multilingual-MiniLM-L12-v2")
     print(f"機制 : cosine_similarity(mean_window_emb, anchor_emb) < {THRESHOLD} → 離題")
     print(f"錨點 : 「{TOPIC_ANCHOR}」")

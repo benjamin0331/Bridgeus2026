@@ -318,7 +318,7 @@ def test_generate_summary_api_error_returns_empty(monkeypatch):
 async def test_explicit_end_session_message(dummy, settings):
     settings.CHANNEL_LAYERS = TEST_CHANNEL_LAYERS
 
-    from take_a_bridge.asgi import application
+    from BridgeUs_Django.asgi import application
 
     alice = await create_user(username="end_explicit_a", password="x")
     bob = await create_user(username="end_explicit_b", password="x")
@@ -362,7 +362,7 @@ async def test_explicit_end_session_message(dummy, settings):
 async def test_session_ended_stats_contains_required_keys(settings):
     settings.CHANNEL_LAYERS = TEST_CHANNEL_LAYERS
 
-    from take_a_bridge.asgi import application
+    from BridgeUs_Django.asgi import application
 
     alice = await create_user(username="end_keys_a", password="x")
     bob = await create_user(username="end_keys_b", password="x")

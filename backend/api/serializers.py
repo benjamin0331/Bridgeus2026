@@ -1,36 +1,83 @@
 from rest_framework import serializers
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from core.env import ANONYMOUS_MESSAGE_SENDER_NAME
+from apps.summary.models import ViewpointNode
 
 from .dialogue_topics import get_dialogue_survey
 from .models import (
     AIConversation,
+    DiscomfortReport,
     MatchMessage,
     PlatformFeedback,
     PostDialogueResponse,
 )
+from .permissions import RESEARCHER_GROUP_NAME
+
+
+class BridgeUsTokenObtainPairSerializer(TokenObtainPairSerializer):
+    """在 JWT access token 的 payload 裡加 is_researcher claim。
+
+    前端 LoginPage 本來就會用 getAccessTokenPayload() 解析 access token 拿
+    user_id，這裡多加一個 claim 之後前端不用另外呼叫 API，解 token 就能知道
+    目前登入的是不是研究者帳號——用來讓 /viewpoint-review 之類的研究者專用
+    頁面知道要不要顯示連結（實際的存取控制仍然是後端 IsResearcher，這裡只是
+    給前端一個「要不要顯示」的依據，不是真正的權限判斷）。
+
+    用「研究者」Group 而不是 is_staff：is_staff 語意上是「能不能登入 Django
+    /admin/」，跟「有沒有研究者身分」是兩件不一定相同的事。
+    """
+
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
+        token["is_researcher"] = user.groups.filter(name=RESEARCHER_GROUP_NAME).exists()
+        return token
+
+
+class ViewpointNodeReviewSerializer(serializers.ModelSerializer):
+    """M6 觀點知識庫 Step 4 人工終審用的唯讀列表/詳情欄位。
+
+    dialogue_id 從 summary 帶出來，方便審核者對照原始對話（前端目前還沒有連到
+    原始對話內容的連結，只能先靠 dialogue_id 手動查）。
+    """
+
+    dialogue_id = serializers.CharField(source="summary.dialogue_id", read_only=True)
+    reviewed_by_username = serializers.CharField(
+        source="reviewed_by.username", read_only=True, default=None
+    )
+
+    class Meta:
+        model = ViewpointNode
+        fields = [
+            "id",
+            "dialogue_id",
+            "topic_id",
+            "dimension",
+            "stance_direction",
+            "user_input_text",
+            "ai_response_text",
+            "viewpoint_summary",
+            "composite_score",
+            "score_detail",
+            "citation_count",
+            "review_status",
+            "reviewed_by_username",
+            "reviewed_at",
+            "review_notes",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+
+class ViewpointNodeReviewDecisionSerializer(serializers.Serializer):
+    action = serializers.ChoiceField(choices=["approve", "reject"])
+    notes = serializers.CharField(required=False, allow_blank=True, default="")
 
 
 class AIConversationSerializer(serializers.ModelSerializer):
     class Meta:
         model = AIConversation
-        fields = [
-            "id",
-            "user",
-            "session_id",
-            "topic_id",
-            "user_prompt",
-            "ai_response",
-            "dialogue_phase",
-            "created_at",
-        ]
-        read_only_fields = [
-            "id",
-            "user",
-            "ai_response",
-            "dialogue_phase",
-            "created_at",
-        ]
+        fields = '__all__'
 
 
 class DialogueSessionCreateSerializer(serializers.Serializer):
@@ -183,7 +230,7 @@ class MatchMessageSerializer(serializers.ModelSerializer):
     sender_name = serializers.SerializerMethodField()
 
     def get_sender_name(self, obj):
-        return ANONYMOUS_MESSAGE_SENDER_NAME
+        return "匿名使用者"
 
     class Meta:
         model = MatchMessage
@@ -235,6 +282,9 @@ class MatchingRoomSemanticTreeTimelineSerializer(serializers.Serializer):
     asOfTimestamp = serializers.CharField(max_length=64)
     treeData = serializers.JSONField()
     anchors = serializers.JSONField()
+    # Nodes this specific message created ([{id, name, stance}]), so the slider
+    # can say "這則新增了哪些節點" instead of leaving the diff purely visual.
+    bornNodes = serializers.JSONField(required=False)
 
 
 class MatchingRoomSemanticTreeSerializer(serializers.Serializer):

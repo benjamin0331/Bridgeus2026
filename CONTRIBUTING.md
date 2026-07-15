@@ -1,4 +1,4 @@
-# 貢獻指南 — Take A Bridge (橋得攏)
+# 貢獻指南 — BridgeUs (橋得攏)
 
 所有組員在開始開發前請完整閱讀本文件。
 
@@ -122,7 +122,7 @@ git push origin feat/<your-name>
 ## Checklist
 - [ ] 本地測試通過
 - [ ] 無 hardcoded secrets（API key、密碼等）
-- [ ] API 變更已更新 docs/TakeABridge_API_Spec.md
+- [ ] API 變更已更新 docs/BridgeUs_API_Spec.md
 - [ ] 有需要的話已加註解
 ```
 
@@ -141,5 +141,5 @@ git push origin feat/<your-name>
 | 文件 | 說明 |
 |------|------|
 | [README.md](./README.md) | 專案簡介與環境設定 |
-| [docs/TakeABridge_API_Spec.md](./docs/TakeABridge_API_Spec.md) | 模組間 API 合約 |
+| [docs/BridgeUs_API_Spec.md](./docs/BridgeUs_API_Spec.md) | 模組間 API 合約 |
 | [CLAUDE.md](./CLAUDE.md) | 系統架構完整說明（AI assistant 用） |

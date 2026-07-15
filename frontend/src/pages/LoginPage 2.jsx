@@ -38,8 +38,8 @@ function LoginPage({ setUser }) {
       {/* 登入卡片主體 */}
       <div className="login-card">
         <div className="login-header">
-          <img src="/logo.png" alt="Take A Bridge Logo" className="login-logo" />
-          <h1>Take A Bridge</h1>
+          <img src="/logo.png" alt="BridgeUs Logo" className="login-logo" />
+          <h1>BridgeUs</h1>
           <p>請輸入您的帳號密碼</p>
         </div>
 

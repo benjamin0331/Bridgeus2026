@@ -70,6 +70,66 @@ function timelineMessagesFor(detail) {
   return detail.messages.filter((message) => message.role === 'user');
 }
 
+function formatJaccard(value) {
+  return Number.isFinite(value) ? value.toFixed(2) : '—';
+}
+
+/** 概念展開回顧。兩層：白話一句話 + 可展開的原始研究指標。
+ *  資料只含使用者自己那一側（後端已剝掉對方的 partner_side）。 */
+function CcndInsightsPanel({ insights, showRaw, onToggleRaw }) {
+  const { summary, novelty, similarity } = insights;
+  const firstAppearance = novelty?.first_appearance || [];
+  const newMicros = summary?.new_micros_per_segment || [];
+  // 第一段之後才首次出現的概念數 = 對話展開過程中「長出來」的部分
+  const laterNew = newMicros.slice(1).reduce((total, count) => total + count, 0);
+  const pairs = similarity?.pairs || [];
+
+  return (
+    <div className="history-insights">
+      <div className="history-insights-head">
+        <strong>你的概念展開回顧</strong>
+        <button type="button" className="history-insights-toggle" onClick={onToggleRaw}>
+          {showRaw ? '收起詳細指標' : '顯示詳細指標'}
+        </button>
+      </div>
+
+      <p className="history-insights-plain">
+        {`這場對話你談到 ${summary.final_macro_count}／${summary.macro_denominator} 個面向、`}
+        {`${summary.final_micro_count} 個具體概念。`}
+        {laterNew > 0
+          ? `其中 ${laterNew} 個是對話開始之後才第一次出現的，代表你的討論範圍隨對話逐步展開。`
+          : '你的概念大多在對話前段就已經提出。'}
+      </p>
+
+      {firstAppearance.length > 0 && (
+        <ol className="history-insights-timeline">
+          {firstAppearance.map((entry) => (
+            <li key={entry.key}>
+              <span className="history-insights-node">{entry.node_name}</span>
+              <span className="history-insights-meta">
+                {`${entry.anchor_name} · 第 ${entry.first_hit_ordinal} 則`}
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
+
+      {showRaw && (
+        <div className="history-insights-raw">
+          <div>{`分段新增（面向）：${(summary.new_macros_per_segment || []).join(' / ')}`}</div>
+          <div>{`分段新增（概念）：${newMicros.join(' / ')}`}</div>
+          {pairs.map((pair) => (
+            <div key={pair.pair}>
+              {`${pair.pair} Jaccard — 面向 ${formatJaccard(pair.macro?.jaccard)}、`}
+              {`概念 ${formatJaccard(pair.micro?.jaccard)}`}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function HistoryPage() {
   const [filter, setFilter] = useState('all');
   const [items, setItems] = useState([]);
@@ -85,6 +145,11 @@ function HistoryPage() {
   // 突然閃成空的（timelineIndex 還沒變，displayedTreeData 也還沒變）。
   const [previewIndex, setPreviewIndex] = useState(null);
   const [timelineTreeData, setTimelineTreeData] = useState(null);
+  // 這則訊息「新生」的節點（後端 bornNodes，依 sourceMessageId 判定）。
+  const [bornNodes, setBornNodes] = useState([]);
+  // 概念展開回顧：問卷（含 Part F）完成後才拿得到，只含自己那側。
+  const [insights, setInsights] = useState(null);
+  const [showRawMetrics, setShowRawMetrics] = useState(false);
   const [isTimelineLoading, setIsTimelineLoading] = useState(false);
   const [timelineError, setTimelineError] = useState('');
   const [analysisError, setAnalysisError] = useState('');
@@ -146,6 +211,9 @@ function HistoryPage() {
       setAnalysisError('');
       setTimelineIndex(null);
       setTimelineTreeData(null);
+      setBornNodes([]);
+      setInsights(null);
+      setShowRawMetrics(false);
       setTimelineError('');
       timelineRequestIdRef.current += 1;
       try {
@@ -171,6 +239,36 @@ function HistoryPage() {
       cancelled = true;
     };
   }, [selectedItem]);
+
+  // 概念展開回顧只在問卷（含 Part F）完成後才拿得到——後端同樣會擋，這裡是不去要。
+  useEffect(() => {
+    // 鎖住時不去要（切換對話時 loadDetail 已清掉舊的 insights）。
+    if (!detail?.timeline_unlocked) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const loadInsights = async () => {
+      try {
+        const response = await api.get(
+          `/api/history/conversations/${detail.kind}/${detail.id}/ccnd-insights/`,
+        );
+        if (!cancelled) {
+          setInsights(response.data);
+        }
+      } catch {
+        if (!cancelled) {
+          setInsights(null);
+        }
+      }
+    };
+
+    void loadInsights();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [detail]);
 
   const handleAnalyzeTree = async () => {
     if (!detail || isAnalyzing) {
@@ -243,6 +341,8 @@ function HistoryPage() {
     // 拖到最新一格不用另外呼叫 timeline API——displayedTreeData 在 isViewingLatest
     // 為真時本來就是直接讀最新的 treePayload，timelineIndex 一更新畫面就會自動跟上。
     if (index === timelineMessages.length - 1) {
+      // 回到即時狀態沒有「這則新增了什麼」可言。
+      setBornNodes([]);
       return;
     }
 
@@ -264,10 +364,12 @@ function HistoryPage() {
         return;
       }
       setTimelineTreeData(response.data?.treeData || null);
+      setBornNodes(response.data?.bornNodes || []);
     } catch (requestError) {
       if (requestId !== timelineRequestIdRef.current) {
         return;
       }
+      setBornNodes([]);
       // 保留畫面上一個成功顯示的樹狀圖，不要清空，只提示這個時間點暫時看不到。
       setTimelineError(
         requestError?.response?.status === 404
@@ -388,7 +490,17 @@ function HistoryPage() {
           isAnalyzing={isAnalyzing}
           analysisStatus={treePayload?.analysisStatus || 'ready'}
         />
-        {hasAnalyzedTree(treePayload) && timelineMessages.length > 1 && (
+        {/* 時間軸在對話後問卷（含 Part F）完成前是鎖住的——受試者若能先回顧自己的
+            CCND，就會在回答 C3／F4 這些 CCND 自陳題前看到被測量的東西。後端也會擋，
+            這裡只是不顯示入口。 */}
+        {detail && !detail.timeline_unlocked && hasAnalyzedTree(treePayload) && (
+          <div className="history-timeline-bar history-timeline-locked">
+            <span className="history-timeline-label">
+              完成對話後問卷（含平台體驗回饋）後，就能在這裡逐則回顧想法脈絡圖的變化。
+            </span>
+          </div>
+        )}
+        {detail?.timeline_unlocked && hasAnalyzedTree(treePayload) && timelineMessages.length > 1 && (
           <div className="history-timeline-bar">
             <div className="history-timeline-row">
               <span className="history-timeline-label">
@@ -417,9 +529,21 @@ function HistoryPage() {
               onKeyUp={handleTimelineCommit}
               disabled={isTimelineLoading}
             />
+            {!isLabelAtLatest && !isTimelineLoading && (
+              <span className="history-timeline-born">
+                {bornNodes.length
+                  ? `這則新增了 ${bornNodes.length} 個節點：${bornNodes.map((node) => node.name).join('、')}`
+                  : '這則沒有新增節點（併入既有節點或沒有新的主張）。'}
+              </span>
+            )}
             {timelineError && <span className="history-timeline-error">{timelineError}</span>}
           </div>
         )}
+        {detail?.timeline_unlocked && insights && <CcndInsightsPanel
+          insights={insights}
+          showRaw={showRawMetrics}
+          onToggleRaw={() => setShowRawMetrics((shown) => !shown)}
+        />}
       </section>
     </div>
   );

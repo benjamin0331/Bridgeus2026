@@ -3,7 +3,6 @@
 stance-update prompt rules from the CCND 對比測試 design (2026-06-29,
 section 10) in /Users/light/project/CCND測試/.
 """
-from api.dialogue_topics import get_topic_anchors
 from apps.matching.services.semantic_tree import (
     apply_analysis_items_to_tree,
     build_openai_request,
@@ -11,11 +10,9 @@ from apps.matching.services.semantic_tree import (
     list_existing_node_names,
 )
 
-NUCLEAR_ANCHORS = get_topic_anchors(102)
-
 
 def _tree_with_stance_node(claim_text: str, stance: str) -> dict:
-    tree = create_initial_tree("核電", NUCLEAR_ANCHORS)
+    tree = create_initial_tree("核電")
     anchor = next(a for a in tree["children"] if a["id"] == "anchor_waste")
     anchor["children"].append({
         "id": "agent_1",
@@ -37,7 +34,7 @@ def test_list_existing_node_names_includes_claim_and_latest_stance():
 
 
 def test_list_existing_node_names_falls_back_to_node_stance_without_messages():
-    tree = create_initial_tree("核電", NUCLEAR_ANCHORS)
+    tree = create_initial_tree("核電")
     anchor = next(a for a in tree["children"] if a["id"] == "anchor_waste")
     anchor["children"].append({
         "id": "agent_1",
@@ -52,7 +49,7 @@ def test_list_existing_node_names_falls_back_to_node_stance_without_messages():
 
 
 def test_list_existing_node_names_without_claim_shows_bare_name():
-    tree = create_initial_tree("核電", NUCLEAR_ANCHORS)
+    tree = create_initial_tree("核電")
     anchor = next(a for a in tree["children"] if a["id"] == "anchor_waste")
     anchor["children"].append({"id": "cat_1", "name": "處置方案", "type": "category", "children": []})
     listing = list_existing_node_names(tree)
@@ -60,7 +57,7 @@ def test_list_existing_node_names_without_claim_shows_bare_name():
 
 
 def test_list_existing_node_names_joins_multiple_siblings_under_one_anchor():
-    tree = create_initial_tree("核電", NUCLEAR_ANCHORS)
+    tree = create_initial_tree("核電")
     anchor = next(a for a in tree["children"] if a["id"] == "anchor_waste")
     anchor["children"].extend([
         {
@@ -88,7 +85,7 @@ def test_list_existing_node_names_joins_multiple_siblings_under_one_anchor():
 
 
 def test_list_existing_node_names_treats_whitespace_only_claim_as_bare_name():
-    tree = create_initial_tree("核電", NUCLEAR_ANCHORS)
+    tree = create_initial_tree("核電")
     anchor = next(a for a in tree["children"] if a["id"] == "anchor_waste")
     anchor["children"].append({
         "id": "agent_1",
@@ -104,23 +101,15 @@ def test_list_existing_node_names_treats_whitespace_only_claim_as_bare_name():
 
 
 def test_build_openai_request_prompt_includes_concrete_naming_rule():
-    tree = create_initial_tree("核電", NUCLEAR_ANCHORS)
-    request = build_openai_request(
-        text="核電比較安全",
-        tree=tree,
-        anchors=NUCLEAR_ANCHORS,
-    )
+    tree = create_initial_tree("核電")
+    request = build_openai_request(text="核電比較安全", tree=tree)
     prompt = request["input"][0]["content"]
     assert "具體名詞" in prompt
 
 
 def test_build_openai_request_prompt_includes_stance_axis_merge_rule():
-    tree = create_initial_tree("核電", NUCLEAR_ANCHORS)
-    request = build_openai_request(
-        text="核電比較安全",
-        tree=tree,
-        anchors=NUCLEAR_ANCHORS,
-    )
+    tree = create_initial_tree("核電")
+    request = build_openai_request(text="核電比較安全", tree=tree)
     prompt = request["input"][0]["content"]
     assert "立場更新" in prompt
     assert ("同一個討論維度" in prompt) or ("同一議題維度" in prompt)
@@ -164,7 +153,7 @@ def test_apply_analysis_items_merges_stance_update_into_one_node_history():
 
 
 def test_list_existing_node_names_shows_path_prefix_for_nested_nodes():
-    tree = create_initial_tree("核電", NUCLEAR_ANCHORS)
+    tree = create_initial_tree("核電")
     anchor = next(a for a in tree["children"] if a["id"] == "anchor_waste")
     category = {"id": "cat_1", "name": "處置方案", "type": "category", "children": []}
     category["children"].append({
@@ -182,7 +171,7 @@ def test_list_existing_node_names_shows_path_prefix_for_nested_nodes():
 
 
 def test_list_existing_node_names_distinguishes_same_name_under_different_paths():
-    tree = create_initial_tree("核電", NUCLEAR_ANCHORS)
+    tree = create_initial_tree("核電")
     anchor = next(a for a in tree["children"] if a["id"] == "anchor_waste")
     anchor["children"].extend([
         {

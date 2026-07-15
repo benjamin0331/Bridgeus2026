@@ -182,7 +182,7 @@ async def test_emotion_overflow_not_relayed_to_bob(settings, monkeypatch):
     settings.CHANNEL_LAYERS = TEST_CHANNEL_LAYERS
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
-    from take_a_bridge.asgi import application
+    from BridgeUs_Django.asgi import application
 
     alice = await create_user(username="emo_relay_a", password="x")
     bob = await create_user(username="emo_relay_b", password="x")
@@ -223,7 +223,7 @@ async def test_emotion_overflow_creates_aisuggestion_record(settings, monkeypatc
     settings.CHANNEL_LAYERS = TEST_CHANNEL_LAYERS
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
-    from take_a_bridge.asgi import application
+    from BridgeUs_Django.asgi import application
 
     alice = await create_user(username="emo_db_a", password="x")
     bob = await create_user(username="emo_db_b", password="x")
@@ -277,7 +277,7 @@ async def _setup_pending_suggestion(application, conv, alice, bob, monkeypatch):
 async def test_accept_suggestion_relays_ai_content(settings, monkeypatch):
     settings.CHANNEL_LAYERS = TEST_CHANNEL_LAYERS
 
-    from take_a_bridge.asgi import application
+    from BridgeUs_Django.asgi import application
 
     alice = await create_user(username="acc_a", password="x")
     bob = await create_user(username="acc_b", password="x")
@@ -312,7 +312,7 @@ async def test_accept_suggestion_relays_ai_content(settings, monkeypatch):
 async def test_modify_suggestion_relays_modified_content(settings, monkeypatch):
     settings.CHANNEL_LAYERS = TEST_CHANNEL_LAYERS
 
-    from take_a_bridge.asgi import application
+    from BridgeUs_Django.asgi import application
 
     alice = await create_user(username="mod_a", password="x")
     bob = await create_user(username="mod_b", password="x")
@@ -345,7 +345,7 @@ async def test_modify_suggestion_relays_modified_content(settings, monkeypatch):
 async def test_ignore_suggestion_relays_original_content(settings, monkeypatch):
     settings.CHANNEL_LAYERS = TEST_CHANNEL_LAYERS
 
-    from take_a_bridge.asgi import application
+    from BridgeUs_Django.asgi import application
 
     alice = await create_user(username="ign_a", password="x")
     bob = await create_user(username="ign_b", password="x")
@@ -382,7 +382,7 @@ async def test_normal_message_relayed_without_suggestion(settings):
     """Low-emotion message should relay directly without ai_suggestion."""
     settings.CHANNEL_LAYERS = TEST_CHANNEL_LAYERS
 
-    from take_a_bridge.asgi import application
+    from BridgeUs_Django.asgi import application
 
     alice = await create_user(username="norm_a", password="x")
     bob = await create_user(username="norm_b", password="x")

@@ -1,37 +1,34 @@
-"""
-ORM 版去重檢查（Step 6）。
+"""M6 觀點知識庫 — 觀點去重檢查。
 
-移植自獨立跑的 觀點知識庫/去重檢查.py prototype：原本用
-`psycopg.connect()` 手寫 `SELECT ... ORDER BY embedding <=> %s::vector LIMIT 5`，
-現在改用 pgvector 的 Django ORM lookup（CosineDistance），查詢邏輯不變
-（同一 topic_id + dimension 下最近 5 筆，相似度門檻 0.92）。
+沿用 chat.services.embedding 既有的 cosine_similarity（不重寫一份 numpy 版本），
+候選集用 pgvector 的 cosine-distance 排序在資料庫端先篩出最近的幾筆，
+再用同一套相似度函式在 Python 端做精確判斷，門檻與其他語意比對邏輯一致。
 """
 
-from django.db.models import F
 from pgvector.django import CosineDistance
+from django.db.models import F
 
 from apps.summary.models import ViewpointNode
+from chat.services.embedding import cosine_similarity
 
 DUPLICATE_SIMILARITY_THRESHOLD = 0.92
-NEAREST_NEIGHBOURS = 5
+CANDIDATE_POOL_SIZE = 5
 
 
 def is_duplicate(
-    embedding: list[float],
+    new_embedding: list[float],
     topic_id: int,
     dimension: str,
     threshold: float = DUPLICATE_SIMILARITY_THRESHOLD,
 ) -> tuple[bool, int | None]:
-    """回傳 (is_dup, dup_id)：是否與同 topic/dimension 下既有觀點重複。"""
+    """回傳 (is_dup, 既有重複節點的 id | None)。"""
     candidates = (
         ViewpointNode.objects
         .filter(topic_id=topic_id, dimension=dimension)
-        .annotate(distance=CosineDistance("embedding", embedding))
-        .order_by("distance")[:NEAREST_NEIGHBOURS]
+        .order_by(CosineDistance("embedding", new_embedding))[:CANDIDATE_POOL_SIZE]
     )
     for node in candidates:
-        similarity = 1 - node.distance
-        if similarity > threshold:
+        if cosine_similarity(new_embedding, node.embedding) > threshold:
             return True, node.id
     return False, None
 

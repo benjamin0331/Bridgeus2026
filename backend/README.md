@@ -1,6 +1,6 @@
-# Take A Bridge Backend
+# BridgeUs Backend
 
-Django backend for Take A Bridge. It provides JWT auth, backend-managed topic/survey configuration, AI dialogue sessions, anonymous matching, WebSocket chat, persistence, and the RAG dialogue agent.
+Django backend for BridgeUs. It provides JWT auth, backend-managed topic/survey configuration, AI dialogue sessions, anonymous matching, WebSocket chat, persistence, and the RAG dialogue agent.
 
 ## Location
 
@@ -43,7 +43,7 @@ Run ASGI server on the expected backend port:
 
 ```bash
 uv run python manage.py warm_nlp_models
-uv run uvicorn take_a_bridge.asgi:application --host 0.0.0.0 --port 8005
+uv run uvicorn BridgeUs_Django.asgi:application --host 0.0.0.0 --port 8005
 ```
 
 HTTP-only fallback:
@@ -100,15 +100,9 @@ Enable pgvector in the database:
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
-SQLite is for quick local smoke tests only. `VectorField` values can be stored
-there by the local test setup, but SQLite does not provide pgvector SQL
-operators or indexes. Current matching similarity is calculated in Python, so
-SQLite works for those smoke paths; use PostgreSQL + pgvector for any feature
-that depends on database-side vector search or realistic matching persistence.
-
 ## Main Files
 
-- Settings: `take_a_bridge/settings.py`
+- Settings: `BridgeUs_Django/settings.py`
 - HTTP routes: `api/urls.py`
 - API views and stance scoring: `api/views.py`
 - WebSocket consumers: `api/consumers.py`

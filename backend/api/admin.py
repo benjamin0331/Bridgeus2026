@@ -2,6 +2,7 @@ from django.contrib import admin
 
 from .models import (
     AIConversation,
+    CCNDTimelineUnlock,
     DialogueMatch,
     MatchAISuggestion,
     MatchMessage,
@@ -109,3 +110,18 @@ class MatchAISuggestionAdmin(admin.ModelAdmin):
 class MatchStanceDriftAdmin(admin.ModelAdmin):
     list_display = ("id", "match", "user", "drift_value", "measured_at")
     search_fields = ("match__room_id", "user__username")
+
+
+@admin.register(CCNDTimelineUnlock)
+class CCNDTimelineUnlockAdmin(admin.ModelAdmin):
+    """Researcher escape hatch: grant a participant CCND-timeline access before
+    they have finished the M6 questionnaire flow. Adding a row here unlocks it."""
+
+    list_display = ("id", "user", "kind", "conversation_id", "granted_by", "created_at")
+    list_filter = ("kind",)
+    search_fields = ("user__username", "conversation_id", "reason")
+
+    def save_model(self, request, obj, form, change):
+        if obj.granted_by_id is None:
+            obj.granted_by = request.user
+        super().save_model(request, obj, form, change)

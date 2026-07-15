@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.contrib.auth.models import User
 from django.db import models
 from django.db.models import F, Q
 from pgvector.django import VectorField
@@ -559,4 +560,71 @@ class PlatformFeedback(models.Model):
         return (
             f"PlatformFeedback response={self.response_id} "
             f"mean_ux={self.mean_ux()} nps={self.nps_score}"
+        )
+
+
+class Issue(models.Model):
+    author = models.ForeignKey(User, on_delete=models.CASCADE, related_name="issues")
+    title = models.CharField(max_length=255)
+    body = models.TextField(blank=True)
+    stance = models.CharField(max_length=20, null=True, blank=True)
+    emotion = models.FloatField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Issue({self.id}) by user={self.author_id}: {self.title[:40]}"
+
+
+class CCNDTimelineUnlock(models.Model):
+    """Researcher-issued override that unlocks one participant's CCND timeline
+    for one conversation ahead of the normal gate.
+
+    The timeline is gated until the participant finishes the whole M6 flow
+    (Part F), because replaying their own CCND before answering the CCND
+    self-report items — C3 in the post-dialogue questionnaire and F4 (ux_ccnd)
+    in Part F — would contaminate those answers. A participant who abandons the
+    questionnaire would otherwise be locked out of their own history forever;
+    this model is the manual escape hatch (the other one is the 12h auto-unlock,
+    which needs no stored state).
+    """
+
+    class Kind(models.TextChoices):
+        AI = "ai", "H-AI"
+        MATCH = "match", "H-H"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="ccnd_timeline_unlocks",
+        help_text="被解鎖的受試者",
+    )
+    kind = models.CharField(max_length=8, choices=Kind.choices)
+    # session_id (kind=ai) or room_id (kind=match)
+    conversation_id = models.CharField(max_length=64, db_index=True)
+    granted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="ccnd_timeline_unlocks_granted",
+        help_text="核准解鎖的研究者",
+    )
+    reason = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "kind", "conversation_id"],
+                name="uniq_ccnd_timeline_unlock",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"CCNDTimelineUnlock user={self.user_id} "
+            f"{self.kind}={self.conversation_id}"
         )

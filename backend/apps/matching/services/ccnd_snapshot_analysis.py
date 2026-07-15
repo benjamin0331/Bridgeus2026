@@ -59,9 +59,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-from api.dialogue_topics import get_topic_anchors
-
 from .semantic_tree import (
+    FIXED_ANCHORS,
     OWNER_AI_USER,
     OWNER_USER_A,
     OWNER_USER_B,
@@ -69,10 +68,9 @@ from .semantic_tree import (
 
 # The macro taxonomy is closed and fixed at 6. A 7th ("其他") must never appear
 # on the tree; if one does we flag it rather than silently widen the denominator.
-NUCLEAR_ANCHORS = get_topic_anchors(102)
-FIXED_ANCHOR_IDS: list[str] = [anchor["id"] for anchor in NUCLEAR_ANCHORS]
-FIXED_ANCHOR_NAME_BY_ID: dict[str, str] = {a["id"]: a["name"] for a in NUCLEAR_ANCHORS}
-MACRO_DENOMINATOR: int = len(NUCLEAR_ANCHORS)  # == 6
+FIXED_ANCHOR_IDS: list[str] = [anchor["id"] for anchor in FIXED_ANCHORS]
+FIXED_ANCHOR_NAME_BY_ID: dict[str, str] = {a["id"]: a["name"] for a in FIXED_ANCHORS}
+MACRO_DENOMINATOR: int = len(FIXED_ANCHORS)  # == 6
 
 DEFAULT_N_SEGMENTS = 3
 

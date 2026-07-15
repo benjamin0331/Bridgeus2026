@@ -81,37 +81,6 @@ TOPIC_CONFIGS = {
     },
 }
 
-
-def get_topic_config(topic_id: int | None) -> dict:
-    config = TOPIC_CONFIGS.get(topic_id)
-    if not config:
-        raise ValueError(f"Unknown topic config for topic_id={topic_id!r}.")
-    return config
-
-
-def get_topic_title(topic_id: int | None) -> str:
-    title = get_topic_config(topic_id).get("title")
-    if not title:
-        raise ValueError(f"Topic {topic_id!r} is missing title.")
-    return title
-
-
-def get_topic_anchors(topic_id: int | None) -> list[dict[str, str]]:
-    anchors = get_topic_config(topic_id).get("anchors")
-    if not anchors:
-        raise ValueError(f"Topic {topic_id!r} is missing semantic-tree anchors.")
-    return anchors
-
-
-def get_topic_anchor_descriptions(topic_id: int | None) -> dict[str, str]:
-    descriptions = get_topic_config(topic_id).get("anchor_descriptions")
-    if not descriptions:
-        raise ValueError(
-            f"Topic {topic_id!r} is missing semantic-tree anchor descriptions."
-        )
-    return descriptions
-
-
 SURVEY_CONFIGS = {
     102: {
         "topic_id": 102,

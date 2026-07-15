@@ -9,6 +9,7 @@ from asgiref.sync import sync_to_async
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.db.models import Q
 from django.utils import timezone
 
@@ -28,15 +29,12 @@ from apps.matching.services.hh_analysis import (
     aget_topic_anchor_embedding,
     build_stalemate_prompt,
 )
-from apps.matching.services.message_pipeline import (
-    BLOCKED_MESSAGE,
-    finalize_match_message,
-)
 from chat.services.embedding import aget_embedding
 from chat.services.emotion import aget_analyze_emotion
 from chat.services.filter import check_content_sync
 
 User = get_user_model()
+SESSION_TTL_SECONDS = 60 * 60 * 12
 DEFAULT_AI_ASSIST_TIMEOUT_SECONDS = 2.0
 logger = logging.getLogger(__name__)
 
@@ -61,6 +59,10 @@ def ai_assist_timeout_seconds() -> float:
     except (TypeError, ValueError):
         return DEFAULT_AI_ASSIST_TIMEOUT_SECONDS
     return max(0.0, timeout)
+
+
+def _session_cache_key(session_id: str) -> str:
+    return f"dialogue_session:{session_id}"
 
 
 def _query_value(scope, key: str) -> str | None:
@@ -106,17 +108,10 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
         except json.JSONDecodeError:
             return
 
-        if not isinstance(data, dict):
-            return
-
         if data.get("type") != "user_message":
             return
 
-        content = data.get("content")
-        if not isinstance(content, str):
-            return
-
-        user_message = content.strip()
+        user_message = data.get("content", "").strip()
         if not user_message:
             return
 
@@ -124,12 +119,16 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
 
     async def _stream_response(self, user_message: str):
         from apps.matching.services.ai_agent import DialoguePhase, DialogueSession
-        from api.services.dialogue_session import get_dialogue_agent
+        from api.views import get_dialogue_agent
 
-        session_record = await self._get_session_record()
+        cache_key = _session_cache_key(self.session_id)
+        session_record = await sync_to_async(cache.get)(cache_key)
+
         if not session_record:
-            await self._send_error("找不到對話 session，請重新建立對話。")
-            return
+            session_record = await self._get_session_record()
+            if not session_record:
+                await self._send_error("找不到對話 session，請重新建立對話。")
+                return
 
         session = DialogueSession.from_dict(session_record["session"])
         session.add_user_message(user_message)
@@ -146,12 +145,6 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
             user_message=user_message,
             dialogue_phase=session.dialogue_phase.value,
         )
-        if saved_turn is None:
-            # Single source of truth is AIConversation turns; a turn that
-            # never reached the DB doesn't exist, so don't let the user keep
-            # talking into a conversation the system can't remember.
-            await self._send_error("目前無法記錄您的訊息，請重試。")
-            return
 
         agent = get_dialogue_agent(session_record["collection_name"])
         full_response = ""
@@ -173,29 +166,28 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
                 self.session_id,
                 session_record.get("collection_name"),
             )
-            await self._invalidate_session_cache()
             await self._send_error("AI 回應中斷，請重試。")
             return
 
         session.add_agent_message(full_response)
-        # Drift must be computed on the read-through metadata (still holding
-        # the previous stance_drift) before it's overwritten below — otherwise
-        # previous_value is always None and direction is always "stable".
-        stance_drift = await self._update_session_stance_drift(session_record)
         session_record["session"] = session.to_dict()
-        session_record["session"]["stance_drift"] = stance_drift
         await self._update_ai_conversation(
             saved_turn=saved_turn,
             ai_response=full_response,
             dialogue_phase=session.dialogue_phase.value,
         )
-        await self._update_session_metadata(session, stance_drift)
-        await self._invalidate_session_cache()
+        stance_drift = await self._update_session_stance_drift(session_record)
+        await sync_to_async(cache.set)(
+            cache_key,
+            session_record,
+            timeout=SESSION_TTL_SECONDS,
+        )
+        await self._persist_session_record(session_record)
 
         await self.send(json.dumps({"type": "agent_stream_end", "stance_drift": stance_drift}))
 
     async def _get_session_record(self):
-        from api.services.dialogue_session import _restore_dialogue_session_record_for_user
+        from api.views import _restore_dialogue_session_record_for_user
 
         session_record, _ = await sync_to_async(
             _restore_dialogue_session_record_for_user
@@ -216,26 +208,17 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
             logger.exception("AI stance drift failed for session %s.", self.session_id)
             return (session_record.get("session") or {}).get("stance_drift")
 
-    async def _update_session_metadata(self, session, stance_drift: dict | None):
-        from api.services.dialogue_session import session_metadata, update_session_metadata
+    async def _persist_session_record(self, session_record: dict):
+        from api.views import _persist_dialogue_session_record
 
         try:
-            await sync_to_async(update_session_metadata)(
-                session_id=self.session_id,
-                user_id=self.user.id,
-                metadata=session_metadata(session, stance_drift=stance_drift),
-            )
+            await sync_to_async(_persist_dialogue_session_record)(session_record)
         except Exception:
             logger.exception(
-                "Failed to persist AI session metadata session=%s user=%s.",
+                "Failed to persist AI session record session=%s user=%s.",
                 self.session_id,
                 self.user.id,
             )
-
-    async def _invalidate_session_cache(self):
-        from api.services.dialogue_session import invalidate_dialogue_session_cache
-
-        await sync_to_async(invalidate_dialogue_session_cache)(self.session_id)
 
     async def _create_ai_conversation(
         self,
@@ -357,9 +340,6 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
         except json.JSONDecodeError:
             return
 
-        if not isinstance(data, dict):
-            return
-
         message_type = data.get("type")
         if message_type in {
             "accept_suggestion",
@@ -372,11 +352,7 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
         if message_type not in {None, "match_message", "user_message"}:
             return
 
-        content = data.get("content")
-        if not isinstance(content, str):
-            return
-
-        content = content.strip()
+        content = data.get("content", "").strip()
         if not content:
             return
 
@@ -402,7 +378,7 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
             self.blocked_count += 1
             await self._send_system_prompt(
                 category="content_blocked",
-                message=BLOCKED_MESSAGE,
+                message="這則訊息包含可能冒犯對方的用語，請修改後重新發送。",
             )
             return
 
@@ -604,11 +580,14 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
         )
 
     async def _relay_and_persist(self, content: str, *, emotion_score=None):
-        message = await database_sync_to_async(finalize_match_message)(
-            match=self.match,
-            sender=self.user,
-            content=content,
-            emotion_score=emotion_score,
+        message = await self._create_message(content, emotion_score=emotion_score)
+        payload = self._message_payload(message)
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                "type": "match.message",
+                "message": payload,
+            },
         )
         if hh_ai_assist_enabled():
             asyncio.create_task(
@@ -796,6 +775,16 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
                 self.user.id,
             )
 
+    async def _create_message(self, content: str, *, emotion_score=None):
+        from api.models import MatchMessage
+
+        return await MatchMessage.objects.acreate(
+            match_id=self.match.id,
+            sender=self.user,
+            content=content,
+            emotion_score=emotion_score,
+        )
+
     async def _get_user_suggestion(self, suggestion_id):
         from api.models import MatchAISuggestion
 
@@ -843,3 +832,13 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
     def _suggestion_response_time_ms(suggestion) -> int:
         return int((timezone.now() - suggestion.created_at).total_seconds() * 1000)
 
+    def _message_payload(self, message) -> dict:
+        return {
+            "id": message.id,
+            "match_id": self.match.id,
+            "room_id": self.room_id,
+            "sender_id": self.user.id,
+            "sender_name": "匿名使用者",
+            "content": message.content,
+            "created_at": message.created_at.isoformat(),
+        }

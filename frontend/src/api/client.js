@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-export const AUTH_LOGOUT_EVENT = 'take_a_bridge:auth-logout';
+export const AUTH_LOGOUT_EVENT = 'bridgeus:auth-logout';
 
 function decodeJwtPayload(token) {
   try {
@@ -20,7 +20,7 @@ function decodeJwtPayload(token) {
 export function clearAuthStorage() {
   localStorage.removeItem('access');
   localStorage.removeItem('refresh');
-  localStorage.removeItem('take_a_bridge_user');
+  localStorage.removeItem('bridgeus_user');
 }
 
 export function getAccessTokenPayload() {

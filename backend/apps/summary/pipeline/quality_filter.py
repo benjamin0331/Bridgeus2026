@@ -1,5 +1,4 @@
-"""
-品質篩選模組：Step 1 → Step 2 → Step 3
+"""M6 觀點知識庫 — 品質篩選管線：Step 1 → Step 2 → Step 3
 
 Step 1：整場對話品質篩選（passes_quality_filter）
 Step 2：擷取有價值的發言 + 對方回應配對（extract_valuable_pairs）
@@ -11,30 +10,39 @@ Step 3：加權評分排序（score_and_rank）
 - Step 1 的 messages: list[dict]，每筆含 content（role/side 皆可，不影響篩選）
 - Step 2/3 的 messages 每筆額外含 side / ccnd_semantic_dist / ccnd_stance_shift / message_id
   - side："a" | "b"，對應 DialogueSummary.side_a_stance / side_b_stance
-  - ccnd_semantic_dist / ccnd_stance_shift 目前全系統尚無產生來源（M4/M5 未輸出逐則
-    scalar 值），呼叫端要自行確保這兩個欄位已算好才餵進 Step 2/3。
-
-移植自原本獨立跑的 觀點知識庫/品質篩選.py prototype，邏輯不變，純函式、不碰資料庫。
+- ccnd_semantic_dist（論述移動 / drift）請用
+  apps.matching.services.hh_analysis.get_message_drift_value(match_id=, user_id=, as_of=該則訊息的 created_at)
+  取得——讀取的是 api/consumers.py 每則發言後即時寫入的 MatchStanceDrift 記錄。
+- ccnd_stance_shift（立場偏移量，用「CCND 點亮節點數」衡量：點亮節點越多代表
+  這則發言帶出的觀點推進度越大，誰的亮點多選誰）請用
+  100 / 36 * apps.matching.services.semantic_tree.get_lit_node_count(
+      match, owner_key=, source_message_id=該則訊息 id
+  )
+  取得（36 為假設的滿分點亮節點數，可視實際資料調整；get_lit_node_count 回傳的
+  是累積不重複點亮的 micro node 數）。
 """
 
 import jieba
 from typing import Optional
 
+from chat.services._blacklist import BLACKLIST
+
 # ──────────────────────────────────────────────
 # 共用設定
 # ──────────────────────────────────────────────
-
-# 攻擊性詞典（Step 1 / Step 2 共用）
-ATTACK_WORDS = {"幹", "白痴", "智障", "廢物", "去死", "賤人", "混蛋"}
 
 
 def _count_attack_hits(text: str) -> int:
     """子字串比對攻擊詞出現次數，Step 1 / Step 2 共用同一種比對方式。
 
+    詞典跟 M4 對話室即時攔截（chat.services.filter）共用同一份
+    chat.services._blacklist.BLACKLIST，不再各自維護一份，避免 M6 品質篩選
+    對攻擊性內容的偵測比 M4 正式對話室寬鬆。
+
     不用 jieba 斷詞比對，因為攻擊詞不一定會被斷成獨立 token，
     子字串比對才能確保兩步驟的判定邏輯一致。
     """
-    return sum(text.count(w) for w in ATTACK_WORDS)
+    return sum(text.count(w) for w in BLACKLIST)
 
 # ──────────────────────────────────────────────
 # Step 1：整場對話品質篩選

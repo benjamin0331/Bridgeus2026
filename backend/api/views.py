@@ -1,89 +1,605 @@
 import logging
+import os
 import uuid as _uuid_mod
+from functools import lru_cache
 from uuid import uuid4
 
 from django.contrib.auth.models import User
+from django.core.cache import cache
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTStatelessUserAuthentication
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView
+
+from apps.matching.services.semantic import build_q9_embedding
+from apps.summary.models import ViewpointNode
+
+from .permissions import IsResearcher
 
 from .models import (
     AIConversation,
     DialogueMatch,
     DialogueSessionRecord,
     DiscomfortReport,
+    Issue,
+    MatchStanceDrift,
     PlatformFeedback,
     PostDialogueResponse,
+    UserStanceProfile,
 )
 from .dialogue_topics import (
+    TOPIC_CONFIGS,
     get_dialogue_survey,
     get_dialogue_topics,
 )
+from .timeline_access import LOCKED_DETAIL, timeline_unlock_state
 from .serializers import (
     AIConversationSerializer,
     DialogueReplySerializer,
     DialogueSurveySerializer,
     DialogueTopicSerializer,
     DialogueSessionCreateSerializer,
+    MatchMessageSerializer,
     MatchingJoinSerializer,
     MatchingRoomMessageCreateSerializer,
+    MatchingRoomMessagesSerializer,
     MatchingRoomSemanticTreeSerializer,
     MatchingRoomSemanticTreeTimelineSerializer,
+    MatchingStateSerializer,
     MatchingTopicSerializer,
     PlatformFeedbackSerializer,
     PlatformFeedbackOutputSerializer,
     PostDialogueResponseConsentSerializer,
     PostDialogueResponseOutputSerializer,
     PostDialogueResponseSerializer,
-)
-from .throttles import (
-    DialogueReplyRateThrottle,
-    DialogueSessionSemanticTreeAnalyzeRateThrottle,
-    GuestLoginRateThrottle,
-    HistoryConversationSemanticTreeAnalyzeRateThrottle,
-    MatchingRoomSemanticTreeAnalyzeRateThrottle,
-)
-from .services.dialogue_session import (
-    _dialogue_session_cache_payload_from_record,
-    _dialogue_session_response_payload,
-    _get_dialogue_runtime,
-    _restore_dialogue_session_record_for_user,
-    _update_ai_session_stance_drift,
-    _build_topic_config,
-    create_dialogue_session_record,
-    get_dialogue_agent,
-    invalidate_dialogue_session_cache,
-    session_metadata,
-    update_session_metadata,
-)
-from .services.history import (
-    _get_history_ai_record_for_user,
-    _history_ai_detail,
-    _history_ai_summary,
-    _history_ai_summary_queryset,
-    _history_match_detail,
-    _history_match_summary,
-    _history_match_summary_queryset,
-    _semantic_tree_root_name,
-    _semantic_tree_root_name_for_topic_id,
-)
-from .services.room_state import (
-    _build_matching_state_payload,
-    _build_room_messages_payload,
-    _get_room_match_for_user,
-    _touch_room_match_for_user_activity,
-)
-from .services.stance_scoring import (
-    _compute_user_stance_score,
-    _resolve_open_answers,
-    _resolve_stance_category,
+    BridgeUsTokenObtainPairSerializer,
+    ViewpointNodeReviewDecisionSerializer,
+    ViewpointNodeReviewSerializer,
 )
 
-
+SESSION_TTL_SECONDS = 60 * 60 * 12
 logger = logging.getLogger(__name__)
+DEFAULT_DIALOGUE_COLLECTION = os.getenv(
+    "DEFAULT_DIALOGUE_COLLECTION",
+    "general_knowledge",
+)
+ANONYMOUS_MATCH_USER_NAME = "匿名對話者"
+
+
+class BridgeUsTokenObtainPairView(TokenObtainPairView):
+    """跟 SimpleJWT 內建的 TokenObtainPairView 唯一差別是 access token payload
+    多帶一個 is_researcher claim（見 BridgeUsTokenObtainPairSerializer）。
+    掛在 BridgeUs_Django/urls.py 的 /api/token/，取代原本的 TokenObtainPairView。
+    """
+
+    serializer_class = BridgeUsTokenObtainPairSerializer
+
+
+def _session_cache_key(session_id: str) -> str:
+    return f"dialogue_session:{session_id}"
+
+
+def _cache_dialogue_session_record(session_record: dict) -> None:
+    cache.set(
+        _session_cache_key(session_record["session_id"]),
+        session_record,
+        timeout=SESSION_TTL_SECONDS,
+    )
+
+
+def _rebuild_session_state_from_turns(record: DialogueSessionRecord) -> dict:
+    session_state = (record.session_state or {}).copy()
+    turns = AIConversation.objects.filter(
+        user=record.user,
+        session_id=record.session_id,
+    ).order_by("created_at", "id")
+    history = []
+    latest_phase = session_state.get("dialogue_phase") or "engagement"
+
+    for turn in turns:
+        if turn.user_prompt:
+            history.append({"role": "user", "content": turn.user_prompt})
+        if turn.ai_response:
+            history.append({"role": "agent", "content": turn.ai_response})
+        if turn.dialogue_phase:
+            latest_phase = turn.dialogue_phase
+
+    if history:
+        session_state["history"] = history
+    session_state["dialogue_phase"] = latest_phase
+    return session_state
+
+
+def _dialogue_session_cache_payload_from_record(
+    record: DialogueSessionRecord,
+) -> dict:
+    session_state = _rebuild_session_state_from_turns(record)
+    payload = {
+        "user_id": record.user_id,
+        "session_id": record.session_id,
+        "topic_id": record.topic_id,
+        "topic_title": record.topic_title,
+        "collection_name": record.collection_name,
+        "survey_context": record.survey_context or {},
+        "session": session_state,
+    }
+    if record.semantic_tree_state:
+        payload["semantic_tree"] = record.semantic_tree_state
+    return payload
+
+
+def _persist_dialogue_session_record(session_record: dict) -> DialogueSessionRecord:
+    current_time = timezone.now()
+    record, _ = DialogueSessionRecord.objects.update_or_create(
+        session_id=session_record["session_id"],
+        defaults={
+            "user_id": session_record["user_id"],
+            "topic_id": session_record["topic_id"],
+            "topic_title": session_record.get("topic_title")
+            or session_record.get("session", {}).get("topic")
+            or f"議題 {session_record['topic_id']}",
+            "collection_name": session_record.get("collection_name")
+            or DEFAULT_DIALOGUE_COLLECTION,
+            "survey_context": session_record.get("survey_context") or {},
+            "session_state": session_record.get("session") or {},
+            "semantic_tree_state": session_record.get("semantic_tree") or {},
+            "status": DialogueSessionRecord.Status.ACTIVE,
+            "last_activity_at": current_time,
+        },
+    )
+    return record
+
+
+def _restore_dialogue_session_record_for_user(
+    *,
+    session_id: str,
+    user_id: int,
+) -> tuple[dict | None, str]:
+    cached = cache.get(_session_cache_key(session_id))
+    if cached and cached.get("user_id") == user_id:
+        return cached, "cache"
+
+    record = (
+        DialogueSessionRecord.objects.filter(
+            user_id=user_id,
+            session_id=session_id,
+            status=DialogueSessionRecord.Status.ACTIVE,
+        )
+        .order_by("-last_activity_at", "-id")
+        .first()
+    )
+    if record is None:
+        return None, ""
+
+    session_record = _dialogue_session_cache_payload_from_record(record)
+    _cache_dialogue_session_record(session_record)
+    return session_record, "database"
+
+
+def _dialogue_session_response_payload(
+    *,
+    session_record: dict,
+    restored_from: str,
+) -> dict:
+    session_state = session_record.get("session") or {}
+    history = session_state.get("history") or []
+    stance_drift = session_state.get("stance_drift")
+    stance_score = session_state.get("user_stance_score")
+    try:
+        stance_category = _resolve_stance_category(
+            topic_id=int(session_record.get("topic_id")),
+            user_stance_score=float(stance_score),
+        )
+    except (TypeError, ValueError):
+        stance_category = None
+
+    return {
+        "session_id": session_record["session_id"],
+        "topic_id": session_record.get("topic_id"),
+        "topic_title": session_record.get("topic_title")
+        or session_state.get("topic"),
+        "dialogue_phase": session_state.get("dialogue_phase", "engagement"),
+        "stance_score": stance_score,
+        "stance_category": stance_category,
+        "stance_label": session_state.get("user_stance_label", ""),
+        "stance_drift": stance_drift,
+        "history": history,
+        "messages": history,
+        "restored_from": restored_from,
+        "status": DialogueSessionRecord.Status.ACTIVE,
+    }
+
+
+def _update_ai_session_stance_drift(
+    *,
+    session_record: dict,
+    session_id: str,
+    user_id: int,
+) -> dict | None:
+    from apps.matching.services.hh_analysis import calculate_ai_session_stance_drift
+
+    try:
+        return calculate_ai_session_stance_drift(
+            session_record=session_record,
+            session_id=session_id,
+            user_id=user_id,
+        )
+    except Exception:
+        logger.exception("AI stance drift failed for session %s.", session_id)
+        return (session_record.get("session") or {}).get("stance_drift")
+
+
+def _get_survey_scoring_config(topic_id: int) -> dict:
+    survey_config = get_dialogue_survey(topic_id) or {}
+    scale_config = survey_config.get("scale", {})
+    stance_rules = survey_config.get("stance_rules", {})
+    likert_questions = survey_config.get("questions", [])
+
+    return {
+        "scale_min": int(scale_config.get("min", 1)),
+        "scale_max": int(scale_config.get("max", 7)),
+        "reverse_question_ids": {
+            str(question_id)
+            for question_id in stance_rules.get("reverse_question_ids", [])
+        },
+        "support_threshold": float(stance_rules.get("support_threshold", 4.5)),
+        "oppose_threshold": float(stance_rules.get("oppose_threshold", 3.5)),
+        "neutral_score": float(
+            (
+                float(scale_config.get("min", 1))
+                + float(scale_config.get("max", 7))
+            )
+            / 2
+        ),
+        "likert_question_ids": {
+            str(question["id"]) for question in likert_questions
+        },
+        "open_question_mappings": [
+            {
+                "id": question["id"],
+                "code": question["code"],
+            }
+            for question in survey_config.get("open_questions", [])
+        ],
+    }
+
+
+def _get_open_answer(
+    survey_open_answers: dict[str, str],
+    *,
+    question_id: int,
+    question_code: str,
+) -> str:
+    return (
+        survey_open_answers.get(question_code)
+        or survey_open_answers.get(str(question_id))
+        or ""
+    ).strip()
+
+
+# 問卷分數邏輯
+def _compute_user_stance_score(
+    *,
+    topic_id: int,
+    survey_answers: dict[str, int],
+) -> float:
+    scoring_config = _get_survey_scoring_config(topic_id)
+    if not survey_answers:
+        return round(scoring_config["neutral_score"], 2)
+
+    adjusted_scores = []
+
+    for question_id in scoring_config["likert_question_ids"]:
+        raw_score = survey_answers.get(question_id)
+        if raw_score is None:
+            continue
+
+        adjusted_score = float(raw_score)
+
+        if question_id in scoring_config["reverse_question_ids"]:
+            adjusted_score = (
+                scoring_config["scale_min"]
+                + scoring_config["scale_max"]
+                - adjusted_score
+            )
+
+        adjusted_scores.append(adjusted_score)
+
+    if not adjusted_scores:
+        return round(scoring_config["neutral_score"], 2)
+
+    return round(sum(adjusted_scores) / len(adjusted_scores), 2)
+
+
+def _resolve_stance_category(*, topic_id: int, user_stance_score: float) -> str:
+    scoring_config = _get_survey_scoring_config(topic_id)
+
+    if user_stance_score > scoring_config["support_threshold"]:
+        return "support"
+    if user_stance_score < scoring_config["oppose_threshold"]:
+        return "oppose"
+    return "neutral"
+
+
+def _resolve_stances(
+    *,
+    topic_id: int,
+    user_stance_score: float,
+) -> tuple[str, str, str]:
+    stance_category = _resolve_stance_category(
+        topic_id=topic_id,
+        user_stance_score=user_stance_score,
+    )
+
+    labels = TOPIC_CONFIGS.get(topic_id, {}).get("stance_labels", {})
+    entry = labels.get(stance_category) or labels.get("neutral") or {}
+    return (
+        entry.get("user_label", "立場中立或尚未明確"),
+        entry.get("agent_stance", "提出相反觀點"),
+        entry.get("agent_stance_summary", ""),
+    )
+
+
+def _resolve_open_answers(
+    *,
+    topic_id: int,
+    survey_open_answers: dict[str, str],
+) -> dict[str, str]:
+    scoring_config = _get_survey_scoring_config(topic_id)
+    resolved_answers = {}
+
+    for question in scoring_config["open_question_mappings"]:
+        resolved_answers[question["code"]] = _get_open_answer(
+            survey_open_answers,
+            question_id=question["id"],
+            question_code=question["code"],
+        )
+
+    return resolved_answers
+
+
+def _build_topic_config(
+    *,
+    topic_id: int,
+    topic_title: str,
+    topic_description: str,
+    survey_answers: dict[str, int],
+    survey_open_answers: dict[str, str],
+    user_initial_argument: str,
+) -> dict[str, str | float | dict]:
+    topic_meta = TOPIC_CONFIGS.get(topic_id, {})
+    user_stance_score = _compute_user_stance_score(
+        topic_id=topic_id,
+        survey_answers=survey_answers,
+    )
+    user_stance_label, agent_stance, agent_stance_summary = _resolve_stances(
+        topic_id=topic_id,
+        user_stance_score=user_stance_score,
+    )
+    survey_config = get_dialogue_survey(topic_id) or {}
+    semantic_vector_interface = survey_config.get("semantic_vector_interface", {})
+    resolved_open_answers = _resolve_open_answers(
+        topic_id=topic_id,
+        survey_open_answers=survey_open_answers,
+    )
+    resolved_initial_argument = (
+        resolved_open_answers.get("Q9", "")
+        or user_initial_argument
+    )
+    from apps.matching.services.ai_agent import infer_reasoning_mode
+    user_reasoning_mode = infer_reasoning_mode(
+        user_stance_score=user_stance_score,
+        user_initial_argument=resolved_initial_argument,
+        opponent_view_text=resolved_open_answers.get("Q10", ""),
+    )
+    q9_embedding = None
+    if resolved_initial_argument:
+        try:
+            q9_embedding = build_q9_embedding({"Q9": resolved_initial_argument})
+        except Exception:
+            logger.exception("Failed to build AI session Q9 embedding.")
+
+    from apps.matching.services.ai_agent import infer_reasoning_mode
+    user_reasoning_mode = infer_reasoning_mode(
+        user_stance_score=user_stance_score,
+        user_initial_argument=resolved_initial_argument,
+        opponent_view_text=resolved_open_answers.get("Q10", ""),
+    )
+
+    return {
+        "topic": topic_meta.get("title", topic_title),
+        "topic_description": (
+            topic_description
+            or topic_meta.get("topic_description")
+            or topic_meta.get("title")
+            or topic_title
+        ),
+        "collection_name": topic_meta.get(
+            "collection_name",
+            DEFAULT_DIALOGUE_COLLECTION,
+        ),
+        "user_stance_label": user_stance_label,
+        "user_stance_score": user_stance_score,
+        "agent_stance": agent_stance,
+        "agent_stance_summary": agent_stance_summary,
+        "user_initial_argument": resolved_initial_argument,
+        "user_reasoning_mode": user_reasoning_mode,
+        "survey_open_answers": resolved_open_answers,
+        "semantic_vector_interface": semantic_vector_interface,
+        "q9_embedding": q9_embedding,
+    }
+
+
+def _upsert_user_stance_profile(
+    *,
+    user,
+    topic_id: int,
+    survey_answers: dict[str, int],
+    survey_open_answers: dict[str, str],
+    user_stance_score: float,
+    q9_embedding,
+) -> UserStanceProfile:
+    """Persist the user's latest pre-survey stance for a topic.
+
+    Shared canonical store (per user+topic) so a later "new dialogue" can offer
+    to reuse the previous pre-survey answers instead of re-filling them. Matching
+    already upserts this via ``enqueue_for_matching``; this keeps the AI-mode flow
+    in sync so AI-only users also have a reusable profile.
+    """
+    stance_category = _resolve_stance_category(
+        topic_id=topic_id,
+        user_stance_score=user_stance_score,
+    )
+    profile, _ = UserStanceProfile.objects.update_or_create(
+        user=user,
+        topic_id=topic_id,
+        defaults={
+            "stance_score": user_stance_score,
+            "stance_category": stance_category,
+            "survey_answers": survey_answers,
+            "survey_open_answers": survey_open_answers,
+            "q9_embedding": q9_embedding,
+        },
+    )
+    return profile
+
+
+def _get_other_user(match: DialogueMatch, *, user_id: int):
+    return match.user_b if match.user_a_id == user_id else match.user_a
+
+
+def _match_presence_fields(match: DialogueMatch | None, *, user_id: int) -> dict:
+    if not match:
+        return {
+            "presence": None,
+            "absence_deadline": None,
+        }
+
+    from apps.matching.services.matcher import get_match_presence_payload
+
+    presence = get_match_presence_payload(match=match, current_user_id=user_id)
+    absence_deadline = presence.get("absence_deadline")
+    presence = {
+        **presence,
+        "absence_deadline": (
+            absence_deadline.isoformat() if absence_deadline else None
+        ),
+    }
+    return {
+        "presence": presence,
+        "absence_deadline": absence_deadline,
+    }
+
+
+def _build_matching_state_payload(*, topic_id: int, state, user_id: int) -> dict:
+    queue_entry = state.queue_entry
+    match = state.match
+    other_user_id = None
+    other_user_name = None
+    if match:
+        other_user = _get_other_user(match, user_id=user_id)
+        other_user_id = other_user.id
+        other_user_name = ANONYMOUS_MATCH_USER_NAME
+
+    payload = {
+        "topic_id": topic_id,
+        "status": state.status,
+        "stance_score": (
+            state.profile.stance_score if state.profile else None
+        ),
+        "stance_category": (
+            state.profile.stance_category if state.profile else None
+        ),
+        "queue_entry_id": queue_entry.id if queue_entry else None,
+        "waiting_started_at": (
+            queue_entry.waiting_started_at if queue_entry else None
+        ),
+        "matched_at": queue_entry.matched_at if queue_entry else None,
+        "cancelled_at": queue_entry.cancelled_at if queue_entry else None,
+        "closed_at": match.closed_at if match else None,
+        "match_id": match.id if match else None,
+        "room_id": match.room_id if match else None,
+        "other_user_id": other_user_id,
+        "other_user_name": other_user_name,
+        **_match_presence_fields(match, user_id=user_id),
+    }
+    return MatchingStateSerializer(payload).data
+
+
+def _room_match_state_status(match: DialogueMatch) -> str:
+    if match.status == DialogueMatch.Status.ACTIVE:
+        return "matched"
+    return match.status
+
+
+def _get_latest_room_stance_drift(*, match: DialogueMatch, user_id: int) -> dict | None:
+    latest = (
+        MatchStanceDrift.objects.filter(match=match, user_id=user_id)
+        .order_by("-measured_at", "-id")
+        .first()
+    )
+    if latest is None:
+        return None
+
+    return {
+        "drift_value": latest.drift_value,
+        "measured_at": latest.measured_at,
+    }
+
+
+def _build_room_messages_payload(*, match: DialogueMatch, user_id: int, messages) -> dict:
+    other_user = _get_other_user(match, user_id=user_id)
+    payload = {
+        "room_id": match.room_id,
+        "match_id": match.id,
+        "topic_id": match.topic_id,
+        "status": _room_match_state_status(match),
+        "other_user_id": other_user.id,
+        "other_user_name": ANONYMOUS_MATCH_USER_NAME,
+        "stance_drift": _get_latest_room_stance_drift(match=match, user_id=user_id),
+        **_match_presence_fields(match, user_id=user_id),
+        "messages": messages,
+    }
+    return MatchingRoomMessagesSerializer(payload).data
+
+
+def _get_room_match_for_user(*, room_id: str, user_id: int) -> DialogueMatch | None:
+    return (
+        DialogueMatch.objects.select_related("user_a", "user_b")
+        .filter(room_id=room_id)
+        .filter(Q(user_a_id=user_id) | Q(user_b_id=user_id))
+        .first()
+    )
+
+
+def _touch_room_match_for_user_activity(
+    *,
+    match: DialogueMatch,
+    user_id: int,
+) -> DialogueMatch:
+    from apps.matching.services.matcher import (
+        close_match_if_idle,
+        close_match_if_participant_absent,
+        mark_match_participant_connected,
+    )
+
+    match = close_match_if_participant_absent(match=match)
+    if match.status == DialogueMatch.Status.ACTIVE:
+        match = mark_match_participant_connected(match=match, user_id=user_id)
+        match = close_match_if_idle(match=match)
+    return match
+
+
+def _semantic_tree_root_name(match: DialogueMatch) -> str:
+    return _semantic_tree_root_name_for_topic_id(match.topic_id)
+
+
+def _semantic_tree_root_name_for_topic_id(topic_id: int | None) -> str:
+    return TOPIC_CONFIGS.get(topic_id, {}).get("title") or "核電"
 
 
 def _get_dialogue_session_record_for_user(*, session_id: str, user_id: int):
@@ -100,6 +616,189 @@ def _get_dialogue_session_record_for_user(*, session_id: str, user_id: int):
     return session_record, None
 
 
+def _get_history_ai_record_for_user(*, session_id: str, user_id: int):
+    return (
+        DialogueSessionRecord.objects.filter(
+            user_id=user_id,
+            session_id=session_id,
+        )
+        .order_by("-last_activity_at", "-id")
+        .first()
+    )
+
+
+def _history_ai_turns(record: DialogueSessionRecord):
+    return AIConversation.objects.filter(
+        user_id=record.user_id,
+        session_id=record.session_id,
+    ).order_by("created_at", "id")
+
+
+def _history_ai_messages(record: DialogueSessionRecord) -> list[dict]:
+    messages = []
+    for turn in _history_ai_turns(record):
+        if turn.user_prompt:
+            messages.append(
+                {
+                    "id": f"ai-{turn.id}-user",
+                    "source_id": str(turn.id),
+                    "role": "user",
+                    "sender_label": "我",
+                    "content": turn.user_prompt,
+                    "created_at": turn.created_at,
+                }
+            )
+        if turn.ai_response:
+            messages.append(
+                {
+                    "id": f"ai-{turn.id}-agent",
+                    "source_id": str(turn.id),
+                    "role": "agent",
+                    "sender_label": "BridgeUs",
+                    "content": turn.ai_response,
+                    "created_at": turn.created_at,
+                }
+            )
+    return messages
+
+
+def _history_match_messages(match: DialogueMatch, *, user_id: int) -> list[dict]:
+    messages = []
+    for message in match.messages.select_related("sender").order_by("created_at", "id"):
+        is_current_user = message.sender_id == user_id
+        messages.append(
+            {
+                "id": f"match-{message.id}",
+                "source_id": str(message.id),
+                "role": "user" if is_current_user else "partner",
+                "sender_label": "我" if is_current_user else ANONYMOUS_MATCH_USER_NAME,
+                "content": message.content,
+                "created_at": message.created_at,
+            }
+        )
+    return messages
+
+
+def _history_ai_summary(record: DialogueSessionRecord) -> dict:
+    messages = _history_ai_messages(record)
+    user_messages = [message for message in messages if message["role"] == "user"]
+    preview_source = user_messages[-1] if user_messages else (messages[-1] if messages else None)
+    return {
+        "kind": "ai",
+        "id": record.session_id,
+        "session_id": record.session_id,
+        # Alias of session_id — AI sessions don't have a real "room", but
+        # exposing the same key as match conversations lets the frontend
+        # treat both kinds uniformly instead of branching on kind. Computed
+        # here rather than stored, so it's never missing for older records.
+        "room_id": record.session_id,
+        "topic_id": record.topic_id,
+        "topic_title": record.topic_title,
+        "status": record.status,
+        "message_count": len(messages),
+        "last_message_preview": (preview_source or {}).get("content", "")[:120],
+        "last_activity_at": record.last_activity_at,
+    }
+
+
+def _history_match_summary(match: DialogueMatch, *, user_id: int) -> dict:
+    messages = _history_match_messages(match, user_id=user_id)
+    preview_source = messages[-1] if messages else None
+    return {
+        "kind": "match",
+        "id": match.room_id,
+        "room_id": match.room_id,
+        "topic_id": match.topic_id,
+        "topic_title": _semantic_tree_root_name(match),
+        "status": match.status,
+        "message_count": len(messages),
+        "last_message_preview": (preview_source or {}).get("content", "")[:120],
+        "last_activity_at": (
+            (preview_source or {}).get("created_at")
+            or match.closed_at
+            or match.created_at
+        ),
+    }
+
+
+def _timeline_access_fields(*, user_id: int, kind: str, conversation_id: str, conversation) -> dict:
+    """Tell the frontend whether to offer the timeline slider at all, so a locked
+    participant never even sees the entry point (the API enforces it anyway)."""
+    state = timeline_unlock_state(
+        user_id=user_id,
+        kind=kind,
+        conversation_id=conversation_id,
+        conversation=conversation,
+    )
+    return {
+        "timeline_unlocked": state["unlocked"],
+        "timeline_lock_reason": state["reason"],
+        "timeline_unlocks_at": state["unlocks_at"],
+    }
+
+
+def _history_ai_detail(record: DialogueSessionRecord, *, user_id: int) -> dict:
+    from apps.matching.services.semantic_tree import semantic_tree_session_payload
+
+    session_record = _dialogue_session_cache_payload_from_record(record)
+    semantic_tree = semantic_tree_session_payload(
+        session_record=session_record,
+        session_id=record.session_id,
+        root_name=_semantic_tree_root_name_for_topic_id(record.topic_id),
+    )
+    messages = _history_ai_messages(record)
+    return {
+        **_history_ai_summary(record),
+        "messages": messages,
+        "semantic_tree": MatchingRoomSemanticTreeSerializer(semantic_tree).data,
+        **_timeline_access_fields(
+            user_id=user_id,
+            kind="ai",
+            conversation_id=record.session_id,
+            conversation=record,
+        ),
+    }
+
+
+def _history_match_detail(match: DialogueMatch, *, user_id: int) -> dict:
+    from apps.matching.services.semantic_tree import semantic_tree_payload
+
+    semantic_tree = semantic_tree_payload(
+        match=match,
+        root_name=_semantic_tree_root_name(match),
+        current_user_id=user_id,
+    )
+    messages = _history_match_messages(match, user_id=user_id)
+    return {
+        **_history_match_summary(match, user_id=user_id),
+        "messages": messages,
+        "semantic_tree": MatchingRoomSemanticTreeSerializer(semantic_tree).data,
+        **_timeline_access_fields(
+            user_id=user_id,
+            kind="match",
+            conversation_id=match.room_id,
+            conversation=match,
+        ),
+    }
+
+
+@lru_cache(maxsize=1)
+def _get_dialogue_runtime():
+    from apps.matching.services.ai_agent import (
+        DialogueAgent,
+        DialoguePhase,
+        DialogueSession,
+    )
+
+    return DialogueAgent, DialoguePhase, DialogueSession
+
+
+@lru_cache(maxsize=8)
+def get_dialogue_agent(collection_name: str):
+    DialogueAgent, _, _ = _get_dialogue_runtime()
+    return DialogueAgent(collection_name=collection_name)
+
+
 class AIConversationListCreate(generics.ListCreateAPIView):
     serializer_class = AIConversationSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -113,7 +812,7 @@ class AIConversationListCreate(generics.ListCreateAPIView):
         serializer.save(user=self.request.user)
 
 
-class AIConversationDetail(generics.RetrieveAPIView):
+class AIConversationDetail(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = AIConversationSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -146,6 +845,45 @@ class DialogueSurveyView(APIView):
         return Response(serializer.data)
 
 
+class DialogueStanceProfileView(APIView):
+    """GET /api/dialogue/topics/<topic_id>/stance-profile/
+
+    Reports whether the user already has a saved pre-survey stance for this
+    topic, and returns the stored answers so the frontend can offer to reuse
+    them instead of re-filling the survey for a new dialogue.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    authentication_classes = [JWTStatelessUserAuthentication]
+
+    def get(self, request, topic_id: int):
+        if not get_dialogue_survey(topic_id):
+            return Response(
+                {"detail": "找不到這個議題的問卷設定。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        profile = (
+            UserStanceProfile.objects.filter(user=request.user, topic_id=topic_id)
+            .order_by("-updated_at", "-id")
+            .first()
+        )
+        if profile is None:
+            return Response({"exists": False, "topic_id": topic_id})
+
+        return Response(
+            {
+                "exists": True,
+                "topic_id": topic_id,
+                "stance_score": profile.stance_score,
+                "stance_category": profile.stance_category,
+                "survey_answers": profile.survey_answers or {},
+                "survey_open_answers": profile.survey_open_answers or {},
+                "updated_at": profile.updated_at,
+            }
+        )
+
+
 class DialogueSessionCreateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -164,6 +902,19 @@ class DialogueSessionCreateView(APIView):
             user_initial_argument=validated.get("user_initial_argument", ""),
         )
 
+        # Persist the pre-survey stance so a later "new dialogue" can reuse it.
+        # Only when the survey was actually filled, to avoid overwriting a real
+        # profile with the neutral default of an empty answer set.
+        if validated.get("survey_answers"):
+            _upsert_user_stance_profile(
+                user=request.user,
+                topic_id=validated["topic_id"],
+                survey_answers=validated["survey_answers"],
+                survey_open_answers=topic_config["survey_open_answers"],
+                user_stance_score=topic_config["user_stance_score"],
+                q9_embedding=topic_config["q9_embedding"],
+            )
+
         session = DialogueSession(
             topic=topic_config["topic"],
             topic_description=topic_config["topic_description"],
@@ -176,13 +927,13 @@ class DialogueSessionCreateView(APIView):
         )
 
         session_id = uuid4().hex
-        create_dialogue_session_record(
-            user_id=request.user.id,
-            session_id=session_id,
-            topic_id=validated["topic_id"],
-            topic_title=topic_config["topic"],
-            collection_name=topic_config["collection_name"],
-            survey_context={
+        session_record = {
+            "user_id": request.user.id,
+            "session_id": session_id,
+            "topic_id": validated["topic_id"],
+            "topic_title": topic_config["topic"],
+            "collection_name": topic_config["collection_name"],
+            "survey_context": {
                 "survey_answers": validated.get("survey_answers", {}),
                 "survey_open_answers": topic_config["survey_open_answers"],
                 "semantic_vector_interface": topic_config[
@@ -190,8 +941,10 @@ class DialogueSessionCreateView(APIView):
                 ],
                 "q9_embedding": topic_config["q9_embedding"],
             },
-            metadata=session_metadata(session, stance_drift=None),
-        )
+            "session": session.to_dict(),
+        }
+        _cache_dialogue_session_record(session_record)
+        _persist_dialogue_session_record(session_record)
 
         return Response(
             {
@@ -278,7 +1031,6 @@ class DialogueSessionDetailView(APIView):
 
 class DialogueSessionReplyView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-    throttle_classes = [DialogueReplyRateThrottle]
 
     def post(self, request, session_id: str):
         _, DialoguePhase, DialogueSession = _get_dialogue_runtime()
@@ -332,7 +1084,6 @@ class DialogueSessionReplyView(APIView):
                 session_id,
                 session_record["collection_name"],
             )
-            invalidate_dialogue_session_cache(session_id)
             return Response(
                 {
                     "detail": "目前無法取得 AI 回覆，請稍後再試。"
@@ -344,25 +1095,17 @@ class DialogueSessionReplyView(APIView):
 
         chunks = split_into_chunks(reply)
         session.add_agent_message(reply)
-        # Drift must be computed on the read-through metadata (still holding
-        # the previous stance_drift) before it's overwritten below — otherwise
-        # previous_value is always None and direction is always "stable".
+        session_record["session"] = session.to_dict()
+        saved_turn.ai_response = reply
+        saved_turn.dialogue_phase = session.dialogue_phase.value
+        saved_turn.save(update_fields=["ai_response", "dialogue_phase"])
         stance_drift = _update_ai_session_stance_drift(
             session_record=session_record,
             session_id=session_id,
             user_id=request.user.id,
         )
-        session_record["session"] = session.to_dict()
-        session_record["session"]["stance_drift"] = stance_drift
-        saved_turn.ai_response = reply
-        saved_turn.dialogue_phase = session.dialogue_phase.value
-        saved_turn.save(update_fields=["ai_response", "dialogue_phase"])
-        update_session_metadata(
-            session_id=session_id,
-            user_id=request.user.id,
-            metadata=session_metadata(session, stance_drift=stance_drift),
-        )
-        invalidate_dialogue_session_cache(session_id)
+        _cache_dialogue_session_record(session_record)
+        _persist_dialogue_session_record(session_record)
 
         return Response(
             {
@@ -406,7 +1149,6 @@ class DialogueSessionSemanticTreeView(APIView):
 
 class DialogueSessionSemanticTreeAnalyzeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-    throttle_classes = [DialogueSessionSemanticTreeAnalyzeRateThrottle]
 
     def post(self, request, session_id: str):
         from apps.matching.services.semantic_tree import (
@@ -440,6 +1182,8 @@ class DialogueSessionSemanticTreeAnalyzeView(APIView):
                 status=exc.status_code,
             )
 
+        _cache_dialogue_session_record(session_record)
+        _persist_dialogue_session_record(session_record)
         return Response(MatchingRoomSemanticTreeSerializer(payload).data)
 
 
@@ -456,13 +1200,20 @@ class HistoryConversationListView(APIView):
 
         results = []
         if history_type in {"all", "ai"}:
-            for record in _history_ai_summary_queryset(request.user.id):
+            for record in DialogueSessionRecord.objects.filter(
+                user=request.user,
+            ).order_by("-last_activity_at", "-id"):
                 summary = _history_ai_summary(record)
                 if summary["message_count"]:
                     results.append(summary)
 
         if history_type in {"all", "match"}:
-            for match in _history_match_summary_queryset(request.user.id):
+            matches = (
+                DialogueMatch.objects.select_related("user_a", "user_b")
+                .filter(Q(user_a=request.user) | Q(user_b=request.user))
+                .order_by("-created_at", "-id")
+            )
+            for match in matches:
                 summary = _history_match_summary(match, user_id=request.user.id)
                 if summary["message_count"]:
                     results.append(summary)
@@ -488,7 +1239,7 @@ class HistoryConversationDetailView(APIView):
                     {"detail": "找不到這筆 AI 對話紀錄。"},
                     status=status.HTTP_404_NOT_FOUND,
                 )
-            return Response(_history_ai_detail(record))
+            return Response(_history_ai_detail(record, user_id=request.user.id))
 
         if kind == "match":
             match = _get_room_match_for_user(
@@ -506,6 +1257,34 @@ class HistoryConversationDetailView(APIView):
             {"detail": "kind 必須是 ai 或 match。"},
             status=status.HTTP_404_NOT_FOUND,
         )
+
+
+def _timeline_locked_response(*, user_id: int, kind: str, conversation_id: str, conversation):
+    """Return a 403 Response unless this participant has cleared the CCND
+    timeline gate; None means "allowed, carry on".
+
+    Replaying the CCND before the participant has answered the CCND self-report
+    items (questionnaire C3 and Part F's F4 ux_ccnd) would contaminate them —
+    see api.timeline_access for the full rule.
+    """
+    state = timeline_unlock_state(
+        user_id=user_id,
+        kind=kind,
+        conversation_id=conversation_id,
+        conversation=conversation,
+    )
+    if state["unlocked"]:
+        return None
+
+    return Response(
+        {
+            "detail": LOCKED_DETAIL,
+            "timeline_unlocked": False,
+            "timeline_lock_reason": state["reason"],
+            "timeline_unlocks_at": state["unlocks_at"],
+        },
+        status=status.HTTP_403_FORBIDDEN,
+    )
 
 
 class HistoryConversationSemanticTreeTimelineView(APIView):
@@ -535,6 +1314,15 @@ class HistoryConversationSemanticTreeTimelineView(APIView):
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
+            locked = _timeline_locked_response(
+                user_id=request.user.id,
+                kind=kind,
+                conversation_id=record.session_id,
+                conversation=record,
+            )
+            if locked is not None:
+                return locked
+
             session_record = _dialogue_session_cache_payload_from_record(record)
             payload = semantic_tree_session_timeline_payload(
                 session_record=session_record,
@@ -552,6 +1340,15 @@ class HistoryConversationSemanticTreeTimelineView(APIView):
                     {"detail": "找不到這個配對房間。"},
                     status=status.HTTP_404_NOT_FOUND,
                 )
+
+            locked = _timeline_locked_response(
+                user_id=request.user.id,
+                kind=kind,
+                conversation_id=match.room_id,
+                conversation=match,
+            )
+            if locked is not None:
+                return locked
 
             payload = semantic_tree_timeline_payload(
                 match=match,
@@ -573,9 +1370,207 @@ class HistoryConversationSemanticTreeTimelineView(APIView):
         return Response(MatchingRoomSemanticTreeTimelineSerializer(payload).data)
 
 
+class CCNDSnapshotAnalysisView(APIView):
+    """Researcher-only aggregate CCND metrics for one finished conversation.
+
+    IsAdminUser on purpose: per-segment new-concept counts and adjacent-snapshot
+    Jaccard ARE the study's dependent variables. Handing them to a participant
+    would show them the construct being measured, which is exactly what the
+    timeline gate exists to prevent. Staff may inspect any conversation, so this
+    deliberately does NOT scope the lookup to request.user.
+
+    Returns one analysis per test subject (H-H yields two, one per participant;
+    H-AI one), matching the export_ccnd_snapshots CLI.
+    """
+
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request, kind: str, conversation_id: str):
+        from apps.matching.services.ccnd_snapshot_analysis import iter_subject_analyses
+
+        try:
+            segments = max(1, int(request.query_params.get("segments", 3)))
+        except (TypeError, ValueError):
+            segments = 3
+
+        if kind == "ai":
+            conversation = DialogueSessionRecord.objects.filter(
+                session_id=conversation_id,
+            ).first()
+        elif kind == "match":
+            conversation = DialogueMatch.objects.filter(room_id=conversation_id).first()
+        else:
+            return Response(
+                {"detail": "kind 必須是 ai 或 match。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if conversation is None:
+            return Response(
+                {"detail": "找不到這筆對話紀錄。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response(
+            {
+                "kind": kind,
+                "conversation_id": conversation_id,
+                "n_segments": segments,
+                "subjects": list(
+                    iter_subject_analyses(conversation, n_segments=segments)
+                ),
+            }
+        )
+
+
+class ViewpointReviewListView(generics.ListAPIView):
+    """研究者專用：M6 觀點知識庫 Step 4 人工終審清單。
+
+    用 IsResearcher（「研究者」Django Group）而不是 IsAdminUser：這裡列出的是
+    尚未定案、可能被退回的候選觀點，權限該對應「有沒有研究者身分」，跟能不能
+    登入 Django /admin/ 是兩件事。
+    """
+
+    permission_classes = [IsResearcher]
+    serializer_class = ViewpointNodeReviewSerializer
+
+    def get_queryset(self):
+        status_param = self.request.query_params.get("status", ViewpointNode.ReviewStatus.PENDING)
+        qs = ViewpointNode.objects.select_related("summary", "reviewed_by")
+        if status_param != "all":
+            qs = qs.filter(review_status=status_param)
+
+        topic_id = self.request.query_params.get("topic_id")
+        if topic_id:
+            qs = qs.filter(topic_id=topic_id)
+
+        return qs.order_by("-composite_score", "-created_at")
+
+
+class ViewpointReviewDecisionView(APIView):
+    """研究者專用：核准或退回單一 ViewpointNode。"""
+
+    permission_classes = [IsResearcher]
+
+    def post(self, request, pk: int):
+        try:
+            node = ViewpointNode.objects.get(pk=pk)
+        except ViewpointNode.DoesNotExist:
+            return Response({"detail": "找不到這筆觀點。"}, status=status.HTTP_404_NOT_FOUND)
+
+        decision = ViewpointNodeReviewDecisionSerializer(data=request.data)
+        decision.is_valid(raise_exception=True)
+
+        node.review_status = (
+            ViewpointNode.ReviewStatus.APPROVED
+            if decision.validated_data["action"] == "approve"
+            else ViewpointNode.ReviewStatus.REJECTED
+        )
+        node.reviewed_by = request.user
+        node.reviewed_at = timezone.now()
+        node.review_notes = decision.validated_data["notes"]
+        node.save(
+            update_fields=["review_status", "reviewed_by", "reviewed_at", "review_notes"]
+        )
+
+        return Response(ViewpointNodeReviewSerializer(node).data)
+
+
+class CCNDInsightsView(APIView):
+    """Participant-facing view of their OWN concept expansion for one conversation.
+
+    Same numbers as the staff endpoint, but three things differ and all three
+    matter:
+
+    1. Gated behind the M6 flow (identical gate as the timeline). Only once the
+       participant has answered C3 and Part F's F4 can they be shown what was
+       measured, otherwise we contaminate those very items.
+    2. The subject is the REQUESTING user, not analyze_conversation_ccnd's
+       user_a default. Without this, user_b in an H-H match would be served
+       user_a's analysis.
+    3. partner_side is stripped. It carries the other participant's lit anchors
+       and node names — their cognitive map — which a participant must never see.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, kind: str, conversation_id: str):
+        from apps.matching.services.ccnd_snapshot_analysis import (
+            analyze_conversation_ccnd,
+        )
+        from apps.matching.services.semantic_tree import (
+            OWNER_AI_USER,
+            _owner_key_for_user,
+        )
+
+        if kind == "ai":
+            conversation = _get_history_ai_record_for_user(
+                session_id=conversation_id,
+                user_id=request.user.id,
+            )
+            if conversation is None:
+                return Response(
+                    {"detail": "找不到這筆 AI 對話紀錄。"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            subject_owner_key = OWNER_AI_USER
+            resolved_id = conversation.session_id
+        elif kind == "match":
+            conversation = _get_room_match_for_user(
+                room_id=conversation_id,
+                user_id=request.user.id,
+            )
+            if conversation is None:
+                return Response(
+                    {"detail": "找不到這個配對房間。"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            # the requesting participant is the subject — never default to user_a
+            subject_owner_key = _owner_key_for_user(conversation, request.user.id)
+            resolved_id = conversation.room_id
+        else:
+            return Response(
+                {"detail": "kind 必須是 ai 或 match。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        locked = _timeline_locked_response(
+            user_id=request.user.id,
+            kind=kind,
+            conversation_id=resolved_id,
+            conversation=conversation,
+        )
+        if locked is not None:
+            return locked
+
+        analysis = analyze_conversation_ccnd(
+            conversation,
+            subject_owner_key=subject_owner_key,
+        )
+        return Response(
+            {
+                "kind": kind,
+                "conversation_id": resolved_id,
+                "n_segments": analysis["n_segments"],
+                "summary": analysis["summary"],
+                "novelty": analysis["novelty"],
+                "similarity": analysis["similarity"],
+                "snapshots": [
+                    {
+                        "label": snapshot["label"],
+                        "macro_count": snapshot["macro_count"],
+                        "micro_count": snapshot["micro_count"],
+                        "cumulative_hit_count": snapshot["cumulative_hit_count"],
+                    }
+                    for snapshot in analysis["snapshots"]
+                ],
+                # NOTE: analysis["partner_side"] is deliberately NOT returned.
+            }
+        )
+
+
 class HistoryConversationSemanticTreeAnalyzeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-    throttle_classes = [HistoryConversationSemanticTreeAnalyzeRateThrottle]
 
     def post(self, request, kind: str, conversation_id: str):
         from apps.matching.services.semantic_tree import (
@@ -613,10 +1608,12 @@ class HistoryConversationSemanticTreeAnalyzeView(APIView):
                     status=exc.status_code,
                 )
 
-            record.refresh_from_db(fields=["semantic_tree_state", "updated_at"])
+            record.semantic_tree_state = session_record.get("semantic_tree") or {}
+            record.save(update_fields=["semantic_tree_state", "updated_at"])
+            _cache_dialogue_session_record(session_record)
             return Response(
                 {
-                    **_history_ai_detail(record),
+                    **_history_ai_detail(record, user_id=request.user.id),
                     "semantic_tree": MatchingRoomSemanticTreeSerializer(semantic_tree).data,
                 }
             )
@@ -790,10 +1787,7 @@ class MatchingRoomMessagesView(APIView):
 
     def post(self, request, room_id: str):
         from apps.matching.services.matcher import get_room_messages
-        from apps.matching.services.message_pipeline import (
-            BLOCKED_MESSAGE,
-            post_match_message,
-        )
+        from .models import MatchMessage
 
         match = _get_room_match_for_user(room_id=room_id, user_id=request.user.id)
         if not match:
@@ -814,16 +1808,11 @@ class MatchingRoomMessagesView(APIView):
         serializer = MatchingRoomMessageCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        result = post_match_message(
+        MatchMessage.objects.create(
             match=match,
             sender=request.user,
             content=serializer.validated_data["content"].strip(),
         )
-        if result.blocked:
-            return Response(
-                {"detail": BLOCKED_MESSAGE},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
 
         messages = get_room_messages(match=match)
         return Response(
@@ -881,6 +1870,15 @@ class MatchingRoomSemanticTreeTimelineView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        locked = _timeline_locked_response(
+            user_id=request.user.id,
+            kind="match",
+            conversation_id=match.room_id,
+            conversation=match,
+        )
+        if locked is not None:
+            return locked
+
         match = _touch_room_match_for_user_activity(
             match=match,
             user_id=request.user.id,
@@ -901,7 +1899,6 @@ class MatchingRoomSemanticTreeTimelineView(APIView):
 
 class MatchingRoomSemanticTreeAnalyzeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-    throttle_classes = [MatchingRoomSemanticTreeAnalyzeRateThrottle]
 
     def post(self, request, room_id: str):
         from apps.matching.services.semantic_tree import (
@@ -1096,7 +2093,6 @@ class PlatformFeedbackView(APIView):
         return Response(out.data, status=status.HTTP_201_CREATED)
 class GuestLoginView(APIView):
     permission_classes = [permissions.AllowAny]
-    throttle_classes = [GuestLoginRateThrottle]
 
     def post(self, request):
         nickname = (request.data.get("nickname") or "Guest")[:30]
@@ -1111,6 +2107,50 @@ class GuestLoginView(APIView):
                 "refresh": str(refresh),
                 "user_id": user.id,
                 "username": username,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class IssueListCreateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        qs = Issue.objects.all()
+        author_id = request.query_params.get("author")
+        if author_id:
+            qs = qs.filter(author_id=author_id)
+        data = [
+            {
+                "id": i.id,
+                "title": i.title,
+                "body": i.body,
+                "author_id": i.author_id,
+                "created_at": i.created_at,
+            }
+            for i in qs
+        ]
+        return Response(data)
+
+    def post(self, request):
+        title = request.data.get("title", "").strip()
+        if not title:
+            return Response(
+                {"detail": "title 必填"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        issue = Issue.objects.create(
+            author=request.user,
+            title=title,
+            body=request.data.get("body", ""),
+        )
+        return Response(
+            {
+                "id": issue.id,
+                "title": issue.title,
+                "body": issue.body,
+                "author_id": issue.author_id,
+                "created_at": issue.created_at,
             },
             status=status.HTTP_201_CREATED,
         )
