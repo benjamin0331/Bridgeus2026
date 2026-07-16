@@ -33,10 +33,10 @@ To exercise multiplayer you need **two running instances**: one clicks **Host** 
 
 ## Backend seam
 
-`Globals/Backend.gd` is an autoload stub — every network-facing call (`submit_issue`, `login`, `analyze_stance/_emotion`) routes through it and is a **no-op until `enabled = true`**. The real Django backend lives in a separate repo; the integration plan is in `docs/backend-plan.md`. Stance/emotion analysis is intentionally unimplemented — only nullable placeholders are reserved.
+`Globals/Backend.gd` is the single seam to the Django backend — every network-facing call routes through it via native `HTTPRequest` (`BASE_URL = http://localhost:8005/api`). `guest_login` and `submit_issue` are **live**; `request_topic_match` is still a stub (prints, returns code 0); `analyze_stance/_emotion` return null (intentionally unimplemented, nullable placeholders reserved). The backend is optional — no server = local-only play (issues still broadcast, just not persisted). The real Django backend lives in a separate repo; the full integration plan + endpoint specs are in `docs/README.md` §四.
 
 ## Style
 
 GDScript with leading-underscore for private members/helpers. Code comments here carry real rationale — read them before changing collision masks, RPC modes, or the bubble scaling. Comments tagged `ponytail:` mark deliberate prototype shortcuts.
 
-Note: `Scripts/dialogue_*.gd`, `Sprites/Dialogue_ui.tscn`, and `Entities/player/player_01.*` are older/experimental and not part of the live flow above.
+Note: the live NPC dialogue is `UI/dialogue_manager.tscn` (a `CanvasLayer` scripted by `UI/dialogue_box.gd`), instanced in `World/Game.tscn`. The old experimental dialogue/player variants have been removed.

@@ -11,7 +11,7 @@
 [ext_resource type="PackedScene" path="res://UI/GameUI.tscn" id="10_gameui"]
 [ext_resource type="PackedScene" uid="uid://cv7m17p1q5muw" path="res://Entities/npc/npc_frog.tscn" id="11_h35pg"]
 [ext_resource type="PackedScene" path="res://UI/IssueForm.tscn" id="11_issuef"]
-[ext_resource type="PackedScene" uid="uid://4olwgwp2vlkd" path="res://dialogue_manager.tscn" id="12_dlgmgr"]
+[ext_resource type="PackedScene" uid="uid://4olwgwp2vlkd" path="res://UI/dialogue_manager.tscn" id="12_dlgmgr"]
 
 [sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_7lihs"]
 texture = ExtResource("1_vb84i")
