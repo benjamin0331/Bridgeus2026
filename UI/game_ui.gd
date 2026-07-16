@@ -11,12 +11,18 @@ var _chat_active := false
 var suppress_menu := false     # game.gd raises this while the submit form is open
 var _invite_is_voice := false
 var _voice_peer_id := -1
+var _react_buttons: Array[Button] = []
+var _react_bars: Array[ColorRect] = []
+var _reacted_targets := {}   # target_id → 已選的 idx（一人對一議題只回一個表情）
+var _count_col: VBoxContainer
+var _count_labels: Array[Label] = []
+const REACT_COL_W := 120.0   # Read 面板右側表情統計欄寬度
 
 @onready var _menu: Panel = $Menu
 @onready var _menu_title: Label = $Menu/MenuTitle
 @onready var _read: Panel = $Read
 @onready var _read_title: Label = $Read/ReadTitle
-@onready var _read_body: Label = $Read/ReadBody
+@onready var _read_body: RichTextLabel = $Read/ReadBody
 @onready var _read_close: Button = $Read/CloseButton
 @onready var _invite: Panel = $Invite
 @onready var _invite_label: Label = $Invite/InviteLabel
@@ -51,6 +57,95 @@ func _ready():
 	$Menu/VoiceButton.pressed.connect(_send_voice_invite)
 	$Voice/QuitButton.pressed.connect(_quit_voice)
 	_pitch_slider.value_changed.connect(_on_pitch)
+	_build_reaction_buttons()
+	_build_reaction_counts()
+
+# Read 面板底部一排表情按鈕：按下 → 對正在讀的對方議題送出表情回復。
+# 一人對一議題只有一個表情，但可改選：目前選的那個底部顯示灰條，按別的就換過去。
+func _build_reaction_buttons():
+	for i in Emoji.REGIONS.size():
+		var b := Button.new()
+		b.icon = Emoji.tex(i)
+		b.expand_icon = true   # 16px 圖示放大填滿按鈕
+		b.offset_left = 24 + i * 56
+		b.offset_top = 172
+		b.offset_right = b.offset_left + 48
+		b.offset_bottom = 172 + 44
+		b.pressed.connect(_on_react.bind(i))
+		_read.add_child(b)
+		_react_buttons.append(b)
+		# 底部灰條：標記「我對這個對象選的表情」。滑鼠穿透，不擋按鈕點擊。
+		var bar := ColorRect.new()
+		bar.color = Color(0.5, 0.5, 0.5)
+		bar.offset_left = 0
+		bar.offset_right = 48
+		bar.offset_top = 40
+		bar.offset_bottom = 44
+		bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		bar.visible = false
+		b.add_child(bar)
+		_react_bars.append(bar)
+
+# Read 面板右側竪排：5 個表情各自獲得幾個（emoji ×N），讓旁人一眼看出獲得了哪些。
+func _build_reaction_counts():
+	_count_col = VBoxContainer.new()
+	_count_col.add_theme_constant_override("separation", 4)
+	for i in Emoji.REGIONS.size():
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 6)
+		var tr := TextureRect.new()
+		tr.texture = Emoji.tex(i)
+		tr.custom_minimum_size = Vector2(24, 24)
+		tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		row.add_child(tr)
+		var lbl := Label.new()
+		lbl.add_theme_font_size_override("font_size", 18)
+		lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		lbl.text = "×0"
+		row.add_child(lbl)
+		_count_col.add_child(row)
+		_count_labels.append(lbl)
+	_read.add_child(_count_col)
+
+func _on_react(idx: int):
+	if _target == null:
+		return
+	var tid = _target.name.to_int()
+	if _reacted_targets.get(tid, -1) == idx:
+		return   # 已是這個表情，點同一個沒作用
+	var p = _local()
+	if p:
+		p.react_to_issue(_target, idx)   # 可改選：作者端覆蓋，頭上同步換圖示
+		_reacted_targets[tid] = idx
+		_sync_reaction_buttons()   # 灰條從舊選的移到新選的
+
+# 開啟面板時，依「我是否已回過這個對象」還原灰條狀態。
+func _sync_reaction_buttons():
+	var chosen = _reacted_targets.get(_target.name.to_int(), -1) if _target else -1
+	for i in _react_bars.size():
+		_react_bars[i].visible = i == chosen
+
+# 統計 _target.reactions 裡每個 idx 的數量，更新右側竪排。
+func _refresh_reaction_counts():
+	if _target == null:
+		return
+	var counts := {}
+	for idx in _target.reactions:
+		counts[idx] = counts.get(idx, 0) + 1
+	for i in _count_labels.size():
+		_count_labels[i].text = "×%d" % counts.get(i, 0)
+
+# 玩家節點收到新表情時呼叫：若正開著這個人的議題就即時更新數量。
+func on_reactions_changed(player):
+	if _read.visible and _target == player:
+		_refresh_reaction_counts()
+
+# 某人重新提交/刪除議題（表情歸零）時呼叫：清掉本地對他的「已回過」鎖，面板開著就刷新。
+func on_issue_reset(player):
+	_reacted_targets.erase(player.name.to_int())
+	if _read.visible and _target == player:
+		_sync_reaction_buttons()
+		_refresh_reaction_counts()
 
 # 聲波柱：通話中每幀抓頻譜能量更新 5 根柱子高度（由底往上長）。
 func _process(_delta):
@@ -100,6 +195,8 @@ func _open_read():
 		return
 	_read_title.text = _target.issue_title
 	_read_body.text = _target.issue_body if _target.issue_body != "" else "（沒有補充內容）"
+	_sync_reaction_buttons()    # 還原「我對這人選過的表情」灰條
+	_refresh_reaction_counts()  # 右側數量統計
 	_layout_read()   # 聊天開著時右邊縮短，不與聊天視窗相撞
 	_read.visible = true
 	_update_menu()
@@ -109,10 +206,16 @@ func _layout_read():
 	var right := 820.0 if _chat.visible else 1140.0
 	_read.offset_right = right
 	var inner := right - _read.offset_left   # 面板內部可用寬度
-	_read_title.offset_right = inner - 24
-	_read_body.offset_right = inner - 24
+	# 右側保留 REACT_COL_W 給表情統計欄，標題/內文右緣再往左讓開。
+	_read_title.offset_right = inner - REACT_COL_W - 24
+	_read_body.offset_right = inner - REACT_COL_W - 24
 	_read_close.offset_left = inner - 120
 	_read_close.offset_right = inner
+	if _count_col:
+		_count_col.offset_left = inner - REACT_COL_W
+		_count_col.offset_top = 16
+		_count_col.offset_right = inner - 8
+		_count_col.offset_bottom = 152   # 5 行 ~136px，落在關閉鈕(y172)之上不相撞
 
 func _close_read():
 	_read.visible = false

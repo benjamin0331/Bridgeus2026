@@ -114,6 +114,9 @@ func request_issue_sync():
 			continue
 		if p.issue_title != "":
 			p.apply_issue.rpc_id(requester, p.issue_title, p.issue_body)
+			# apply_issue 會清空表情，所以補送議題後才補送表情，順序不能反。
+			if not p.reactions.is_empty():
+				p.apply_reactions.rpc_id(requester, p.reactions)
 		if p.banner_text != "":
 			p.apply_banner.rpc_id(requester, p.banner_text, p.banner_color)
 

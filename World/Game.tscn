@@ -8,10 +8,11 @@
 [ext_resource type="Texture2D" uid="uid://clxv4hdf7hnnm" path="res://Assets/ForgottenMemories/Props.png" id="4_aduw6"]
 [ext_resource type="Texture2D" uid="uid://c3s1hkkn451xc" path="res://Assets/ForgottenMemories/campfire-Sheet.png" id="6_aduw6"]
 [ext_resource type="PackedScene" uid="uid://l1h0wq6obvlk" path="res://World/trunk.tscn" id="9_aduw6"]
-[ext_resource type="PackedScene" path="res://UI/GameUI.tscn" id="10_gameui"]
+[ext_resource type="PackedScene" uid="uid://db2w41lcr044s" path="res://UI/GameUI.tscn" id="10_gameui"]
 [ext_resource type="PackedScene" uid="uid://cv7m17p1q5muw" path="res://Entities/npc/npc_frog.tscn" id="11_h35pg"]
 [ext_resource type="PackedScene" path="res://UI/IssueForm.tscn" id="11_issuef"]
 [ext_resource type="PackedScene" uid="uid://4olwgwp2vlkd" path="res://UI/dialogue_manager.tscn" id="12_dlgmgr"]
+[ext_resource type="PackedScene" uid="uid://beqjaafens0fu" path="res://Entities/npc/npc_frog2.tscn" id="13_848uq"]
 
 [sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_7lihs"]
 texture = ExtResource("1_vb84i")
@@ -32851,12 +32852,15 @@ layout_mode = 2
 text = "取消等待"
 
 [node name="npc_frog" parent="." unique_id=358618618 instance=ExtResource("11_h35pg")]
-position = Vector2(309, -291)
+position = Vector2(326, -291)
 
 [node name="SpawnPoint" type="Marker2D" parent="." unique_id=375429483]
 position = Vector2(289, -290)
 
 [node name="DialogueManager" parent="." unique_id=1268683034 instance=ExtResource("12_dlgmgr")]
+
+[node name="npc_frog2" parent="." unique_id=1750446569 instance=ExtResource("13_848uq")]
+position = Vector2(247, -291)
 
 [connection signal="pressed" from="CanvasLayer_issue/Control/IssueButton" to="." method="_on_issue_button_pressed"]
 [connection signal="pressed" from="Control/NuclearEnegry" to="." method="_on_nuclear_enegry_pressed"]

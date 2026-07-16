@@ -46,9 +46,9 @@ offset_bottom = 290.0
 wrap_mode = 1
 
 [node name="SubmitButton" type="Button" parent="."]
-offset_left = 20.0
+offset_left = 340.0
 offset_top = 304.0
-offset_right = 140.0
+offset_right = 460.0
 offset_bottom = 340.0
 text = "送出"
 
@@ -60,9 +60,9 @@ offset_bottom = 340.0
 text = "清空"
 
 [node name="CancelButton" type="Button" parent="."]
-offset_left = 340.0
+offset_left = 20.0
 offset_top = 304.0
-offset_right = 460.0
+offset_right = 140.0
 offset_bottom = 340.0
 text = "取消提交"
 

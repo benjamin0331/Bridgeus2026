@@ -5,12 +5,24 @@ const PROXIMITY_RADIUS = 40.0
 const BUBBLE_SCALE = 0.5   # counters the 2x camera zoom so the bubble font stays crisp
 const BUBBLE_Y = -32       # ponytail: bubble height above origin; tune to sit just over the head (sprite frame is 144px tall, head ~ -10)
 const BANNER_GAP = 2       # ponytail: 頭銜被頂到議題泡泡上方時，兩框之間的間距（local 單位）
+const HEAD_MAX = 10        # 頭上表情最多顯示幾個，超過用「…」代替（完整數量看 Read 面板）
+const SPRITE_PX = 48.0     # 每個角色不論原圖尺寸，縮放到這個高度（≈青蛙 NPC 大小）
 @onready var camera = $Camera2D
 
-# Issue this player has submitted. Replicated to every peer via apply_issue().
+# Issue this player has submitted. Broadcast via apply_issue() and re-sent to
+# late joiners via game.gd's request_issue_sync.
 # stance/emotion reserved for later backend analysis; unused for now.
 var issue_title := ""
 var issue_body := ""
+
+# 頭上的表情回復（權威＝議題作者持有）。廣播與補送方式與議題相同：
+# apply_reactions() 廣播給連線中的人，request_issue_sync 補送給晚進者。
+# 公開（無底線）因為 game.gd 要讀它做補送，跟 issue_title/banner_text 一致。
+# 內容是「依回復順序的 idx 陣列」，可含重複（頭上逐個顯示、Read 面板統計數量都靠它）。
+var reactions: Array = []
+# authority-only：peer_id → 選的 idx，是表情的真正來源（reactions = 它的 values()）。
+# 一人一表情、可改選（覆蓋 value）。不同步、不補送。
+var _reactor_ids := {}
 
 # 頭銜 (banner)：像議題泡泡一樣廣播到每個 peer。文字來自後端 API（見 game.gd）。
 var banner_text := ""
@@ -21,9 +33,17 @@ var _bubble: Label
 var _banner_box: PanelContainer
 var _banner: Label
 var _banner_sb: StyleBoxFlat
+var _reactions_box: PanelContainer
+var _reactions_hbox: HBoxContainer
 var _nearby: Array = []   # other player nodes currently in range (authority only)
 var _seated := false          # 坐上木樁等待配對時鎖住移動
 var _original_pos := Vector2.ZERO
+
+# 外觀：進來時 authority 隨機擲一個角色 index，透過 synchronizer 同步（spawn=true → 晚進的人也對）。
+# moving 由 authority 依移動狀態設；每個 peer 依這兩者播 char_{appearance}_{idle|run}。
+var appearance := 0
+var moving := false
+var _scaled_for := -1   # 已依哪個 appearance 套過縮放（避免每幀重算，也讓 scale 與動畫切換脫鉤）
 
 func _enter_tree():
 	# Name carries the network id (set by the spawner). Owner = authority.
@@ -40,6 +60,7 @@ func _ready():
 	collision_mask = 1
 	_make_bubble()
 	_make_banner()
+	_make_reactions()
 	if not is_multiplayer_authority():
 		if camera:
 			camera.enabled = false
@@ -50,6 +71,16 @@ func _ready():
 	var spawn = get_parent().get_node_or_null("SpawnPoint")
 	if spawn:
 		position = spawn.position
+	# 隨機外觀：數 SpriteFrames 裡有幾個 char_N_idle（加新角色不用改這裡），擲一個。
+	var count = 0
+	for n in $AnimatedSprite2D.sprite_frames.get_animation_names():
+		if n.begins_with("char_") and n.ends_with("_idle"):
+			count += 1
+	if count > 0:
+		# 混入 peer id：多開實例常同時啟動、randomize() 用時間當種子會撞在一起，
+		# 加上各自唯一的 id 就能岔開，不會前幾個都一樣。
+		appearance = (randi() + name.to_int()) % count
+		print("[外觀] 玩家 %s → appearance %d（共 %d 種）" % [name, appearance, count])
 	# Only the locally controlled player needs proximity detection + UI.
 	_make_proximity_area()
 
@@ -60,6 +91,7 @@ func _physics_process(_delta):
 	# 坐上木樁等待配對中：鎖住移動，直到配對成功或取消。
 	if _seated:
 		velocity = Vector2.ZERO
+		moving = false
 		move_and_slide()
 		return
 
@@ -69,6 +101,7 @@ func _physics_process(_delta):
 	var ui = _ui()
 	if focus is LineEdit or focus is TextEdit or (ui and ui.blocks_movement()):
 		velocity = Vector2.ZERO
+		moving = false
 		move_and_slide()
 		return
 
@@ -77,6 +110,10 @@ func _physics_process(_delta):
 		velocity = direction * SPEED
 	else:
 		velocity = velocity.move_toward(Vector2.ZERO, SPEED)
+	# 有水平移動才翻轉；純上下移動保持原朝向。flip_h 已由 MultiplayerSynchronizer 同步。
+	if velocity.x != 0:
+		$AnimatedSprite2D.flip_h = velocity.x < 0
+	moving = velocity.length() > 1.0   # 同步給其他 peer 決定播 idle / run
 	move_and_slide()
 
 # --- visuals --------------------------------------------------------------
@@ -119,6 +156,66 @@ func _make_banner():
 	_banner_box.z_as_relative = false
 	_banner_box.visible = false
 	add_child(_banner_box)
+
+func _make_reactions():
+	# 表情列：同泡泡的世界空間＋抗 2x 縮放做法。HBox 讓表情並排。
+	_reactions_box = PanelContainer.new()
+	# 頭上表情不要黑底：空 StyleBox 去掉背景與內距。
+	_reactions_box.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
+	_reactions_hbox = HBoxContainer.new()
+	# 負間距讓表情重疊約一半（表情寬 16px → -8），按多了畫面也不會太長。
+	_reactions_hbox.add_theme_constant_override("separation", -8)
+	_reactions_box.add_child(_reactions_hbox)
+	_reactions_box.scale = Vector2(BUBBLE_SCALE, BUBBLE_SCALE)
+	_reactions_box.z_index = RenderingServer.CANVAS_ITEM_Z_MAX
+	_reactions_box.z_as_relative = false
+	_reactions_box.visible = false
+	add_child(_reactions_box)
+
+# --- render helpers (called by the apply_* RPCs on every peer) ------------
+func _render_bubble():
+	if _bubble_box == null:
+		return
+	_bubble.text = issue_title
+	_bubble_box.visible = issue_title != ""
+	_bubble_box.reset_size()
+	_bubble_box.position = Vector2(-_bubble_box.size.x * BUBBLE_SCALE / 2.0, BUBBLE_Y)
+	_reposition_banner()
+	_reposition_reactions()
+
+func _render_reactions():
+	if _reactions_box == null:
+		return
+	for c in _reactions_hbox.get_children():
+		c.queue_free()
+	# 頭上逐個重疊顯示；超過 10 個就只顯示前 10 個再接「…」（詳細數量看 Read 面板）。
+	var shown = mini(reactions.size(), HEAD_MAX)
+	for i in shown:
+		var tr = TextureRect.new()
+		tr.texture = Emoji.tex(reactions[i])
+		_reactions_hbox.add_child(tr)
+	if reactions.size() > HEAD_MAX:
+		var more = Label.new()
+		more.text = "…"
+		more.add_theme_font_size_override("font_size", 18)
+		more.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		_reactions_hbox.add_child(more)
+	_reactions_box.visible = reactions.size() > 0
+	_reactions_box.reset_size()
+	_reposition_reactions()
+
+# 表情列擺在議題泡泡/頭銜那疊的最上方。
+func _reposition_reactions():
+	if _reactions_box == null or not _reactions_box.visible:
+		return
+	_reactions_box.reset_size()
+	var x = -_reactions_box.size.x * BUBBLE_SCALE / 2.0
+	# 疊在最上方：泡泡頂在 BUBBLE_Y，頭銜（若有）再往上一層，表情放頭銜之上。
+	var top = float(BUBBLE_Y)
+	if _banner_box.visible:
+		top -= _banner_box.size.y * BUBBLE_SCALE + BANNER_GAP
+	top -= _reactions_box.size.y * BUBBLE_SCALE + BANNER_GAP
+	_reactions_box.position = Vector2(x, top)
 
 func _make_proximity_area():
 	var area = Area2D.new()
@@ -188,17 +285,45 @@ func submit_issue(title: String, body: String) -> void:
 func apply_issue(title: String, body: String):
 	issue_title = title
 	issue_body = body
-	_bubble.text = title
-	_bubble_box.visible = title != ""
-	_bubble_box.reset_size()
-	_bubble_box.position = Vector2(-_bubble_box.size.x * BUBBLE_SCALE / 2.0, BUBBLE_Y)
-	# 議題有無會影響頭銜要不要被頂上去 → 重算頭銜位置。
-	_reposition_banner()
+	reactions.clear()      # 新議題清掉舊表情——涵蓋重新提交與刪除（刪除＝提交空議題）
+	_reactor_ids.clear()   # 一併清掉「誰回過」的記錄，新議題可重新回復
+	_render_bubble()
+	_render_reactions()
 	# A nearby peer's menu was rendered before this issue arrived — refresh it so
 	# "（對方尚未提交議題）" updates to the real title in real time.
 	var ui = _ui()
 	if ui:
 		ui.refresh_menu()
+		# 新議題把表情歸零 → 讀者端解除對這人的「已回過」鎖，可重新回復。
+		ui.on_issue_reset(self)
+
+# --- issue reactions (same broadcast + late-join pattern as issues) --------
+# Local (reader side): react to `target`'s issue. Only the target's authority may
+# mutate its reaction list, so we RPC the author, who then broadcasts the result.
+func react_to_issue(target, idx: int) -> void:
+	target.add_reaction.rpc_id(target.name.to_int(), idx)
+
+@rpc("any_peer", "reliable")
+func add_reaction(idx: int) -> void:
+	if not is_multiplayer_authority():
+		return
+	if issue_title == "":
+		return   # 沒議題就沒得回復（UI 已擋，防呆）。
+	# 一人一表情、可改選：直接覆蓋這個 peer 的選擇。Dictionary 改 value 不動 key 順序，
+	# 所以改選時該 peer 在頭上表情列的位置不變、只換圖示。reactions 由此導出後廣播。
+	var sender = multiplayer.get_remote_sender_id()
+	_reactor_ids[sender] = idx
+	reactions = _reactor_ids.values()
+	apply_reactions.rpc(reactions)
+
+@rpc("authority", "call_local", "reliable")
+func apply_reactions(arr: Array):
+	reactions = arr
+	_render_reactions()
+	# Read 面板若正開著這個人，更新右側的表情數量統計。
+	var ui = _ui()
+	if ui:
+		ui.on_reactions_changed(self)
 
 # --- banner 頭銜 (authority broadcasts to everyone) -----------------------
 # 本地選了頭銜或改了顏色 → 廣播給所有 peer。
@@ -342,10 +467,26 @@ func _stop_voice():
 # --- voice audio transport ------------------------------------------------
 # 本地玩家每幀把擷取到的變調後 PCM 送給通話對象。
 func _process(_delta):
+	_update_anim()
 	if _in_voice and is_multiplayer_authority():
 		var f = VoiceChat.get_captured_frames()
 		if f.size() > 0:
 			receive_voice.rpc_id(_voice_peer, f)
+
+# 每個 peer 都跑：依同步來的 appearance + moving 播對應動畫（idle/run）。
+func _update_anim():
+	var s = $AnimatedSprite2D
+	var want = "char_%d_%s" % [appearance, "run" if moving else "idle"]
+	if s.animation != want:
+		s.play(want)
+	# 縮放依 appearance 設一次即可（與 idle/run 切換脫鉤，否則移動時才套用會「忽大忽小」）。
+	if _scaled_for != appearance:
+		_scaled_for = appearance
+		# 依格子高度正規化到 SPRITE_PX 高（統一 48px 素材 → scale 1 → 跟青蛙一樣大）。
+		var tex = s.sprite_frames.get_frame_texture("char_%d_idle" % appearance, 0)
+		if tex and tex.get_height() > 0:
+			var k = SPRITE_PX / float(tex.get_height())
+			s.scale = Vector2(k, k)
 
 @rpc("any_peer", "unreliable")
 func receive_voice(frames: PackedVector2Array):
