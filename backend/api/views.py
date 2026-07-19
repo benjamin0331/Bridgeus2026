@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import uuid as _uuid_mod
+from decimal import Decimal
 from functools import lru_cache
 from uuid import uuid4
 
@@ -20,7 +21,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from apps.matching.services.semantic import build_q9_embedding
 from apps.summary.models import ViewpointNode
 
-from .permissions import IsResearcher
+from .permissions import IsGodotServiceToken, IsResearcher
 
 from .models import (
     AIConversation,
@@ -2278,3 +2279,70 @@ class IssueReactionsView(APIView):
             defaults={"emoji_index": emoji_index},
         )
         return self.get(request, issue_id)
+
+
+class GodotMatchRoomView(APIView):
+    """POST /api/godot/match-rooms/ — 給常駐 headless Godot server 呼叫，把兩位
+    已在主功能登入的玩家直接配成一間議題聊天室，不走 M3 立場配對佇列
+    （MatchingJoinView/enqueue_for_matching）。契約見
+    godot-backend-integration.md §3.3；身份用共用服務金鑰而非 user JWT，見
+    godot-web-deployment-spec.md §4。"""
+
+    # 呼叫者是 Godot server、不是使用者，沒有也不該有 JWT。清空 authentication_classes
+    # 是必要的：預設的 JWTAuthentication 遇到過期/損壞的 Authorization header 會
+    # 直接丟 401，根本輪不到底下的服務金鑰驗證跑。
+    authentication_classes = []
+    permission_classes = [IsGodotServiceToken]
+
+    def post(self, request):
+        topic_id = request.data.get("topic_id")
+        user_ids = request.data.get("user_ids")
+
+        if not isinstance(topic_id, int) or topic_id not in TOPIC_CONFIGS:
+            return Response(
+                {"detail": "topic_id 無效。"}, status=status.HTTP_400_BAD_REQUEST
+            )
+        if (
+            not isinstance(user_ids, list)
+            or len(user_ids) != 2
+            or user_ids[0] == user_ids[1]
+        ):
+            return Response(
+                {"detail": "user_ids 需為兩個不同的使用者 id。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            user_a = User.objects.get(pk=user_ids[0])
+            user_b = User.objects.get(pk=user_ids[1])
+        except User.DoesNotExist:
+            return Response(
+                {"detail": "找不到其中一位使用者。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Godot 木樁配對只做「同議題湊一對」，不跑 M3 立場向量配對，所以沒有
+        # 真實 stance score 可用——user_a_score/user_b_score 只是滿足 DB 1-7
+        # constraint 的中性佔位值。matching_algorithm_version 標成
+        # "godot_manual"，方便日後分析時跟真正演算法配對的資料分開看。
+        match = DialogueMatch.objects.create(
+            topic_id=topic_id,
+            user_a=user_a,
+            user_b=user_b,
+            user_a_score=Decimal("4.00"),
+            user_b_score=Decimal("4.00"),
+            matching_algorithm_version="godot_manual",
+            room_id=uuid4().hex,
+            status=DialogueMatch.Status.ACTIVE,
+        )
+
+        return Response(
+            {
+                "room_id": match.room_id,
+                # 前端沒有獨立的 /dialogue/room/<id> 路由——配對聊天室其實是
+                # TopicChat.jsx 掛在 /topic/<topic_id>?mode=match，內部再用
+                # GET /api/matching/status/?topic_id= 找到這筆 DialogueMatch。
+                "redirect_url": f"/topic/{topic_id}?mode=match",
+            },
+            status=status.HTTP_201_CREATED,
+        )

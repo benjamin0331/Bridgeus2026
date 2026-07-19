@@ -108,4 +108,5 @@ urlpatterns = [
         'issues/<int:issue_id>/reactions/',
         views.IssueReactionsView.as_view(),
     ),
+    path('godot/match-rooms/', views.GodotMatchRoomView.as_view()),
 ]
