@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import generics, permissions, status
@@ -29,7 +30,9 @@ from .models import (
     MatchStanceDrift,
     PlatformFeedback,
     PostDialogueResponse,
+    Title,
     UserStanceProfile,
+    UserTitle,
 )
 from .dialogue_topics import (
     TOPIC_CONFIGS,
@@ -2154,3 +2157,50 @@ class IssueListCreateView(APIView):
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+class TitleMeView(APIView):
+    """GET/POST /api/titles/me/ — 玩家在 Godot 大廳看/選自己擁有的頭銜。
+    頭銜本身怎麼解鎖由主功能成就系統決定（見 UserTitle 模型註解），這裡只管
+    「我有哪些、目前選哪個」。契約見 godot-backend-integration.md §3.1。"""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        owned = UserTitle.objects.filter(user=request.user).select_related("title")
+        selected = next((ut for ut in owned if ut.is_selected), None)
+        return Response(
+            {
+                "owned": [{"id": ut.title_id, "name": ut.title.name} for ut in owned],
+                "selected_id": selected.title_id if selected else None,
+                "color": (selected.color or selected.title.color) if selected else None,
+            }
+        )
+
+    def post(self, request):
+        title_id = request.data.get("title_id")
+        color = request.data.get("color")
+
+        target = None
+        if title_id is not None:
+            try:
+                target = UserTitle.objects.get(user=request.user, title_id=title_id)
+            except UserTitle.DoesNotExist:
+                return Response(
+                    {"detail": "尚未擁有這個頭銜。"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        # 驗證擁有權先於任何寫入——避免「清掉舊選擇後才發現目標無效」把使用者
+        # 的選擇狀態意外清空。
+        with transaction.atomic():
+            UserTitle.objects.filter(user=request.user, is_selected=True).update(
+                is_selected=False
+            )
+            if target is not None:
+                if color:
+                    target.color = color
+                target.is_selected = True
+                target.save(update_fields=["is_selected", "color"])
+
+        return self.get(request)

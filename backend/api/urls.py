@@ -103,4 +103,5 @@ urlpatterns = [
     ),
     path('guest/', views.GuestLoginView.as_view()),
     path('issues/', views.IssueListCreateView.as_view()),
+    path('titles/me/', views.TitleMeView.as_view()),
 ]
