@@ -272,7 +272,7 @@
 
 .history-timeline-bar {
   flex: 0 0 auto;
-  margin-top: 10px;
+  margin-bottom: 10px;
   display: grid;
   gap: 6px;
   border-radius: 18px;

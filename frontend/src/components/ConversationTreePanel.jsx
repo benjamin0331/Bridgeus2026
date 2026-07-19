@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-  easeCubicOut,
   hierarchy,
   linkRadial,
   max,
@@ -547,7 +546,7 @@ function ConversationTreePanel({
     ? '雙方想法脈絡'
     : '我的想法脈絡';
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const svgNode = svgRef.current;
     const shellNode = shellRef.current;
     if (!svgNode || !shellNode) {
@@ -601,8 +600,6 @@ function ConversationTreePanel({
       const radialLink = linkRadial()
         .angle((node) => node.angle)
         .radius((node) => node.radius);
-      const transition = svg.transition().duration(420).ease(easeCubicOut);
-
       zoomLayer
         .append('g')
         .attr('class', 'conversation-tree-links')
@@ -610,10 +607,7 @@ function ConversationTreePanel({
         .data(root.links())
         .join('path')
         .attr('class', 'conversation-tree-link')
-        .attr('d', radialLink)
-        .attr('opacity', 0)
-        .transition(transition)
-        .attr('opacity', 1);
+        .attr('d', radialLink);
 
       const node = zoomLayer
         .append('g')
@@ -623,7 +617,6 @@ function ConversationTreePanel({
         .join('g')
         .attr('class', nodeClassName)
         .attr('transform', transformFromPosition)
-        .attr('opacity', 0)
         .on('click', (event, item) => {
           event.stopPropagation();
           setSelectedNodeId(item.data.id);
@@ -646,10 +639,6 @@ function ConversationTreePanel({
           const messages = nodeMessages(item.data).map((message) => message.text).filter(Boolean);
           return [item.data.name, ...messages].join('\n');
         });
-
-      node
-        .transition(transition)
-        .attr('opacity', 1);
 
       const zoomBehavior = zoom()
         .scaleExtent([0.58, 2.5])
@@ -677,7 +666,6 @@ function ConversationTreePanel({
       resizeObserver.disconnect();
       svg.on('.zoom', null);
       svg.on('click', null);
-      svg.selectAll('*').remove();
     };
   }, [isActive, visibleTreeData]);
 

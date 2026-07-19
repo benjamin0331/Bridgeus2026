@@ -79,6 +79,16 @@ function isElementNearBottom(element) {
   return distanceFromBottom <= MATCH_SCROLL_BOTTOM_THRESHOLD_PX;
 }
 
+function semanticTreePayloadKey(payload) {
+  if (payload?.session_id) {
+    return `ai:${payload.session_id}`;
+  }
+  if (payload?.room_id) {
+    return `match:${payload.room_id}`;
+  }
+  return '';
+}
+
 function mapHistoryToMessages(history, userName) {
   return history.map((message, index) => ({
     id: `${message.role}-${index}`,
@@ -268,6 +278,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const shouldAutoScrollAiRef = useRef(true);
   const shouldAutoScrollMatchRef = useRef(true);
   const semanticTreeAnalyzeSignatureRef = useRef('');
+  const semanticTreeRequestIdRef = useRef(0);
   const currentIssue = issues?.find((item) => item.id === parseInt(id, 10));
   const displayUserName = user?.name || '公民';
   const matchPartnerName = MATCH_PARTNER_NAME;
@@ -322,6 +333,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
   }, []);
 
   const resetAiSemanticTreeState = useCallback(() => {
+    semanticTreeRequestIdRef.current += 1;
     setSemanticTreePayload(null);
     setSemanticTreeStatus('ready');
     setSemanticTreeMessage('');
@@ -381,7 +393,24 @@ function TopicChat({ user, issues, issuesLoaded }) {
   }, [resetAiSemanticTreeState]);
 
   const applySemanticTreePayload = useCallback((payload) => {
-    setSemanticTreePayload(payload || null);
+    if (!payload?.treeData) {
+      return;
+    }
+
+    setSemanticTreePayload((currentPayload) => {
+      if (semanticTreePayloadKey(currentPayload) !== semanticTreePayloadKey(payload)) {
+        return payload;
+      }
+
+      const currentAnalyzedCount = Array.isArray(currentPayload?.analyzedSourceIds)
+        ? currentPayload.analyzedSourceIds.length
+        : 0;
+      const incomingAnalyzedCount = Array.isArray(payload.analyzedSourceIds)
+        ? payload.analyzedSourceIds.length
+        : 0;
+
+      return incomingAnalyzedCount < currentAnalyzedCount ? currentPayload : payload;
+    });
     setSemanticTreeStatus(payload?.analysisStatus || 'ready');
     setSemanticTreeMessage(payload?.message || '');
   }, []);
@@ -405,12 +434,13 @@ function TopicChat({ user, issues, issuesLoaded }) {
     const isNearBottom = isElementNearBottom(event.currentTarget);
     if (!isMatchingMode) {
       shouldAutoScrollAiRef.current = isNearBottom;
+      setShowScrollToBottomButton(Boolean(sessionId) && !isNearBottom);
       return;
     }
 
     shouldAutoScrollMatchRef.current = isNearBottom;
     setShowScrollToBottomButton(isMatchChatReady && !isNearBottom);
-  }, [isMatchChatReady, isMatchingMode]);
+  }, [isMatchChatReady, isMatchingMode, sessionId]);
 
   const handleScrollToBottom = useCallback(() => {
     shouldAutoScrollAiRef.current = true;
@@ -531,7 +561,10 @@ function TopicChat({ user, issues, issuesLoaded }) {
     }
 
     if (shouldAutoScrollAiRef.current) {
-      scrollMessagesToBottom('smooth');
+      scrollMessagesToBottom('auto');
+      setShowScrollToBottomButton(false);
+    } else {
+      setShowScrollToBottomButton(true);
     }
   }, [isAgentStreaming, isMatchingMode, isSending, messages, scrollMessagesToBottom]);
 
@@ -548,7 +581,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     }
 
     if (shouldAutoScrollMatchRef.current) {
-      scrollMessagesToBottom('smooth');
+      scrollMessagesToBottom('auto');
       setShowScrollToBottomButton(false);
     } else {
       setShowScrollToBottomButton(true);
@@ -947,12 +980,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
     }
 
     if (!isMatchChatReady || !matchingState?.room_id) {
-      setSemanticTreePayload(null);
-      setSemanticTreeStatus('ready');
-      setSemanticTreeMessage('');
+      semanticTreeRequestIdRef.current += 1;
       setIsSemanticTreeLoading(false);
       setIsSemanticTreeAnalyzing(false);
-      semanticTreeAnalyzeSignatureRef.current = '';
       return undefined;
     }
 
@@ -960,17 +990,19 @@ function TopicChat({ user, issues, issuesLoaded }) {
     const roomId = matchingState.room_id;
 
     const fetchSemanticTree = async () => {
+      const requestId = semanticTreeRequestIdRef.current + 1;
+      semanticTreeRequestIdRef.current = requestId;
       setIsSemanticTreeLoading(true);
       setSemanticTreeStatus('ready');
       setSemanticTreeMessage('');
 
       try {
         const response = await api.get(`/api/matching/rooms/${roomId}/semantic-tree/`);
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           applySemanticTreePayload(response.data);
         }
       } catch (error) {
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           setSemanticTreeStatus(error?.response?.data?.analysisStatus || 'load_failed');
           setSemanticTreeMessage(
             error?.response?.data?.message ||
@@ -999,29 +1031,28 @@ function TopicChat({ user, issues, issuesLoaded }) {
     }
 
     if (!sessionId) {
-      setSemanticTreePayload(null);
-      setSemanticTreeStatus('ready');
-      setSemanticTreeMessage('');
+      semanticTreeRequestIdRef.current += 1;
       setIsSemanticTreeLoading(false);
       setIsSemanticTreeAnalyzing(false);
-      semanticTreeAnalyzeSignatureRef.current = '';
       return undefined;
     }
 
     let cancelled = false;
 
     const fetchSemanticTree = async () => {
+      const requestId = semanticTreeRequestIdRef.current + 1;
+      semanticTreeRequestIdRef.current = requestId;
       setIsSemanticTreeLoading(true);
       setSemanticTreeStatus('ready');
       setSemanticTreeMessage('');
 
       try {
         const response = await api.get(`/api/dialogue/sessions/${sessionId}/semantic-tree/`);
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           applySemanticTreePayload(response.data);
         }
       } catch (error) {
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           setSemanticTreeStatus(error?.response?.data?.analysisStatus || 'load_failed');
           setSemanticTreeMessage(
             error?.response?.data?.message ||
@@ -1061,16 +1092,18 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
     let cancelled = false;
     const timer = window.setTimeout(async () => {
+      const requestId = semanticTreeRequestIdRef.current + 1;
+      semanticTreeRequestIdRef.current = requestId;
       setIsSemanticTreeAnalyzing(true);
 
       try {
         const response = await api.post(`/api/matching/rooms/${roomId}/semantic-tree/analyze/`);
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           applySemanticTreePayload(response.data);
           semanticTreeAnalyzeSignatureRef.current = signature;
         }
       } catch (error) {
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           setSemanticTreeStatus(error?.response?.data?.analysisStatus || 'analyze_failed');
           setSemanticTreeMessage(
             error?.response?.data?.message ||
@@ -1080,7 +1113,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
           semanticTreeAnalyzeSignatureRef.current = signature;
         }
       } finally {
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           setIsSemanticTreeAnalyzing(false);
         }
       }
@@ -1104,16 +1137,18 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
     let cancelled = false;
     const timer = window.setTimeout(async () => {
+      const requestId = semanticTreeRequestIdRef.current + 1;
+      semanticTreeRequestIdRef.current = requestId;
       setIsSemanticTreeAnalyzing(true);
 
       try {
         const response = await api.post(`/api/dialogue/sessions/${sessionId}/semantic-tree/analyze/`);
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           applySemanticTreePayload(response.data);
           semanticTreeAnalyzeSignatureRef.current = signature;
         }
       } catch (error) {
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           setSemanticTreeStatus(error?.response?.data?.analysisStatus || 'analyze_failed');
           setSemanticTreeMessage(
             error?.response?.data?.message ||
@@ -1123,7 +1158,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
           semanticTreeAnalyzeSignatureRef.current = signature;
         }
       } finally {
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           setIsSemanticTreeAnalyzing(false);
         }
       }
@@ -1468,8 +1503,6 @@ function TopicChat({ user, issues, issuesLoaded }) {
       setInputValue('');
       setMatchChatError('');
       setIsMatchSending(true);
-      shouldAutoScrollMatchRef.current = true;
-      setShowScrollToBottomButton(false);
 
       try {
         const socket = matchWsRef.current;
@@ -1538,7 +1571,6 @@ function TopicChat({ user, issues, issuesLoaded }) {
       aiSendCooldownTimerRef.current = null;
     }, 300);
 
-    shouldAutoScrollAiRef.current = true;
     setMessages((prev) => [
       ...prev,
       {
@@ -2117,7 +2149,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
     : 0;
   const metricMessageCount = isMatchingMode ? matchMessageCount : messages.length;
   const semanticTreeMessageCount = isMatchingMode ? matchMessageCount : aiUserMessageCount;
-  const isSemanticTreeActive = isMatchingMode ? isMatchChatReady : Boolean(sessionId);
+  const isSemanticTreeActive = isMatchingMode
+    ? isMatchChatReady || Boolean(semanticTreePayload)
+    : Boolean(sessionId) || Boolean(semanticTreePayload);
   const driftValueDisplay = isMatchingMode
     ? formatDriftValue(matchStanceDrift?.drift_value)
     : formatDriftValue(aiStanceDrift?.drift_value);
@@ -2240,7 +2274,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
           )}
         </div>
 
-        {isMatchingMode && isMatchChatReady && showScrollToBottomButton && (
+        {(isMatchingMode ? isMatchChatReady : Boolean(sessionId)) && showScrollToBottomButton && (
           <button
             className="scroll-to-bottom-btn"
             type="button"

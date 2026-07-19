@@ -482,17 +482,6 @@ function HistoryPage() {
           )}
           {analysisError && detail && <span className="history-analysis-error">{analysisError}</span>}
         </div>
-        <ConversationTreePanel
-          topicTitle={detail?.topic_title || '想法脈絡圖'}
-          treeData={displayedTreeData}
-          trees={isViewingLatest ? treePayload?.trees || EMPTY_TREES : EMPTY_TREES}
-          messageCount={detail?.messages?.length || 0}
-          mode={detail?.kind === 'match' ? 'matching' : 'ai'}
-          isActive={Boolean(detail)}
-          isLoading={isDetailLoading}
-          isAnalyzing={isAnalyzing}
-          analysisStatus={treePayload?.analysisStatus || 'ready'}
-        />
         {/* 時間軸在對話後問卷（含 Part F）完成前是鎖住的——受試者若能先回顧自己的
             CCND，就會在回答 C3／F4 這些 CCND 自陳題前看到被測量的東西。後端也會擋，
             這裡只是不顯示入口。 */}
@@ -542,6 +531,17 @@ function HistoryPage() {
             {timelineError && <span className="history-timeline-error">{timelineError}</span>}
           </div>
         )}
+        <ConversationTreePanel
+          topicTitle={detail?.topic_title || '想法脈絡圖'}
+          treeData={displayedTreeData}
+          trees={isViewingLatest ? treePayload?.trees || EMPTY_TREES : EMPTY_TREES}
+          messageCount={detail?.messages?.length || 0}
+          mode={detail?.kind === 'match' ? 'matching' : 'ai'}
+          isActive={Boolean(detail)}
+          isLoading={isDetailLoading}
+          isAnalyzing={isAnalyzing}
+          analysisStatus={treePayload?.analysisStatus || 'ready'}
+        />
         {detail?.timeline_unlocked && insights && <CcndInsightsPanel
           insights={insights}
           showRaw={showRawMetrics}
