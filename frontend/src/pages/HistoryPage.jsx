@@ -70,26 +70,31 @@ function timelineMessagesFor(detail) {
   return detail.messages.filter((message) => message.role === 'user');
 }
 
-function formatJaccard(value) {
-  return Number.isFinite(value) ? value.toFixed(2) : '—';
+const PHASE_LABELS = ['對話前段', '對話中段', '對話後段'];
+
+function phaseLabel(index, total) {
+  if (total === 3) {
+    return PHASE_LABELS[index];
+  }
+  return `第 ${index + 1} 段`;
 }
 
-/** 概念展開回顧。兩層：白話一句話 + 可展開的原始研究指標。
+/** 概念展開回顧。兩層：白話一句話 + 可展開的「各階段新增」。
+ *  全部用一般人看得懂的說法，不出現 Jaccard、T1/T2 這種研究術語。
  *  資料只含使用者自己那一側（後端已剝掉對方的 partner_side）。 */
 function CcndInsightsPanel({ insights, showRaw, onToggleRaw }) {
-  const { summary, novelty, similarity } = insights;
+  const { summary, novelty } = insights;
   const firstAppearance = novelty?.first_appearance || [];
   const newMicros = summary?.new_micros_per_segment || [];
   // 第一段之後才首次出現的概念數 = 對話展開過程中「長出來」的部分
   const laterNew = newMicros.slice(1).reduce((total, count) => total + count, 0);
-  const pairs = similarity?.pairs || [];
 
   return (
     <div className="history-insights">
       <div className="history-insights-head">
         <strong>你的概念展開回顧</strong>
         <button type="button" className="history-insights-toggle" onClick={onToggleRaw}>
-          {showRaw ? '收起詳細指標' : '顯示詳細指標'}
+          {showRaw ? '收起各階段' : '看各階段'}
         </button>
       </div>
 
@@ -114,14 +119,12 @@ function CcndInsightsPanel({ insights, showRaw, onToggleRaw }) {
         </ol>
       )}
 
-      {showRaw && (
+      {showRaw && newMicros.length > 0 && (
         <div className="history-insights-raw">
-          <div>{`分段新增（面向）：${(summary.new_macros_per_segment || []).join(' / ')}`}</div>
-          <div>{`分段新增（概念）：${newMicros.join(' / ')}`}</div>
-          {pairs.map((pair) => (
-            <div key={pair.pair}>
-              {`${pair.pair} Jaccard — 面向 ${formatJaccard(pair.macro?.jaccard)}、`}
-              {`概念 ${formatJaccard(pair.micro?.jaccard)}`}
+          <span className="history-insights-raw-title">把對話平均分成幾段，各段新出現的概念數：</span>
+          {newMicros.map((count, index) => (
+            <div key={phaseLabel(index, newMicros.length)}>
+              {`${phaseLabel(index, newMicros.length)}：新增 ${count} 個概念`}
             </div>
           ))}
         </div>

@@ -36,7 +36,8 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 14px;
 }
 
@@ -261,12 +262,17 @@
   font-weight: 800;
 }
 
+/* 樹狀圖保留完整操作空間；高度不足時由右側 panel 捲動，
+   避免壓縮後裁掉 canvas 或節點詳情。 */
+.history-tree-panel > .conversation-tree-panel {
+  flex: 1 0 auto;
+  min-height: 480px;
+  height: auto;
+}
+
 .history-timeline-bar {
-  position: absolute;
-  bottom: 14px;
-  left: 18px;
-  right: 18px;
-  z-index: 3;
+  flex: 0 0 auto;
+  margin-top: 10px;
   display: grid;
   gap: 6px;
   border-radius: 18px;
@@ -313,7 +319,10 @@
 
 /* 概念展開回顧（白話層 + 可展開的原始指標） */
 .history-insights {
+  flex: 0 0 auto;
   margin-top: 10px;
+  max-height: 40%;
+  overflow-y: auto;
   padding: 12px 14px;
   background: rgba(255, 250, 241, 0.8);
   border: 1px solid rgba(127, 101, 78, 0.22);
@@ -373,8 +382,15 @@
   padding-top: 8px;
   border-top: 1px dashed rgba(127, 101, 78, 0.28);
   color: #6d5a47;
-  font-size: 11px;
-  line-height: 1.6;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.history-insights-raw-title {
+  display: block;
+  margin-bottom: 4px;
+  color: #3a2d25;
+  font-weight: 800;
 }
 
 .history-empty-card {
