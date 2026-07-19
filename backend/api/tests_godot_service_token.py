@@ -53,3 +53,19 @@ def test_token_prefix_is_not_accepted():
     """避免用 startswith 之類的比對寫法。"""
     assert IsGodotServiceToken().has_permission(_request("correct"), None) is False
     assert IsGodotServiceToken().has_permission(_request("correct-token-extra"), None) is False
+
+
+@override_settings(GODOT_SERVICE_TOKEN="correct-token")
+def test_non_ascii_header_is_denied_not_500():
+    """Django 用 latin-1 解 header，非 ASCII 位元組會讓 compare_digest 對 str
+    丟 TypeError → 500。改比對 bytes 後應該安靜地回 False。"""
+    assert IsGodotServiceToken().has_permission(_request("tökén"), None) is False
+    assert IsGodotServiceToken().has_permission(_request("金鑰"), None) is False
+
+
+@override_settings(GODOT_SERVICE_TOKEN="correct-token")
+def test_non_ascii_secret_still_matches_itself():
+    """金鑰本身含非 ASCII 也要能正常比對（不該因為 encode 就壞掉）。"""
+    with override_settings(GODOT_SERVICE_TOKEN="祕密金鑰"):
+        assert IsGodotServiceToken().has_permission(_request("祕密金鑰"), None) is True
+        assert IsGodotServiceToken().has_permission(_request("其他"), None) is False

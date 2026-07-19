@@ -41,4 +41,8 @@ class IsGodotServiceToken(BasePermission):
         if not configured:
             return False
         provided = request.META.get("HTTP_X_GODOT_SERVICE_TOKEN", "")
-        return hmac.compare_digest(provided, configured)
+        # 比對 bytes 而非 str：Django 用 latin-1 解 header，任何 >127 的位元組都會
+        # 變成非 ASCII str，而 compare_digest 對非 ASCII str 會丟 TypeError——
+        # 那不會放行（仍是拒絕），但會變成 500，等於讓任何人都能灌錯誤日誌。
+        # encode 後兩邊都是 bytes，compare_digest 照樣是常數時間比對。
+        return hmac.compare_digest(provided.encode("utf-8"), configured.encode("utf-8"))

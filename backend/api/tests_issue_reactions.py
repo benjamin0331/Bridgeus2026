@@ -147,3 +147,61 @@ def test_post_404_for_missing_issue():
     )
 
     assert response.status_code == 404
+
+
+@pytest.mark.django_db
+def test_react_rejects_boolean_emoji_index():
+    """bool 是 int 的子類別，JSON 的 true 不擋就會變成 emoji_index=1。
+    這是驗證條件裡 isinstance(..., bool) 那一句存在的唯一理由——
+    沒有這個測試，未來有人「簡化」掉那句，測試還是全綠。"""
+    author = User.objects.create_user(username="author", password="pw")
+    issue = Issue.objects.create(author=author, title="核能", body="...")
+    client = APIClient()
+    client.force_authenticate(user=author)
+
+    for value in (True, False):
+        response = client.post(
+            f"/api/issues/{issue.id}/reactions/",
+            {"emoji_index": value},
+            format="json",
+        )
+        assert response.status_code == 400, f"{value!r} 應該被拒絕"
+    assert not IssueReaction.objects.filter(issue=issue).exists()
+
+
+@pytest.mark.django_db
+def test_react_rejects_negative_emoji_index():
+    """-1 若沒在 view 擋掉，會一路撞到 PositiveSmallIntegerField 變成 500。"""
+    author = User.objects.create_user(username="author", password="pw")
+    issue = Issue.objects.create(author=author, title="核能", body="...")
+    client = APIClient()
+    client.force_authenticate(user=author)
+
+    response = client.post(
+        f"/api/issues/{issue.id}/reactions/", {"emoji_index": -1}, format="json"
+    )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.django_db
+def test_reactions_are_isolated_per_issue():
+    """對 A 議題按表情不能影響 B 議題的統計。counts/mine 都有 issue_id 過濾，
+    但沒有測試釘住的話，過濾條件被拿掉不會有人發現。"""
+    author = User.objects.create_user(username="author", password="pw")
+    reader = User.objects.create_user(username="reader", password="pw")
+    issue_a = Issue.objects.create(author=author, title="核能", body="...")
+    issue_b = Issue.objects.create(author=author, title="兵役", body="...")
+    client = APIClient()
+    client.force_authenticate(user=reader)
+
+    client.post(f"/api/issues/{issue_a.id}/reactions/", {"emoji_index": 2}, format="json")
+
+    response_b = client.get(f"/api/issues/{issue_b.id}/reactions/")
+    assert response_b.status_code == 200
+    assert response_b.data["counts"] == {}
+    assert response_b.data["mine"] is None
+
+    response_a = client.get(f"/api/issues/{issue_a.id}/reactions/")
+    assert response_a.data["counts"] == {"2": 1}
+    assert response_a.data["mine"] == 2
