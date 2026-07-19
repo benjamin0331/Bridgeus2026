@@ -2302,13 +2302,17 @@ class GodotMatchRoomView(APIView):
             return Response(
                 {"detail": "topic_id 無效。"}, status=status.HTTP_400_BAD_REQUEST
             )
+        # 元素型別也要擋：User.objects.get(pk="a") 丟的是 ValueError 不是
+        # DoesNotExist，下面的 try/except 接不到，會變成 500。bool 一併排除
+        # （bool 是 int 的子類別，True 會被當成 pk=1）。
         if (
             not isinstance(user_ids, list)
             or len(user_ids) != 2
+            or any(isinstance(u, bool) or not isinstance(u, int) for u in user_ids)
             or user_ids[0] == user_ids[1]
         ):
             return Response(
-                {"detail": "user_ids 需為兩個不同的使用者 id。"},
+                {"detail": "user_ids 需為兩個不同的使用者 id（整數）。"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -2319,6 +2323,30 @@ class GodotMatchRoomView(APIView):
             return Response(
                 {"detail": "找不到其中一位使用者。"},
                 status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # 冪等：同一對人、同一議題已經有進行中的房間就直接沿用，不再開一間。
+        # Godot server 重試或玩家重複觸發都可能打第二次，而下游
+        # _get_active_match() 是 .first() 且沒有 order_by——真的開出兩間 ACTIVE
+        # 的話，兩位參與者可能各自被導到不同房間、看到空的聊天室。
+        existing = (
+            DialogueMatch.objects.filter(
+                topic_id=topic_id,
+                status=DialogueMatch.Status.ACTIVE,
+            )
+            .filter(
+                Q(user_a=user_a, user_b=user_b) | Q(user_a=user_b, user_b=user_a)
+            )
+            .order_by("-created_at")
+            .first()
+        )
+        if existing:
+            return Response(
+                {
+                    "room_id": existing.room_id,
+                    "redirect_url": f"/topic/{topic_id}?mode=match",
+                },
+                status=status.HTTP_200_OK,
             )
 
         # Godot 木樁配對只做「同議題湊一對」，不跑 M3 立場向量配對，所以沒有
