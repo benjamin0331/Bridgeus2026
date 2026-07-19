@@ -594,6 +594,35 @@ class Issue(models.Model):
         return f"Issue({self.id}) by user={self.author_id}: {self.title[:40]}"
 
 
+class Title(models.Model):
+    """一個頭銜的定義。擁有/解鎖關係另存在 UserTitle——由主功能的成就系統
+    決定誰擁有什麼，這裡只是頭銜本身的名稱與預設顏色。"""
+    name = models.CharField(max_length=50, unique=True)
+    color = models.CharField(max_length=7, null=True, blank=True)  # 預設 hex 色，UserTitle.color 可覆蓋
+
+    def __str__(self):
+        return self.name
+
+
+class UserTitle(models.Model):
+    """使用者擁有某個頭銜的紀錄，外加是否為目前選擇顯示、以及玩家自訂顏色。
+    一個使用者同時只能選一個頭銜——由 view 端在同一個 transaction 內先清掉
+    舊選擇再設新的來保證，沒有用 DB 層的 partial unique index（SQLite 相容性）。"""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="owned_titles")
+    title = models.ForeignKey(Title, on_delete=models.CASCADE, related_name="holders")
+    unlocked_at = models.DateTimeField(auto_now_add=True)
+    is_selected = models.BooleanField(default=False)
+    color = models.CharField(max_length=7, null=True, blank=True)  # 玩家自訂色，蓋過 Title.color
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["user", "title"], name="user_title_unique"),
+        ]
+
+    def __str__(self):
+        return f"{self.user_id}:{self.title.name}"
+
+
 class CCNDTimelineUnlock(models.Model):
     """Researcher-issued override that unlocks one participant's CCND timeline
     for one conversation ahead of the normal gate.
