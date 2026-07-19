@@ -30,6 +30,12 @@ urlpatterns = [
         'history/conversations/<str:kind>/<str:conversation_id>/ccnd-insights/',
         views.CCNDInsightsView.as_view(),
     ),
+    # staff-only: M6 觀點知識庫 Step 4 人工終審
+    path('summary/viewpoints/', views.ViewpointReviewListView.as_view()),
+    path(
+        'summary/viewpoints/<int:pk>/review/',
+        views.ViewpointReviewDecisionView.as_view(),
+    ),
     path('dialogue/topics/', views.DialogueTopicListView.as_view()),
     path(
         'dialogue/topics/<int:topic_id>/survey/',

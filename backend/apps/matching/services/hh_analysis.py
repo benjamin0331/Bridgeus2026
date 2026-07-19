@@ -178,6 +178,28 @@ def calculate_ai_session_stance_drift(
     return payload
 
 
+def get_message_drift_value(*, match_id: int, user_id: int, as_of) -> float:
+    """回傳某個時間點當下，該使用者最新一筆已持久化的立場偏移量（drift_value，
+    前端標籤「論述移動」）。
+
+    給 M6 觀點知識庫 pipeline（apps/summary/pipeline/quality_filter.py 的
+    ccnd_semantic_dist）用來取得逐則的論述移動量：讀取 api/consumers.py 每則
+    「發言者本人」新發言後透過 calculate_match_stance_drift() 寫入的
+    MatchStanceDrift 記錄，只做唯讀查詢，不重算、不新增 drift 記錄——重算是
+    即時對話室自己的職責，這裡只是替歷史訊息回填当時最近的已知值。
+    """
+    from api.models import MatchStanceDrift
+
+    record = (
+        MatchStanceDrift.objects.filter(
+            match_id=match_id, user_id=user_id, measured_at__lte=as_of
+        )
+        .order_by("-measured_at")
+        .first()
+    )
+    return record.drift_value if record else 0.0
+
+
 def detect_match_stalemate(*, match_id: int, window_size: int = 5) -> dict:
     from api.models import DialogueMatch, MatchMessage
 
@@ -240,5 +262,6 @@ aget_topic_anchor_embedding = sync_to_async(get_topic_anchor_embedding, thread_s
 acheck_match_topic_relevance = sync_to_async(check_match_topic_relevance, thread_sensitive=False)
 acalculate_match_stance_drift = sync_to_async(calculate_match_stance_drift, thread_sensitive=False)
 acalculate_ai_session_stance_drift = sync_to_async(calculate_ai_session_stance_drift, thread_sensitive=False)
+aget_message_drift_value = sync_to_async(get_message_drift_value, thread_sensitive=False)
 adetect_match_stalemate = sync_to_async(detect_match_stalemate, thread_sensitive=False)
 aextract_match_opponent_keywords = sync_to_async(extract_match_opponent_keywords, thread_sensitive=False)

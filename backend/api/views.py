@@ -13,8 +13,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTStatelessUserAuthentication
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView
 
 from apps.matching.services.semantic import build_q9_embedding
+from apps.summary.models import ViewpointNode
+
+from .permissions import IsResearcher
 
 from .models import (
     AIConversation,
@@ -52,6 +56,9 @@ from .serializers import (
     PostDialogueResponseConsentSerializer,
     PostDialogueResponseOutputSerializer,
     PostDialogueResponseSerializer,
+    BridgeUsTokenObtainPairSerializer,
+    ViewpointNodeReviewDecisionSerializer,
+    ViewpointNodeReviewSerializer,
 )
 
 SESSION_TTL_SECONDS = 60 * 60 * 12
@@ -61,6 +68,15 @@ DEFAULT_DIALOGUE_COLLECTION = os.getenv(
     "general_knowledge",
 )
 ANONYMOUS_MATCH_USER_NAME = "匿名對話者"
+
+
+class BridgeUsTokenObtainPairView(TokenObtainPairView):
+    """跟 SimpleJWT 內建的 TokenObtainPairView 唯一差別是 access token payload
+    多帶一個 is_researcher claim（見 BridgeUsTokenObtainPairSerializer）。
+    掛在 BridgeUs_Django/urls.py 的 /api/token/，取代原本的 TokenObtainPairView。
+    """
+
+    serializer_class = BridgeUsTokenObtainPairSerializer
 
 
 def _session_cache_key(session_id: str) -> str:
@@ -1405,6 +1421,59 @@ class CCNDSnapshotAnalysisView(APIView):
                 ),
             }
         )
+
+
+class ViewpointReviewListView(generics.ListAPIView):
+    """研究者專用：M6 觀點知識庫 Step 4 人工終審清單。
+
+    用 IsResearcher（「研究者」Django Group）而不是 IsAdminUser：這裡列出的是
+    尚未定案、可能被退回的候選觀點，權限該對應「有沒有研究者身分」，跟能不能
+    登入 Django /admin/ 是兩件事。
+    """
+
+    permission_classes = [IsResearcher]
+    serializer_class = ViewpointNodeReviewSerializer
+
+    def get_queryset(self):
+        status_param = self.request.query_params.get("status", ViewpointNode.ReviewStatus.PENDING)
+        qs = ViewpointNode.objects.select_related("summary", "reviewed_by")
+        if status_param != "all":
+            qs = qs.filter(review_status=status_param)
+
+        topic_id = self.request.query_params.get("topic_id")
+        if topic_id:
+            qs = qs.filter(topic_id=topic_id)
+
+        return qs.order_by("-composite_score", "-created_at")
+
+
+class ViewpointReviewDecisionView(APIView):
+    """研究者專用：核准或退回單一 ViewpointNode。"""
+
+    permission_classes = [IsResearcher]
+
+    def post(self, request, pk: int):
+        try:
+            node = ViewpointNode.objects.get(pk=pk)
+        except ViewpointNode.DoesNotExist:
+            return Response({"detail": "找不到這筆觀點。"}, status=status.HTTP_404_NOT_FOUND)
+
+        decision = ViewpointNodeReviewDecisionSerializer(data=request.data)
+        decision.is_valid(raise_exception=True)
+
+        node.review_status = (
+            ViewpointNode.ReviewStatus.APPROVED
+            if decision.validated_data["action"] == "approve"
+            else ViewpointNode.ReviewStatus.REJECTED
+        )
+        node.reviewed_by = request.user
+        node.reviewed_at = timezone.now()
+        node.review_notes = decision.validated_data["notes"]
+        node.save(
+            update_fields=["review_status", "reviewed_by", "reviewed_at", "review_notes"]
+        )
+
+        return Response(ViewpointNodeReviewSerializer(node).data)
 
 
 class CCNDInsightsView(APIView):
