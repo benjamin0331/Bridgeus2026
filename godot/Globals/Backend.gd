@@ -2,10 +2,25 @@ extends Node
 # 與 Django 後端唯一的出入口。所有 network-facing 呼叫都走這裡，
 # 換後端只要改這一個檔。底層用 Godot 原生 HTTPRequest，無第三方套件。
 
-const BASE_URL := "http://localhost:8005/api"
+# 桌面開發預設值；Web 版於 _ready() 依同源拓樸改寫（見 godot-web-deployment-spec.md §3）。
+var BASE_URL := "http://localhost:8005/api"
 
 var access_token := ""   # 二擇一來源：acquire_token_from_host()（正式）或 guest_login()（本機測試 fallback）
 var user_id := 0         # 主功能後端 user id，隨 host token 一併交接；guest_login 沒有對應 id，維持 0
+
+# 只在常駐 headless server 從環境變數讀到才會有值；web client 一律空字串，
+# 不會/不該呼叫需要它的方法（金鑰絕不可流向瀏覽器，見部署規格 §4「服務金鑰建房契約」）。
+var service_token := ""
+
+func _ready() -> void:
+	if OS.has_feature("web"):
+		var override = JavaScriptBridge.eval("window.bridgeus_api_base || ''", true)
+		if typeof(override) == TYPE_STRING and override != "":
+			BASE_URL = override
+		else:
+			BASE_URL = "/api"   # 同源拓樸預設：相對路徑，瀏覽器自動補目前 origin
+	else:
+		service_token = OS.get_environment("GODOT_SERVICE_TOKEN")
 
 # --- 認證：正式交接（優先）-------------------------------------------------
 # 由主功能頁面把這個場景嵌進 <iframe> 前，設定 window.bridgeus_token /
