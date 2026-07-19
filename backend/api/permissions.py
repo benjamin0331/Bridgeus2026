@@ -6,6 +6,9 @@ Group 表達更準確，之後研究團隊成員增加時，也不用連帶給�
 存取權限。Group 由 api/migrations/0013_create_researcher_group.py 建立。
 """
 
+import hmac
+
+from django.conf import settings
 from rest_framework.permissions import BasePermission
 
 RESEARCHER_GROUP_NAME = "研究者"
@@ -23,3 +26,19 @@ class IsResearcher(BasePermission):
             and user.is_authenticated
             and user.groups.filter(name=RESEARCHER_GROUP_NAME).exists()
         )
+
+
+class IsGodotServiceToken(BasePermission):
+    """Godot 常駐 headless server 專用：驗證 X-Godot-Service-Token 標頭，不需要
+    （也不接受）user JWT——呼叫者是 server，不代表任何一位玩家，所以不套
+    「requester 必須是參與者」這類限制。見 godot-web-deployment-spec.md §4。
+    """
+
+    message = "缺少或錯誤的服務金鑰。"
+
+    def has_permission(self, request, view):
+        configured = getattr(settings, "GODOT_SERVICE_TOKEN", "") or ""
+        if not configured:
+            return False
+        provided = request.META.get("HTTP_X_GODOT_SERVICE_TOKEN", "")
+        return hmac.compare_digest(provided, configured)
