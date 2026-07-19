@@ -4,6 +4,7 @@ from .models import (
     AIConversation,
     CCNDTimelineUnlock,
     DialogueMatch,
+    IssueReaction,
     MatchAISuggestion,
     MatchMessage,
     MatchQueueEntry,
@@ -140,3 +141,9 @@ class UserTitleAdmin(admin.ModelAdmin):
     list_display = ("id", "user", "title", "is_selected", "unlocked_at")
     list_filter = ("is_selected",)
     search_fields = ("user__username", "title__name")
+
+
+@admin.register(IssueReaction)
+class IssueReactionAdmin(admin.ModelAdmin):
+    list_display = ("id", "issue", "reactor", "emoji_index", "created_at")
+    search_fields = ("issue__title", "reactor__username")

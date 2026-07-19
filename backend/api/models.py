@@ -633,6 +633,26 @@ class UserTitle(models.Model):
         return f"{self.user_id}:{self.title.name}"
 
 
+class IssueReaction(models.Model):
+    """一位讀者對一則議題的表情回復（5 選 1，emoji 圖在 Godot 端，這裡只存
+    int index）。一人一議題一個，重送 = 覆蓋（見 views.IssueReactionsView）。"""
+    issue = models.ForeignKey(Issue, on_delete=models.CASCADE, related_name="reactions")
+    reactor = models.ForeignKey(User, on_delete=models.CASCADE, related_name="issue_reactions")
+    emoji_index = models.PositiveSmallIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["issue", "reactor"], name="issue_reaction_one_per_reader"
+            ),
+        ]
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"issue={self.issue_id} reactor={self.reactor_id} idx={self.emoji_index}"
+
+
 class CCNDTimelineUnlock(models.Model):
     """Researcher-issued override that unlocks one participant's CCND timeline
     for one conversation ahead of the normal gate.
