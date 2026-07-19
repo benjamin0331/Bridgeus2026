@@ -1,8 +1,9 @@
 extends Node2D
 
 var peer = WebSocketMultiplayerPeer.new()
-const PORT = 8080
-const ADDRESS = "127.0.0.1"
+const DEFAULT_PORT := 8080
+const DEFAULT_ADDRESS := "127.0.0.1"
+var _ws_url := ""   # 由 _resolve_connection_settings() 在 _ready() 填入，Join/dedicated server 都讀這個
 
 # 議題 → 該議題的兩個木樁節點路徑（相對 /root/Game）。
 const _TOPIC_TRUNKS := {
@@ -22,6 +23,15 @@ var _occupancy := {}   # trunk_path:String -> peer_id:int（僅 server 使用）
 @onready var _waiting_panel = $WaitingLayer/Panel
 
 func _ready():
+	_resolve_connection_settings()
+	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
+
+	# 常駐 headless server（見 godot-web-deployment-spec.md §4）：只跑連線與配對邏輯，
+	# 不代表任何玩家、不生自己的身體、不叫身份交接（沒有 window 可讀、也沒有真人要登入）。
+	if _is_dedicated_server():
+		_start_dedicated_server()
+		return
+
 	host_btn.pressed.connect(_on_host_pressed)
 	join_btn.pressed.connect(_on_join_pressed)
 	# 提交表單的送出/取消（IssueButton 本身在場景裡已連到 _on_issue_button_pressed）
@@ -31,7 +41,10 @@ func _ready():
 	$CanvasLayer_issue/IssueForm/CloseButton.pressed.connect(_close_form)
 	_setup_banner_ui()
 	$WaitingLayer/Panel/VBox/CancelButton.pressed.connect(_cancel_wait)
-	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
+
+	# Web 版不能當 host（瀏覽器分頁無法 create_server）；隱藏 Host 鍵，只留 Join。
+	if OS.has_feature("web"):
+		host_btn.hide()
 
 	# 身份交接：優先用主功能登入的真 JWT（window.bridgeus_token，見 Backend.gd）。
 	# 桌面開發、或還沒從主功能進來時，acquire_token_from_host() 回 false，
@@ -47,6 +60,37 @@ func _ready():
 				push_warning("訪客登入失敗 code=%d data=%s" % [code, data])
 		)
 
+# --- 連線位址解析 -----------------------------------------------------------
+# 桌面開發固定連本機；Web 版優先讀主功能交接的 window.bridgeus_ws_url
+# （見 godot-web-deployment-spec.md §4），沒有就退回本機位址方便單機測試。
+func _resolve_connection_settings() -> void:
+	if OS.has_feature("web"):
+		var url = JavaScriptBridge.eval("window.bridgeus_ws_url || ''", true)
+		if typeof(url) == TYPE_STRING and url != "":
+			_ws_url = url
+			return
+	_ws_url = "ws://" + DEFAULT_ADDRESS + ":" + str(DEFAULT_PORT)
+
+# --- 常駐 headless server 偵測與啟動 ----------------------------------------
+# --server 由部署啟動指令帶（見部署規格 §4 systemd ExecStart：
+# `godot --headless --path ... --server`）；DisplayServer "headless" 是備援偵測，
+# 兩者都不依賴尚未建立的 Web/Server export preset（目前沒有 export_presets.cfg）。
+func _is_dedicated_server() -> bool:
+	return "--server" in OS.get_cmdline_args() or DisplayServer.get_name() == "headless"
+
+func _start_dedicated_server() -> void:
+	var error = peer.create_server(DEFAULT_PORT)
+	if error != OK:
+		push_error("[dedicated server] 無法啟動 WebSocket 伺服器，錯誤碼：%d" % error)
+		get_tree().quit(1)
+		return
+	multiplayer.multiplayer_peer = peer
+	print("[dedicated server] 已啟動，port=%d（peer id 1，唯一 authority）" % DEFAULT_PORT)
+	host_btn.hide()
+	join_btn.hide()
+	# 其餘 UI（議題鍵、頭銜選單…）已由 _process 的 have_body 邏輯自然隱藏——
+	# dedicated server 從不 _spawn_player 自己，_local_player() 永遠回 null。
+
 func _process(_delta):
 	# 這些按鈕只有在自己已經有身體（本地玩家）時才有意義。
 	var p = _local_player()
@@ -60,7 +104,7 @@ func _process(_delta):
 
 # 1. Host 點擊方法
 func _on_host_pressed() -> void:
-	var error = peer.create_server(PORT)
+	var error = peer.create_server(DEFAULT_PORT)
 	if error != OK:
 		print("無法啟動 WebSocket 伺服器，錯誤碼：", error)
 		return
@@ -72,21 +116,24 @@ func _on_host_pressed() -> void:
 
 # 2. Join 點擊方法
 func _on_join_pressed() -> void:
-	var error = peer.create_client("ws://" + ADDRESS + ":" + str(PORT))
+	var error = peer.create_client(_ws_url)
 	if error != OK:
 		print("無法連接 WebSocket，錯誤碼：", error)
 		return
 
 	multiplayer.multiplayer_peer = peer
-	print("正在嘗試連線到本機...")
+	print("正在嘗試連線到：", _ws_url)
 	hide_buttons()
 
-	# 一連上線，立刻向 Server 廣播：發放我的網路 ID 並生身體
-	# 用一個延遲，確保網路 peer 已經完全握手成功
-	await get_tree().create_timer(0.2).timeout
+	# 等真正握手完成（connected_to_server 訊號）再申請生身體，取代固定 0.2s
+	# 猜測值——真實網路延遲（尤其 Cloudflare Tunnel 代理）下 200ms 不一定夠。
+	multiplayer.connected_to_server.connect(_on_connected_to_server, CONNECT_ONE_SHOT)
+
+func _on_connected_to_server() -> void:
 	var my_id = multiplayer.get_unique_id()
 	request_spawn.rpc_id(1, my_id)
-	# 等身體都生出來後，向所有人索取已提交的議題，補上「我加入前就貼出」的那些。
+	# 等身體生出來後，向所有人索取已提交的議題，補上「我加入前就貼出」的那些。
+	# （這段 0.2s 不是握手等待，是給 MultiplayerSpawner 初始複製一點時間，維持原樣。）
 	await get_tree().create_timer(0.2).timeout
 	request_issue_sync.rpc()
 
