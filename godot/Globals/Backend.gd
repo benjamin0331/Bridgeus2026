@@ -86,15 +86,58 @@ func _post(path: String, payload: Dictionary, with_auth: bool, done: Callable) -
 		http.queue_free()
 		done.call(0, {})   # code 0 = 連請求都送不出去（網路層失敗）
 
-# --- 議題配對（後端接手前為 no-op）---------------------------------------
-# 兩位玩家在遊戲內選同一議題並坐上木樁後呼叫。後端之後在此建立 match room，
-# 回傳 { room_id, ws_url } 供跳轉網頁聊天室。規格見 docs/topic-match-backend.md。
+# --- 議題配對 → 建聊天室 ---------------------------------------------------
+# 兩位玩家在遊戲內選同一議題並坐上木樁後，由 server 端（唯一 authority）呼叫一次。
+# 後端端點 POST /api/godot/match-rooms/ 尚未上線（P1，見 godot-backend-gap-analysis.md
+# §5/§8）——這支呼叫在後端補上前會 404，這是預期狀態，不是這裡的 bug。
+# 契約見 godot-backend-integration.md §3.3：要傳的是後端 user_id，不是 Godot peer_id
+# （見 player_00.gd 的 backend_user_id 與 game.gd 的 _do_seat）。
+# 身份驗證用共用服務金鑰（X-Godot-Service-Token）；只有 headless server 有 service_token，
+# web client 一律不會/不該呼叫到這裡（金鑰不流向瀏覽器，見部署規格 §4）。
 # callback 形如 func(code: int, data: Dictionary)。
-func request_topic_match(topic: String, peer_ids: Array, callback := Callable()) -> void:
-	print("[Backend stub] request_topic_match topic=%s peers=%s" % [topic, str(peer_ids)])
-	# TODO(後端)：POST /api/matching/rooms/ {topic_id, users} → 回傳 room_id / ws_url
-	if callback.is_valid():
-		callback.call(0, {})   # code 0 = stub，尚未接後端
+const _TOPIC_ID_MAP := {
+	"nuclear_energy": 102,
+	"women_soldier": 103,
+}
+
+func request_topic_match(topic: String, user_ids: Array, callback := Callable()) -> void:
+	if service_token == "":
+		push_warning("request_topic_match 需要 GODOT_SERVICE_TOKEN（僅 headless server 該有），略過")
+		if callback.is_valid():
+			callback.call(0, {})
+		return
+	var payload := {
+		"topic": topic,
+		"topic_id": _TOPIC_ID_MAP.get(topic, 0),
+		"user_ids": user_ids,
+	}
+	_post_with_service_token("/godot/match-rooms/", payload, func(code, data):
+		if callback.is_valid():
+			callback.call(code, data)
+	)
+
+# --- 內部：帶服務金鑰的 POST（配對建房專用，不帶 user JWT）-------------------
+func _post_with_service_token(path: String, payload: Dictionary, done: Callable) -> void:
+	var http := HTTPRequest.new()
+	add_child(http)
+	var headers := [
+		"Content-Type: application/json",
+		"X-Godot-Service-Token: " + service_token,
+	]
+	http.request_completed.connect(func(_result, code, _headers, body):
+		var body_str: String = body.get_string_from_utf8()
+		var data := {}
+		var json := JSON.new()
+		if json.parse(body_str) == OK and json.data is Dictionary:
+			data = json.data
+		http.queue_free()
+		done.call(code, data)
+	)
+	var err := http.request(BASE_URL + path, headers, HTTPClient.METHOD_POST, JSON.stringify(payload))
+	if err != OK:
+		push_error("Backend 請求失敗 %s err=%d" % [path, err])
+		http.queue_free()
+		done.call(0, {})
 
 
 # --- 保留：分析 hook（後端尚未支援，先放 null） --------------------------
