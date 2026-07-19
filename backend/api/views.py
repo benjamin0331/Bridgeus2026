@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import uuid as _uuid_mod
 from functools import lru_cache
 from uuid import uuid4
@@ -2159,6 +2160,9 @@ class IssueListCreateView(APIView):
         )
 
 
+_HEX_COLOR_RE = re.compile(r"#[0-9a-fA-F]{6}")
+
+
 class TitleMeView(APIView):
     """GET/POST /api/titles/me/ — 玩家在 Godot 大廳看/選自己擁有的頭銜。
     頭銜本身怎麼解鎖由主功能成就系統決定（見 UserTitle 模型註解），這裡只管
@@ -2178,8 +2182,24 @@ class TitleMeView(APIView):
         )
 
     def post(self, request):
+        # 「沒帶 title_id」跟「明確傳 title_id: null」意義不同：後者是「取消顯示
+        # 頭銜」，前者多半是呼叫端漏帶。不分辨的話，只想改顏色的請求會意外把
+        # 使用者的頭銜選擇清掉，所以這裡要求一定要明確帶上。
+        if "title_id" not in request.data:
+            return Response(
+                {"detail": "必須帶 title_id（要取消顯示請明確傳 null）。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         title_id = request.data.get("title_id")
         color = request.data.get("color")
+
+        # color 直接進 DB，但 Django 不會在 save() 時檢查 max_length——SQLite 會
+        # 默默存進怪字串，PostgreSQL 則會丟 DataError 變成 500。在這裡擋掉。
+        if color is not None and color != "" and not _HEX_COLOR_RE.fullmatch(str(color)):
+            return Response(
+                {"detail": "color 需為 #RRGGBB 格式。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         target = None
         if title_id is not None:
@@ -2198,6 +2218,8 @@ class TitleMeView(APIView):
                 is_selected=False
             )
             if target is not None:
+                # ponytail: 傳空字串/null 不會清回 Title 預設色，只是「不改色」——
+                # 目前沒有「重設為預設色」的需求，有再加。
                 if color:
                     target.color = color
                 target.is_selected = True
