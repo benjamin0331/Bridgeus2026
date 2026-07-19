@@ -91,7 +91,10 @@ func _start_dedicated_server() -> void:
 	# 其餘 UI（議題鍵、頭銜選單…）已由 _process 的 have_body 邏輯自然隱藏——
 	# dedicated server 從不 _spawn_player 自己，_local_player() 永遠回 null。
 
-func _process(_delta):
+const HEARTBEAT_INTERVAL := 25.0   # Cloudflare WS 閒置逾時約 100s，留充分餘裕
+var _heartbeat_elapsed := 0.0
+
+func _process(delta):
 	# 這些按鈕只有在自己已經有身體（本地玩家）時才有意義。
 	var p = _local_player()
 	var have_body = p != null
@@ -101,6 +104,17 @@ func _process(_delta):
 	# 已提交過議題就把提交鍵調暗，提示「已提交、可再點進去編輯」。
 	if p:
 		issue_btn.modulate.a = 0.55 if p.issue_title != "" else 1.0
+
+	# 心跳：連線中（含 dedicated server）就定期送一個空 RPC，避免 Cloudflare
+	# 判定閒置斷線（deployment spec §4 point 3）。
+	if multiplayer.multiplayer_peer and multiplayer.multiplayer_peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED:
+		_heartbeat_elapsed += delta
+		if _heartbeat_elapsed >= HEARTBEAT_INTERVAL:
+			_heartbeat_elapsed = 0.0
+			if multiplayer.is_server():
+				_heartbeat.rpc()
+			else:
+				_heartbeat.rpc_id(1)
 
 # 1. Host 點擊方法
 func _on_host_pressed() -> void:
@@ -175,6 +189,11 @@ func request_issue_sync():
 func hide_buttons():
 	host_btn.hide()
 	join_btn.hide()
+
+# 空心跳：內容不重要，重點是「有資料在傳」讓代理層（Cloudflare）不判定閒置。
+@rpc("any_peer", "unreliable")
+func _heartbeat() -> void:
+	pass
 
 # --- 提交議題（原本在 issue_ui.gd，依需求搬進 game.gd）--------------------
 # IssueButton 按下：打開表單，帶出目前已提交的內容讓使用者決定要不要改（不清空）。
