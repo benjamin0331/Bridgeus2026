@@ -38,6 +38,7 @@
   flex-direction: column;
   overflow-x: hidden;
   overflow-y: auto;
+  overflow-anchor: none;
   padding: 14px;
 }
 
@@ -272,7 +273,7 @@
 
 .history-timeline-bar {
   flex: 0 0 auto;
-  margin-bottom: 10px;
+  margin-top: 10px;
   display: grid;
   gap: 6px;
   border-radius: 18px;
