@@ -353,10 +353,25 @@ class MatchStanceDrift(models.Model):
 # Post-dialogue questionnaire
 # ---------------------------------------------------------------------------
 
-# C1 reversed items: C1-2→Q5, C1-6→Q4, C1-7→Q6, C1-8→Q2
-_POST_LIKERT_REVERSED = {2, 6, 7, 8}
 # (post_index, pre_question_id) — needed for research cross-referencing
 POST_LIKERT_TO_PRE_QUESTION = {1: 8, 2: 5, 3: 3, 4: 7, 5: 1, 6: 4, 7: 6, 8: 2}
+
+
+def _post_likert_reversed_indices(topic_id: int) -> set[int]:
+    """Resolve reverse-scored post items from the topic's pre-survey config."""
+    from .dialogue_topics import get_dialogue_survey
+
+    survey = get_dialogue_survey(topic_id) or {}
+    reversed_pre_questions = {
+        int(question["id"])
+        for question in survey.get("questions", [])
+        if question.get("reverse_scored")
+    }
+    return {
+        post_index
+        for post_index, pre_question_id in POST_LIKERT_TO_PRE_QUESTION.items()
+        if pre_question_id in reversed_pre_questions
+    }
 
 
 def _likert_field(verbose_name):
@@ -452,10 +467,11 @@ class PostDialogueResponse(models.Model):
     # --- Scoring methods ---
 
     def _adjusted_c1_scores(self) -> list[float]:
+        reversed_indices = _post_likert_reversed_indices(self.topic_id)
         scores = []
         for i in range(1, 9):
             raw = getattr(self, f"post_likert_{i}")
-            scores.append(8 - raw if i in _POST_LIKERT_REVERSED else float(raw))
+            scores.append(8 - raw if i in reversed_indices else float(raw))
         return scores
 
     def s_post(self) -> float:
