@@ -28,6 +28,7 @@ from .models import (
     DialogueSessionRecord,
     DiscomfortReport,
     Issue,
+    IssueReaction,
     MatchStanceDrift,
     PlatformFeedback,
     PostDialogueResponse,
@@ -2226,3 +2227,54 @@ class TitleMeView(APIView):
                 target.save(update_fields=["is_selected", "color"])
 
         return self.get(request)
+
+
+class IssueReactionsView(APIView):
+    """GET/POST /api/issues/<issue_id>/reactions/ — 議題表情回復（5 選 1）。
+    upsert：同一 reactor 對同一 issue 再送 = 覆蓋，不是疊加。契約見
+    godot-backend-integration.md §3.2。"""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, issue_id: int):
+        if not Issue.objects.filter(pk=issue_id).exists():
+            return Response(
+                {"detail": "找不到這個議題。"}, status=status.HTTP_404_NOT_FOUND
+            )
+        counts: dict[str, int] = {}
+        for idx in IssueReaction.objects.filter(issue_id=issue_id).values_list(
+            "emoji_index", flat=True
+        ):
+            counts[str(idx)] = counts.get(str(idx), 0) + 1
+        mine = (
+            IssueReaction.objects.filter(issue_id=issue_id, reactor=request.user)
+            .values_list("emoji_index", flat=True)
+            .first()
+        )
+        return Response({"counts": counts, "mine": mine})
+
+    def post(self, request, issue_id: int):
+        try:
+            issue = Issue.objects.get(pk=issue_id)
+        except Issue.DoesNotExist:
+            return Response(
+                {"detail": "找不到這個議題。"}, status=status.HTTP_404_NOT_FOUND
+            )
+        emoji_index = request.data.get("emoji_index")
+        # 必須是真的 int：bool 是 int 的子類別，JSON 的 true 會被當成 1，所以
+        # 額外排除 bool；字串 "3" 也不接受，避免前端型別漂移悄悄過關。
+        if (
+            isinstance(emoji_index, bool)
+            or not isinstance(emoji_index, int)
+            or not (0 <= emoji_index <= 4)
+        ):
+            return Response(
+                {"detail": "emoji_index 必須是 0-4 的整數。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        IssueReaction.objects.update_or_create(
+            issue=issue,
+            reactor=request.user,
+            defaults={"emoji_index": emoji_index},
+        )
+        return self.get(request, issue_id)
