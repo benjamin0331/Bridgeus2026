@@ -360,8 +360,15 @@ func _do_seat(peer_id: int, topic: String) -> void:
 		if _occupancy.has(t):
 			occupants.append(_occupancy[t])
 	if occupants.size() == 2 and occupants[0] != occupants[1]:
-		# 後端只在 server 端呼叫一次（兩位都打會建兩間房）。
-		Backend.request_topic_match(topic, occupants)
+		# 後端只在 server 端呼叫一次（兩位都打會建兩間房）。傳的是後端 user_id
+		# （player.backend_user_id），不是 Godot peer_id——後端 match-rooms 端點
+		# 認 user_id，見 integration §3.3 與 Backend.gd request_topic_match。
+		var user_ids := []
+		for pid in occupants:
+			var pl = get_node_or_null(str(pid))
+			if pl:
+				user_ids.append(pl.backend_user_id)
+		Backend.request_topic_match(topic, user_ids)
 		for pid in occupants:
 			# rpc_id 對自己(host)不會本地執行 → 目標是自己時直接呼叫。
 			if pid == multiplayer.get_unique_id():
