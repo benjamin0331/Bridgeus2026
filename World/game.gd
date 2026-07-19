@@ -33,14 +33,19 @@ func _ready():
 	$WaitingLayer/Panel/VBox/CancelButton.pressed.connect(_cancel_wait)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 
-	# 訪客登入：拿到 access_token 後 submit_issue 才不會被後端擋（401）。
-	# ponytail: 暱稱先寫死「訪客」；之後有登入輸入框再換成玩家輸入。
-	Backend.guest_login("訪客", func(code, data):
-		if code == 201:
-			print("訪客登入成功")
-		else:
-			push_warning("訪客登入失敗 code=%d data=%s" % [code, data])
-	)
+	# 身份交接：優先用主功能登入的真 JWT（window.bridgeus_token，見 Backend.gd）。
+	# 桌面開發、或還沒從主功能進來時，acquire_token_from_host() 回 false，
+	# 退回訪客登入方便本機測試——純測試用，不是正式使用者，正式環境不會走到這條。
+	if Backend.acquire_token_from_host():
+		print("已取得主功能登入 token，user_id=%d" % Backend.user_id)
+	else:
+		# ponytail: 暱稱先寫死「訪客」；之後有登入輸入框再換成玩家輸入。
+		Backend.guest_login("訪客", func(code, data):
+			if code == 201:
+				print("訪客登入成功（測試用）")
+			else:
+				push_warning("訪客登入失敗 code=%d data=%s" % [code, data])
+		)
 
 func _process(_delta):
 	# 這些按鈕只有在自己已經有身體（本地玩家）時才有意義。

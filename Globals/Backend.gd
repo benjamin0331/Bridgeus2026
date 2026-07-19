@@ -4,11 +4,30 @@ extends Node
 
 const BASE_URL := "http://localhost:8005/api"
 
-var access_token := ""   # guest_login 成功後存這裡，submit_issue 會帶上
+var access_token := ""   # 二擇一來源：acquire_token_from_host()（正式）或 guest_login()（本機測試 fallback）
+var user_id := 0         # 主功能後端 user id，隨 host token 一併交接；guest_login 沒有對應 id，維持 0
 
-# --- 認證 -----------------------------------------------------------------
-# 訪客登入。成功（code 201）後把 access_token 存起來。
-# callback 形如 func(code: int, data: Dictionary)。
+# --- 認證：正式交接（優先）-------------------------------------------------
+# 由主功能頁面把這個場景嵌進 <iframe> 前，設定 window.bridgeus_token /
+# window.bridgeus_user_id 交給 Godot（見 docs/godot-backend-integration.md §1）。
+# 只有 Web 匯出才讀得到 window；桌面開發直接回 false，呼叫端可退回 guest_login 測試。
+# 回 true 代表已經拿到主功能的真登入 token，access_token/user_id 就緒可直接打其他 API。
+func acquire_token_from_host() -> bool:
+	if not OS.has_feature("web"):
+		return false
+	var token = JavaScriptBridge.eval("window.bridgeus_token || ''", true)
+	if typeof(token) != TYPE_STRING or token == "":
+		return false
+	access_token = token
+	var uid = JavaScriptBridge.eval("window.bridgeus_user_id || 0", true)
+	if typeof(uid) == TYPE_FLOAT or typeof(uid) == TYPE_INT:
+		user_id = int(uid)
+	return true
+
+# --- 認證：訪客登入（本機測試 fallback，非正式使用者）----------------------
+# ponytail: 純粹方便沒有主功能可交接 token 時（桌面開發、多開測試）也能跑通議題流程。
+# 正式環境一律先呼叫 acquire_token_from_host()，拿到 host token 就不會走這條。
+# 成功（code 201）後把 access_token 存起來。callback 形如 func(code: int, data: Dictionary)。
 func guest_login(nickname: String, callback := Callable()) -> void:
 	var payload := {"nickname": nickname}
 	_post("/guest/", payload, false, func(code, data):
