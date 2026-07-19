@@ -88,8 +88,9 @@ func _post(path: String, payload: Dictionary, with_auth: bool, done: Callable) -
 
 # --- 議題配對 → 建聊天室 ---------------------------------------------------
 # 兩位玩家在遊戲內選同一議題並坐上木樁後，由 server 端（唯一 authority）呼叫一次。
-# 後端端點 POST /api/godot/match-rooms/ 尚未上線（P1，見 godot-backend-gap-analysis.md
-# §5/§8）——這支呼叫在後端補上前會 404，這是預期狀態，不是這裡的 bug。
+# 後端端點 POST /api/godot/match-rooms/ 已上線（backend/api/views.py
+# GodotMatchRoomView）。回 201 = 新建房間，200 = 同一對人同議題已有進行中的房間、
+# 沿用既有的（冪等，重試不會開出第二間）；兩者的 data 都有 room_id / redirect_url。
 # 契約見 godot-backend-integration.md §3.3：要傳的是後端 user_id，不是 Godot peer_id
 # （見 player_00.gd 的 backend_user_id 與 game.gd 的 _do_seat）。
 # 身份驗證用共用服務金鑰（X-Godot-Service-Token）；只有 headless server 有 service_token，
