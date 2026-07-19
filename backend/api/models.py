@@ -600,14 +600,18 @@ class Title(models.Model):
     name = models.CharField(max_length=50, unique=True)
     color = models.CharField(max_length=7, null=True, blank=True)  # 預設 hex 色，UserTitle.color 可覆蓋
 
+    class Meta:
+        ordering = ["name"]
+
     def __str__(self):
         return self.name
 
 
 class UserTitle(models.Model):
     """使用者擁有某個頭銜的紀錄，外加是否為目前選擇顯示、以及玩家自訂顏色。
-    一個使用者同時只能選一個頭銜——由 view 端在同一個 transaction 內先清掉
-    舊選擇再設新的來保證，沒有用 DB 層的 partial unique index（SQLite 相容性）。"""
+    一個使用者同時只能選一個頭銜——用 partial unique index 在 DB 層擋住
+    （SQLite 3.8+ 與 PostgreSQL 都支援），不只靠 view 端的寫入順序保證。
+    view 端仍要「先清掉舊選擇、再設新的」，否則會撞到這個 constraint。"""
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="owned_titles")
     title = models.ForeignKey(Title, on_delete=models.CASCADE, related_name="holders")
     unlocked_at = models.DateTimeField(auto_now_add=True)
@@ -617,7 +621,13 @@ class UserTitle(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["user", "title"], name="user_title_unique"),
+            models.UniqueConstraint(
+                fields=["user"],
+                condition=Q(is_selected=True),
+                name="user_one_selected_title",
+            ),
         ]
+        ordering = ["unlocked_at"]
 
     def __str__(self):
         return f"{self.user_id}:{self.title.name}"
