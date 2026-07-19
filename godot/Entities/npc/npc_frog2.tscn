@@ -1,0 +1,113 @@
+[gd_scene format=3 uid="uid://beqjaafens0fu"]
+
+[ext_resource type="Script" uid="uid://xpvaypfocdb8" path="res://Entities/npc/npc_frog2.gd" id="1_q8itl"]
+[ext_resource type="Texture2D" uid="uid://nm7jwspjj3w2" path="res://Assets/ToxicFrog/BlueBrown/ToxicFrogBlueBrown_Idle.png" id="2_q8itl"]
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_3y80g"]
+atlas = ExtResource("2_q8itl")
+region = Rect2(0, 0, 48, 48)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_fpj1b"]
+atlas = ExtResource("2_q8itl")
+region = Rect2(48, 0, 48, 48)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_2pqak"]
+atlas = ExtResource("2_q8itl")
+region = Rect2(96, 0, 48, 48)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_0ly1k"]
+atlas = ExtResource("2_q8itl")
+region = Rect2(144, 0, 48, 48)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_x52js"]
+atlas = ExtResource("2_q8itl")
+region = Rect2(192, 0, 48, 48)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_jtl1c"]
+atlas = ExtResource("2_q8itl")
+region = Rect2(240, 0, 48, 48)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_kenmu"]
+atlas = ExtResource("2_q8itl")
+region = Rect2(288, 0, 48, 48)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_53val"]
+atlas = ExtResource("2_q8itl")
+region = Rect2(336, 0, 48, 48)
+
+[sub_resource type="SpriteFrames" id="SpriteFrames_g4v7s"]
+animations = [{
+"frames": [{
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_3y80g")
+}, {
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_fpj1b")
+}, {
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_2pqak")
+}, {
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_0ly1k")
+}, {
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_x52js")
+}, {
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_jtl1c")
+}, {
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_kenmu")
+}, {
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_53val")
+}],
+"loop": 1,
+"name": &"default",
+"speed": 9.0
+}]
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_yf5fn"]
+radius = 9.0
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_near"]
+radius = 32.0
+
+[node name="npc_frog2" type="CharacterBody2D" unique_id=358618618]
+script = ExtResource("1_q8itl")
+
+[node name="AnimatedSprite2D" type="AnimatedSprite2D" parent="." unique_id=753097876]
+position = Vector2(1, 0)
+rotation = 6.2831855
+scale = Vector2(0.922, 1)
+sprite_frames = SubResource("SpriteFrames_g4v7s")
+autoplay = "default"
+frame_progress = 0.97409016
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="." unique_id=191716575]
+position = Vector2(1, 1)
+shape = SubResource("CircleShape2D_yf5fn")
+
+[node name="Area2D" type="Area2D" parent="." unique_id=247333842]
+
+[node name="near" type="CollisionShape2D" parent="Area2D" unique_id=911592242]
+position = Vector2(1, 1)
+shape = SubResource("CircleShape2D_near")
+
+[node name="TalkPrompt" type="Control" parent="." unique_id=770011001]
+visible = false
+z_index = 4096
+layout_mode = 3
+anchors_preset = 0
+offset_left = -35.0
+offset_top = -48.0
+offset_right = 35.0
+offset_bottom = -12.0
+scale = Vector2(0.5, 0.5)
+
+[node name="Button" type="Button" parent="TalkPrompt" unique_id=770011002]
+layout_mode = 0
+offset_top = 24.0
+offset_right = 140.0
+offset_bottom = 60.0
+text = "也請與我對話呱"
