@@ -248,7 +248,6 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const [isRightPanelOpen, setIsRightPanelOpen] = useState(false);
 
   const messagesContainerRef = useRef(null);
-  const messagesEndRef = useRef(null);
   const isComposingRef = useRef(false);
   const textareaRef = useRef(null);
   const wsRef = useRef(null);
@@ -261,6 +260,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const leaveRequestSentRef = useRef(false);
   const cancelQueueRequestSentRef = useRef(false);
   const isChatPageMountedRef = useRef(true);
+  const shouldAutoScrollAiRef = useRef(true);
   const shouldAutoScrollMatchRef = useRef(true);
   const semanticTreeAnalyzeSignatureRef = useRef('');
   const currentIssue = issues?.find((item) => item.id === parseInt(id, 10));
@@ -302,7 +302,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
   const scrollMessagesToBottom = useCallback((behavior = 'smooth') => {
     window.requestAnimationFrame(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
+      const container = messagesContainerRef.current;
+      if (!container) {
+        return;
+      }
+      container.scrollTo({ top: container.scrollHeight, behavior });
     });
   }, []);
 
@@ -338,6 +342,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setPendingRestoredSession(null);
     setShowSurvey(false);
     setChatError('');
+    shouldAutoScrollAiRef.current = true;
     window.requestAnimationFrame(() => {
       scrollMessagesToBottom('auto');
     });
@@ -366,6 +371,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setIsSending(false);
     setIsAgentStreaming(false);
     setStanceRedoConfirmed(false);
+    shouldAutoScrollAiRef.current = true;
     setShowSurvey(true);
   }, [resetAiSemanticTreeState]);
 
@@ -391,16 +397,18 @@ function TopicChat({ user, issues, issuesLoaded }) {
   }, []);
 
   const handleMessagesScroll = useCallback((event) => {
+    const isNearBottom = isElementNearBottom(event.currentTarget);
     if (!isMatchingMode) {
+      shouldAutoScrollAiRef.current = isNearBottom;
       return;
     }
 
-    const isNearBottom = isElementNearBottom(event.currentTarget);
     shouldAutoScrollMatchRef.current = isNearBottom;
     setShowScrollToBottomButton(isMatchChatReady && !isNearBottom);
   }, [isMatchChatReady, isMatchingMode]);
 
   const handleScrollToBottom = useCallback(() => {
+    shouldAutoScrollAiRef.current = true;
     shouldAutoScrollMatchRef.current = true;
     setShowScrollToBottomButton(false);
     scrollMessagesToBottom('smooth');
@@ -514,7 +522,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
       return;
     }
 
-    scrollMessagesToBottom('smooth');
+    if (shouldAutoScrollAiRef.current) {
+      scrollMessagesToBottom('smooth');
+    }
   }, [isAgentStreaming, isMatchingMode, isSending, messages, scrollMessagesToBottom]);
 
   useEffect(() => {
@@ -1375,6 +1385,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
       setSemanticTreeStatus('ready');
       setSemanticTreeMessage('');
       semanticTreeAnalyzeSignatureRef.current = '';
+      shouldAutoScrollAiRef.current = true;
       setShowSurvey(false);
       setChatError('');
       return;
@@ -1494,6 +1505,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
       return;
     }
 
+    shouldAutoScrollAiRef.current = true;
     setMessages((prev) => [
       ...prev,
       {
@@ -2190,7 +2202,6 @@ function TopicChat({ user, issues, issuesLoaded }) {
               )}
             </>
           )}
-          <div ref={messagesEndRef} />
         </div>
 
         {isMatchingMode && isMatchChatReady && showScrollToBottomButton && (
