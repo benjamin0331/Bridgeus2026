@@ -118,6 +118,11 @@ func _on_react(idx: int):
 		p.react_to_issue(_target, idx)   # 可改選：作者端覆蓋，頭上同步換圖示
 		_reacted_targets[tid] = idx
 		_sync_reaction_buttons()   # 灰條從舊選的移到新選的
+		# 頭上顯示走上面的 P2P；這裡另外把表情存回後端當研究資料（後端 upsert）。
+		# 需要對方議題的後端 id（作者存過後端才有）＋自己已登入。作者的 backend
+		# POST 還沒回來（id 仍為 0）時就先只跑 P2P、不落地，屬可接受的邊界。
+		if Backend.access_token != "" and _target.backend_issue_id > 0:
+			Backend.add_issue_reaction(_target.backend_issue_id, idx)
 
 # 開啟面板時，依「我是否已回過這個對象」還原灰條狀態。
 func _sync_reaction_buttons():

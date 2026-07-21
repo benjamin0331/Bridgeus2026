@@ -15,6 +15,11 @@ const SPRITE_PX = 48.0     # 每個角色不論原圖尺寸，縮放到這個高
 var issue_title := ""
 var issue_body := ""
 
+# 後端的 issue id（POST /api/issues/ 回的）。讀者要用它把表情回復存回後端。
+# 作者提交成功後由 game.gd 呼叫 set_issue_backend_id 廣播；apply_issue 會歸零，
+# 因為新議題的後端 id 要等作者的 backend POST 回來才知道。0 = 未知/未存後端。
+var backend_issue_id: int = 0
+
 # 後端 user id（M3 配對建房需要，見 game.gd _do_seat 與 Backend.gd request_topic_match）。
 # 由 authority 在 _ready() 從 Backend.user_id 帶入；透過 MultiplayerSynchronizer 同步
 # （spawn=true，晚進的人也拿得到），這樣 server 端才查得到「這個 peer 對應哪個後端使用者」。
@@ -290,10 +295,21 @@ func submit_issue(title: String, body: String) -> void:
 	apply_issue.rpc(title, body)
 	# 後端 POST 由 UI 的 _submit_form() 發出（callback 在那邊跳成功/失敗提示）。
 
+# 作者提交議題、後端回傳 id 後由 game.gd 呼叫：把 id 廣播給所有 peer（含自己）。
+# 讀者要用它把表情回復存回後端（見 game_ui.gd _on_react）。id 走獨立 RPC 是因為
+# 後端 id 比 P2P 的 apply_issue 晚到（要等 backend POST 回來）。
+func set_issue_backend_id(id: int) -> void:
+	apply_issue_backend_id.rpc(id)
+
+@rpc("authority", "call_local", "reliable")
+func apply_issue_backend_id(id: int) -> void:
+	backend_issue_id = id
+
 @rpc("authority", "call_local", "reliable")
 func apply_issue(title: String, body: String):
 	issue_title = title
 	issue_body = body
+	backend_issue_id = 0   # 新議題，後端 id 未知，等作者廣播 apply_issue_backend_id
 	reactions.clear()      # 新議題清掉舊表情——涵蓋重新提交與刪除（刪除＝提交空議題）
 	_reactor_ids.clear()   # 一併清掉「誰回過」的記錄，新議題可重新回復
 	_render_bubble()

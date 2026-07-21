@@ -54,6 +54,7 @@ func guest_login(nickname: String, callback := Callable()) -> void:
 
 # --- 議題 -----------------------------------------------------------------
 # 送出議題。需先登入（header 帶 Authorization: Bearer <access_token>）。
+# 成功（201）data 會帶 issue id，呼叫端要拿它做表情回復（見 game.gd _submit_issue）。
 func submit_issue(title: String, body_text: String, callback := Callable()) -> void:
 	var payload := {"title": title, "body": body_text}
 	_post("/issues/", payload, true, func(code, data):
@@ -61,30 +62,85 @@ func submit_issue(title: String, body_text: String, callback := Callable()) -> v
 			callback.call(code, data)
 	)
 
-# --- 內部：POST 一次性請求 ------------------------------------------------
-# with_auth=true 時帶上 Bearer token。done 形如 func(code: int, data: Dictionary)。
-func _post(path: String, payload: Dictionary, with_auth: bool, done: Callable) -> void:
+# 讀議題清單，data 是陣列 [{id,title,body,author_id,created_at},...]。需登入。
+# 保留給日後「議題總覽」之類功能，目前沒有 UI 消費它（seam 完整用）。
+func get_issues(callback := Callable()) -> void:
+	_http_get("/issues/", true, func(code, data):
+		if callback.is_valid():
+			callback.call(code, data)
+	)
+
+# --- 頭銜 Titles（見 godot-backend-integration.md §3.1）--------------------
+# 讀自己擁有的頭銜清單＋目前選哪個。需登入。
+# data 形如 {"owned":[{"id":1,"name":"探索者"},...], "selected_id":1, "color":"#2680d9"}。
+func get_my_titles(callback := Callable()) -> void:
+	_http_get("/titles/me/", true, func(code, data):
+		if callback.is_valid():
+			callback.call(code, data)
+	)
+
+# 設定目前顯示的頭銜。title_id <= 0 代表「不顯示頭銜」（送 null 給後端）；
+# color 為 "#RRGGBB"（空字串代表不改色）。需登入。
+func set_my_title(title_id: int, color: String, callback := Callable()) -> void:
+	var payload := {"title_id": title_id if title_id > 0 else null}
+	if color != "":
+		payload["color"] = color
+	_post("/titles/me/", payload, true, func(code, data):
+		if callback.is_valid():
+			callback.call(code, data)
+	)
+
+# --- 議題表情回復 Reactions（見 §3.2）------------------------------------
+# 對某則議題送/改表情（emoji_index 0-4）。一人一議題一個、重送覆蓋（後端 upsert）。
+# 頭上顯示走 Godot P2P；這支只負責把研究資料落地。需登入。
+func add_issue_reaction(issue_id: int, emoji_index: int, callback := Callable()) -> void:
+	_post("/issues/%d/reactions/" % issue_id, {"emoji_index": emoji_index}, true, func(code, data):
+		if callback.is_valid():
+			callback.call(code, data)
+	)
+
+# 讀某則議題的表情統計。data 形如 {"counts":{"0":2,"3":5}, "mine":3}。需登入。
+# 目前 UI 用 P2P 即時顯示，這支保留給重連還原/離線分析用，尚未接 UI（seam 完整用）。
+func get_issue_reactions(issue_id: int, callback := Callable()) -> void:
+	_http_get("/issues/%d/reactions/" % issue_id, true, func(code, data):
+		if callback.is_valid():
+			callback.call(code, data)
+	)
+
+# --- 內部：一次性 HTTP 請求 -----------------------------------------------
+# with_auth=true 時帶 Bearer token。payload=null 代表無 body（GET 用）。
+# done 形如 func(code: int, data)——data 可能是 Dictionary 或 Array（/issues/ 回陣列）。
+func _request(method: int, path: String, payload, with_auth: bool, done: Callable) -> void:
 	var http := HTTPRequest.new()
 	add_child(http)
-	var headers := ["Content-Type: application/json"]
+	var headers := []
+	if payload != null:
+		headers.append("Content-Type: application/json")
 	if with_auth:
 		headers.append("Authorization: Bearer " + access_token)
 	http.request_completed.connect(func(_result, code, _headers, body):
 		var body_str: String = body.get_string_from_utf8()
-		var data := {}
 		# 用 JSON.new().parse 而非 parse_string：非 JSON 回應（如 404 HTML 頁）
 		# 只回錯誤碼、不會在 console 噴紅字，這樣真正的 HTTP code 才看得清楚。
+		var data = {}
 		var json := JSON.new()
-		if json.parse(body_str) == OK and json.data is Dictionary:
-			data = json.data
+		if json.parse(body_str) == OK:
+			data = json.data   # Dictionary 或 Array 都保留，讓呼叫端自己判型別
 		http.queue_free()       # 一次性，用完即丟
 		done.call(code, data)
 	)
-	var err := http.request(BASE_URL + path, headers, HTTPClient.METHOD_POST, JSON.stringify(payload))
+	var out_body := JSON.stringify(payload) if payload != null else ""
+	var err := http.request(BASE_URL + path, headers, method, out_body)
 	if err != OK:
 		push_error("Backend 請求失敗 %s err=%d" % [path, err])
 		http.queue_free()
 		done.call(0, {})   # code 0 = 連請求都送不出去（網路層失敗）
+
+func _post(path: String, payload: Dictionary, with_auth: bool, done: Callable) -> void:
+	_request(HTTPClient.METHOD_POST, path, payload, with_auth, done)
+
+func _http_get(path: String, with_auth: bool, done: Callable) -> void:
+	_request(HTTPClient.METHOD_GET, path, null, with_auth, done)
 
 # --- 議題配對 → 建聊天室 ---------------------------------------------------
 # 兩位玩家在遊戲內選同一議題並坐上木樁後，由 server 端（唯一 authority）呼叫一次。

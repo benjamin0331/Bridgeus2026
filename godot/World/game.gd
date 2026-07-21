@@ -11,6 +11,7 @@ const _TOPIC_TRUNKS := {
 	"women_soldier": ["Entities/R_1", "Entities/R_2"],
 }
 var _occupancy := {}   # trunk_path:String -> peer_id:int（僅 server 使用）
+var _title_ids: Array = []   # 頭銜下拉選單 index → 後端 title_id（0 = 假頭銜，不回寫後端）
 
 @onready var host_btn = $CanvasLayer/UI_Root/HostButton
 @onready var join_btn = $CanvasLayer/UI_Root/JoinButton
@@ -51,6 +52,7 @@ func _ready():
 	# 退回訪客登入方便本機測試——純測試用，不是正式使用者，正式環境不會走到這條。
 	if Backend.acquire_token_from_host():
 		print("已取得主功能登入 token，user_id=%d" % Backend.user_id)
+		_fetch_banner_options()   # 真登入才有頭銜；訪客/桌面維持假頭銜
 	else:
 		# ponytail: 暱稱先寫死「訪客」；之後有登入輸入框再換成玩家輸入。
 		Backend.guest_login("訪客", func(code, data):
@@ -180,7 +182,10 @@ func request_issue_sync():
 			continue
 		if p.issue_title != "":
 			p.apply_issue.rpc_id(requester, p.issue_title, p.issue_body)
-			# apply_issue 會清空表情，所以補送議題後才補送表情，順序不能反。
+			# apply_issue 會清空 backend_issue_id 與表情，所以補送議題後才補送
+			# id 與表情，順序不能反。
+			if p.backend_issue_id > 0:
+				p.apply_issue_backend_id.rpc_id(requester, p.backend_issue_id)
 			if not p.reactions.is_empty():
 				p.apply_reactions.rpc_id(requester, p.reactions)
 		if p.banner_text != "":
@@ -237,9 +242,15 @@ func _submit_issue() -> void:
 	if Backend.access_token == "":
 		_notify("議題已送出（未連後端，未存檔）")
 	else:
-		Backend.submit_issue(title, body, func(code, _data):
+		Backend.submit_issue(title, body, func(code, data):
 			if code == 201:
 				_notify("議題已送出！")
+				# 後端回的 issue id 存到自己身上並廣播——讀者要用它把表情回復
+				# 存回後端（見 game_ui.gd _on_react、player_00.gd backend_issue_id）。
+				var lp = _local_player()
+				var iid = int(data.get("id", 0)) if typeof(data) == TYPE_DICTIONARY else 0
+				if lp and iid > 0:
+					lp.set_issue_backend_id(iid)
 			else:
 				_notify("送出失敗 (code %d)" % code)
 		)
@@ -268,37 +279,64 @@ func _set_menu_suppressed(v: bool) -> void:
 
 
 # --- 頭銜 banner UI -------------------------------------------------------
-# ponytail: 選項先寫死 test_1~3；正式版改成向後端要清單（見下方 _fetch_banner_options）。
 func _setup_banner_ui() -> void:
-	option_btn.clear()
-	option_btn.add_item("test_1")
-	option_btn.add_item("test_2")
-	option_btn.add_item("test_3")
 	option_btn.selected = -1   # 不預選，任何一次點選都會觸發 item_selected
 	option_btn.item_selected.connect(_on_banner_selected)
 	color_btn.color = Color(0.15, 0.15, 0.15, 0.85)   # 預設同泡泡底色
 	color_btn.color_changed.connect(_on_banner_color_changed)
+	_load_placeholder_banners()   # 先塞假頭銜；有真登入才會被 _fetch_banner_options 換掉
 
-# 選了頭銜 → 用目前調色盤顏色貼到自己頭上（廣播給所有人）。
+# 桌面開發／訪客沒有真頭銜，塞假的純測 UI（title_id=0，選了不回寫後端）。
+func _load_placeholder_banners() -> void:
+	_title_ids.clear()
+	option_btn.clear()
+	for t in ["test_1", "test_2", "test_3"]:
+		option_btn.add_item(t)
+		_title_ids.append(0)
+	option_btn.selected = -1
+
+# 正式登入後向後端要真頭銜清單，替換掉假的，並在下拉選單顯示上次選的那個。
+# 拿不到（非 200 或格式不對）就維持假頭銜，不擋玩家。
+func _fetch_banner_options() -> void:
+	Backend.get_my_titles(func(code, data):
+		if code != 200 or typeof(data) != TYPE_DICTIONARY:
+			return
+		var owned = data.get("owned", [])
+		_title_ids.clear()
+		option_btn.clear()
+		var selected_idx := -1
+		var selected_id = data.get("selected_id")
+		for i in owned.size():
+			var t = owned[i]
+			option_btn.add_item(str(t.get("name", "")))
+			_title_ids.append(int(t.get("id", 0)))
+			if selected_id != null and int(t.get("id", 0)) == int(selected_id):
+				selected_idx = i
+		# 程式設 selected 不會觸發 item_selected（只有玩家點才會），所以頭上不會
+		# 自動貼——玩家要親自點一次才套到頭上。這裡只是把「上次選的」顯示出來。
+		option_btn.selected = selected_idx
+		var c = data.get("color")
+		if typeof(c) == TYPE_STRING and c != "":
+			color_btn.color = Color.html(c)
+	)
+
+# 選了頭銜 → 用目前調色盤顏色貼到自己頭上（P2P 廣播）＋有真 id 才回寫後端。
 func _on_banner_selected(index: int) -> void:
 	var p = _local_player()
 	if p:
 		p.set_banner(option_btn.get_item_text(index), color_btn.color)
+	var tid: int = _title_ids[index] if index < _title_ids.size() else 0
+	if tid > 0:
+		Backend.set_my_title(tid, "#" + color_btn.color.to_html(false))
 
-# 改色 → 若已選了頭銜，用新顏色重貼。
+# 改色 → 若已選了頭銜，用新顏色重貼（P2P）＋回寫後端（若目前選的是真頭銜）。
 func _on_banner_color_changed(color: Color) -> void:
 	var p = _local_player()
 	if p and p.banner_text != "":
 		p.set_banner(p.banner_text, color)
-
-# 之後接後端：把上面 add_item 的三行換成 Backend 回傳的清單。
-# func _fetch_banner_options() -> void:
-#     Backend.get_titles(func(code, data):
-#         if code == 200:
-#             option_btn.clear()
-#             for t in data:            # data 形如 [{"id":1,"name":"探索者"}, ...]
-#                 option_btn.add_item(t["name"])
-#             option_btn.selected = -1)
+	var idx: int = option_btn.selected
+	if idx >= 0 and idx < _title_ids.size() and _title_ids[idx] > 0:
+		Backend.set_my_title(_title_ids[idx], "#" + color.to_html(false))
 
 
 # --- 議題配對 ------------------------------------------------------------
