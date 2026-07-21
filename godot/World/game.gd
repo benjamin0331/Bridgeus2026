@@ -431,6 +431,12 @@ func _do_unseat(peer_id: int) -> void:
 func _on_peer_disconnected(id: int) -> void:
 	if multiplayer.is_server():
 		_do_unseat(id)   # 等待中玩家斷線 → 釋放位子，別卡死配對
+		# 斷線（含直接關分頁——WS 連線只是被動掉線，沒有任何「離開」訊號）不會
+		# 自動清掉這個人的角色：MultiplayerSpawner 只有 server 端 queue_free()
+		# 時才會複製「移除」給所有人，不做的話會變成永遠站在原地的幽靈玩家。
+		var p = get_node_or_null(str(id))
+		if p:
+			p.queue_free()   # server free → MultiplayerSpawner 複製移除給所有 peer
 
 # server-only：配對成功後稍等一下（讓「配對成功」提示看得到），再清掉兩位人物、還原木樁。
 # ponytail: 原型固定 2 人；正式版若要支援重連/回主世界，這裡再改成別的善後。
