@@ -1,7 +1,7 @@
 extends Node2D
 
 var peer = WebSocketMultiplayerPeer.new()
-const DEFAULT_PORT := 8080
+const DEFAULT_PORT := 8085   # 8080 已被 React(Docker) 佔用，多人連線改用 8085
 const DEFAULT_ADDRESS := "127.0.0.1"
 var _ws_url := ""   # 由 _resolve_connection_settings() 在 _ready() 填入，Join/dedicated server 都讀這個
 
