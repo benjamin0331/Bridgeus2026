@@ -10,6 +10,8 @@ import TopicChat from './pages/TopicChat'
 import KnowledgeBase from './pages/KnowledgeBase'
 import HistoryPage from './pages/HistoryPage'
 import AchievementPage from './pages/AchievementPage'
+import { findAchievement } from './pages/achievements.data'
+import AchievementToast from './components/AchievementToast'
 import LoginPage from './pages/LoginPage'
 
 function TopicChatRoute({ user, issues, issuesLoaded }) {
@@ -48,6 +50,10 @@ function App() {
   const [authMessage, setAuthMessage] = useState('');
   const [issues, setIssues] = useState([]);
   const [issuesLoaded, setIssuesLoaded] = useState(false);
+
+  // 剛進入/刷新時跳出的成就通知。
+  // ponytail: 目前偵測未接後端，先預設「一路同行」；之後把這行換成後端回傳的解鎖成就名稱
+  const [unlockedToast, setUnlockedToast] = useState(() => findAchievement('一路同行'));
 
   const handleLogin = useCallback((nextUser) => {
     setAuthMessage('');
@@ -169,6 +175,15 @@ function App() {
 
         <Sidebar navigate={navigate} isTopicPage={isTopicPage} />
       </div>
+
+      <AchievementToast
+        achievement={unlockedToast}
+        onClose={() => setUnlockedToast(null)}
+        onOpen={() => {
+          setUnlockedToast(null);
+          navigate('/achievement');
+        }}
+      />
     </div>
   )
 }
