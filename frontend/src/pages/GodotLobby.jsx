@@ -20,16 +20,19 @@ export default function GodotLobby() {
     frameWindow.bridgeus_token = token;
     frameWindow.bridgeus_user_id = userId;
     frameWindow.bridgeus_api_base = apiBase;
-    // window.bridgeus_ws_url 故意不設：常駐 Godot server 的正式網域還沒決定
-    // （infra 這輪明確不做，見部署規格 §0/§4），Godot 端 _resolve_connection_settings()
-    // 讀不到就會退回本機位址——之後 infra 定案再回來補這個值即可。
+    // 多人連線位址：同源拓樸下 /godot-ws 由 Cloudflare Tunnel 轉到 headless
+    // Godot server（見部署 runbook）。用當前 origin 自動組，不寫死網域；
+    // https 頁面自動用 wss。本機直接開 build（不經此頁）時不會被設，Godot 端
+    // _resolve_connection_settings() 會退回 ws://127.0.0.1:8085。
+    const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
+    frameWindow.bridgeus_ws_url = `${wsProto}://${location.host}/godot-ws`;
   };
 
   return (
     <div className="godot-lobby">
       <iframe
         ref={iframeRef}
-        src="/godot/index.html"
+        src="/godot/takeAbridge_godot.html"
         onLoad={handleLoad}
         allow="microphone"
         className="godot-lobby-frame"
