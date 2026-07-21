@@ -4,3 +4,6 @@
 
 # 後端串接文件，不進版控
 docs/
+
+# Web 匯出產物（build artifact，不進版控；export_presets.cfg 才進）
+/takeAbridge_godot.*
