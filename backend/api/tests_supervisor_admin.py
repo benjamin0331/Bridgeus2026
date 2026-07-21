@@ -93,3 +93,14 @@ class ResearcherGroupPermissionTests(TestCase):
 
     def test_group_cannot_delete_user(self):
         self.assertNotIn("delete_user", self._codenames())
+
+
+class UserAdminListDisplayTests(TestCase):
+    """自訂 UserAdmin 應在列表顯示 last_login 與 is_active。"""
+
+    def test_user_admin_list_display_includes_last_login_and_is_active(self):
+        from django.contrib import admin as django_admin
+
+        user_admin = django_admin.site._registry[User]
+        self.assertIn("last_login", user_admin.list_display)
+        self.assertIn("is_active", user_admin.list_display)

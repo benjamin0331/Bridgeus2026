@@ -14,6 +14,20 @@ from .models import (
     UserTitle,
 )
 
+from django.contrib.auth import get_user_model
+from django.contrib.auth.admin import UserAdmin
+
+User = get_user_model()
+
+# auth 在 INSTALLED_APPS 早於 api，預設 UserAdmin 先註冊了 User，這裡換成
+# 加了 last_login／is_active 到列表的版本，方便 Supervisor 一眼看帳號狀態。
+admin.site.unregister(User)
+
+
+@admin.register(User)
+class BridgeUsUserAdmin(UserAdmin):
+    list_display = UserAdmin.list_display + ("is_active", "last_login")
+
 
 @admin.register(AIConversation)
 class AIConversationAdmin(admin.ModelAdmin):
