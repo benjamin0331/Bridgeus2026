@@ -69,3 +69,27 @@ class ResearcherGroupStaffSyncTests(TestCase):
 
         user.refresh_from_db()
         self.assertFalse(user.is_staff)
+
+
+class ResearcherGroupPermissionTests(TestCase):
+    """0017 migration 應把 user 管理權限授給「研究者」Group（不含 delete）。"""
+
+    def setUp(self):
+        self.group = Group.objects.get(name=RESEARCHER_GROUP_NAME)
+
+    def _codenames(self):
+        return set(
+            self.group.permissions.values_list("codename", flat=True)
+        )
+
+    def test_group_can_add_change_view_user(self):
+        codenames = self._codenames()
+        self.assertIn("add_user", codenames)
+        self.assertIn("change_user", codenames)
+        self.assertIn("view_user", codenames)
+
+    def test_group_can_view_group(self):
+        self.assertIn("view_group", self._codenames())
+
+    def test_group_cannot_delete_user(self):
+        self.assertNotIn("delete_user", self._codenames())
