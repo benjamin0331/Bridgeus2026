@@ -48,7 +48,7 @@ BridgeUs（橋得攏）— AI 驅動的去極化對話平台。
 
 | 模組 | 狀態 | 重點 |
 |------|------|------|
-| M1 認證 | ✅ | JWT（simplejwt）、登入/刷新、前端 LoginPage |
+| M1 認證 | ✅ | JWT（simplejwt）、登入/刷新、前端 LoginPage；Supervisor 帳號管理（「研究者」Group 具 Django Admin 帳號管理權限；加入 Group 自動連動 is_staff；帳號列表顯示 last_login／is_active；刪除刻意不開放，改用停用 is_active） |
 | M2 議題/立場 | ✅ | `api/dialogue_topics.py` 的 `TOPIC_CONFIGS`/`SURVEY_CONFIGS`；李克特 + 反向題 → stance score → support/neutral/oppose |
 | M3 配對 + AI Agent | ✅（持續調整） | `apps/matching/services/matcher.py`（立場向量配對）、`ai_agent.py`（RAG+Claude、三階段策略、streaming）；近期加了 focus signal 偵測、reasoning mode 升級 |
 | M4 對話室 | ✅ | `api/consumers.py`：H-AI streaming + H-H 配對房 WebSocket；離題/情緒/僵局介入 |
