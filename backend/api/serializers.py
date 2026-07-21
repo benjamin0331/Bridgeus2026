@@ -1,6 +1,11 @@
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
+from django.contrib.auth.models import Group, User
+from django.contrib.auth.validators import UnicodeUsernameValidator
+from django.contrib.auth.password_validation import validate_password as dj_validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
+
 from apps.summary.models import ViewpointNode
 
 from .dialogue_topics import get_dialogue_survey
@@ -476,3 +481,54 @@ class PostDialogueResponseOutputSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = fields
+
+
+class AccountListSerializer(serializers.ModelSerializer):
+    """帳號管理清單／回傳用（唯讀）。is_researcher 由「研究者」Group 推導。"""
+
+    is_researcher = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "username",
+            "is_active",
+            "is_researcher",
+            "is_superuser",
+            "last_login",
+            "date_joined",
+        ]
+        read_only_fields = fields
+
+    def get_is_researcher(self, obj):
+        return any(g.name == RESEARCHER_GROUP_NAME for g in obj.groups.all())
+
+
+class AccountCreateSerializer(serializers.Serializer):
+    username = serializers.CharField(max_length=150, validators=[UnicodeUsernameValidator()])
+    password = serializers.CharField(write_only=True)
+    is_researcher = serializers.BooleanField(required=False, default=False)
+
+    def validate_username(self, value):
+        if User.objects.filter(username=value).exists():
+            raise serializers.ValidationError("這個帳號名稱已經有人用了。")
+        return value
+
+    def validate_password(self, value):
+        try:
+            dj_validate_password(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(list(exc.messages))
+        return value
+
+    def create(self, validated_data):
+        is_researcher = validated_data.pop("is_researcher", False)
+        user = User.objects.create_user(
+            username=validated_data["username"],
+            password=validated_data["password"],
+        )
+        if is_researcher:
+            group, _ = Group.objects.get_or_create(name=RESEARCHER_GROUP_NAME)
+            user.groups.add(group)  # signal 會把 is_staff 設成 True
+        return user

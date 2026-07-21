@@ -6,7 +6,7 @@ from decimal import Decimal
 from functools import lru_cache
 from uuid import uuid4
 
-from django.contrib.auth.models import User
+from django.contrib.auth.models import Group, User
 from django.core.cache import cache
 from django.db import transaction
 from django.db.models import Q
@@ -44,6 +44,8 @@ from .dialogue_topics import (
 )
 from .timeline_access import LOCKED_DETAIL, timeline_unlock_state
 from .serializers import (
+    AccountCreateSerializer,
+    AccountListSerializer,
     AIConversationSerializer,
     DialogueReplySerializer,
     DialogueSurveySerializer,
@@ -1480,6 +1482,28 @@ class ViewpointReviewDecisionView(APIView):
         )
 
         return Response(ViewpointNodeReviewSerializer(node).data)
+
+
+class AccountListCreateView(generics.ListCreateAPIView):
+    """研究者專用：帳號清單 + 新增帳號（前端設定頁）。"""
+
+    permission_classes = [IsResearcher]
+
+    def get_queryset(self):
+        return User.objects.prefetch_related("groups").order_by("-date_joined")
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return AccountCreateSerializer
+        return AccountListSerializer
+
+    def create(self, request, *args, **kwargs):
+        serializer = AccountCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        return Response(
+            AccountListSerializer(user).data, status=status.HTTP_201_CREATED
+        )
 
 
 class CCNDInsightsView(APIView):

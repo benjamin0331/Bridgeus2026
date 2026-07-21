@@ -36,6 +36,7 @@ urlpatterns = [
         'summary/viewpoints/<int:pk>/review/',
         views.ViewpointReviewDecisionView.as_view(),
     ),
+    path('accounts/', views.AccountListCreateView.as_view()),
     path('dialogue/topics/', views.DialogueTopicListView.as_view()),
     path(
         'dialogue/topics/<int:topic_id>/survey/',
