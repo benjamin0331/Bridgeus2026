@@ -532,3 +532,8 @@ class AccountCreateSerializer(serializers.Serializer):
             group, _ = Group.objects.get_or_create(name=RESEARCHER_GROUP_NAME)
             user.groups.add(group)  # signal 會把 is_staff 設成 True
         return user
+
+
+class AccountUpdateSerializer(serializers.Serializer):
+    is_active = serializers.BooleanField(required=False)
+    is_researcher = serializers.BooleanField(required=False)

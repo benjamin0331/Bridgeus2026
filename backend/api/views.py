@@ -21,7 +21,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from apps.matching.services.semantic import build_q9_embedding
 from apps.summary.models import ViewpointNode
 
-from .permissions import IsGodotServiceToken, IsResearcher
+from .permissions import IsGodotServiceToken, IsResearcher, RESEARCHER_GROUP_NAME
 
 from .models import (
     AIConversation,
@@ -46,6 +46,7 @@ from .timeline_access import LOCKED_DETAIL, timeline_unlock_state
 from .serializers import (
     AccountCreateSerializer,
     AccountListSerializer,
+    AccountUpdateSerializer,
     AIConversationSerializer,
     DialogueReplySerializer,
     DialogueSurveySerializer,
@@ -1504,6 +1505,64 @@ class AccountListCreateView(generics.ListCreateAPIView):
         return Response(
             AccountListSerializer(user).data, status=status.HTTP_201_CREATED
         )
+
+
+def _account_target_or_response(pk):
+    """取目標帳號；找不到回 (None, 404 Response)。"""
+    try:
+        return User.objects.get(pk=pk), None
+    except User.DoesNotExist:
+        return None, Response(
+            {"detail": "找不到這個帳號。"}, status=status.HTTP_404_NOT_FOUND
+        )
+
+
+class AccountDetailView(APIView):
+    """研究者專用：更新單一帳號（停用/啟用、升/降研究者）。"""
+
+    permission_classes = [IsResearcher]
+
+    def patch(self, request, pk: int):
+        target, error = _account_target_or_response(pk)
+        if error:
+            return error
+
+        # 護欄 1：不能動 superuser。
+        if target.is_superuser:
+            return Response(
+                {"detail": "不能對系統管理員帳號執行這個操作。"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = AccountUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        # 護欄 2：不能停用自己、不能取消自己的研究者身分。
+        if target == request.user:
+            if data.get("is_active") is False:
+                return Response(
+                    {"detail": "不能停用自己的帳號。"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if data.get("is_researcher") is False:
+                return Response(
+                    {"detail": "不能取消自己的研究者身分。"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        if "is_active" in data:
+            target.is_active = data["is_active"]
+            target.save(update_fields=["is_active"])
+
+        if "is_researcher" in data:
+            group, _ = Group.objects.get_or_create(name=RESEARCHER_GROUP_NAME)
+            if data["is_researcher"]:
+                target.groups.add(group)  # signal 連動 is_staff
+            else:
+                target.groups.remove(group)
+
+        return Response(AccountListSerializer(target).data)
 
 
 class CCNDInsightsView(APIView):

@@ -84,3 +84,70 @@ class AccountListCreateTests(APITestCase):
             {"username": "participant", "password": "pw-strong-123"},
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class AccountUpdateTests(APITestCase):
+    def setUp(self):
+        self.researcher = _make_researcher()
+        self.other = _make_researcher(username="other_researcher")
+        self.participant = User.objects.create_user(
+            username="participant", password="pw-strong-123"
+        )
+        self.superuser = User.objects.create_superuser(
+            username="root", password="pw-strong-123"
+        )
+        self.client.force_authenticate(user=self.researcher)
+
+    def _url(self, user):
+        return f"/api/accounts/{user.id}/"
+
+    def test_deactivate_and_reactivate_participant(self):
+        response = self.client.patch(self._url(self.participant), {"is_active": False})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.participant.refresh_from_db()
+        self.assertFalse(self.participant.is_active)
+
+        response = self.client.patch(self._url(self.participant), {"is_active": True})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.participant.refresh_from_db()
+        self.assertTrue(self.participant.is_active)
+
+    def test_promote_participant_to_researcher_sets_staff(self):
+        response = self.client.patch(
+            self._url(self.participant), {"is_researcher": True}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.participant.refresh_from_db()
+        self.assertTrue(
+            self.participant.groups.filter(name=RESEARCHER_GROUP_NAME).exists()
+        )
+        self.assertTrue(self.participant.is_staff)
+
+    def test_demote_researcher_clears_staff(self):
+        response = self.client.patch(self._url(self.other), {"is_researcher": False})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.other.refresh_from_db()
+        self.assertFalse(self.other.groups.filter(name=RESEARCHER_GROUP_NAME).exists())
+        self.assertFalse(self.other.is_staff)
+
+    def test_cannot_modify_superuser(self):
+        response = self.client.patch(self._url(self.superuser), {"is_active": False})
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.superuser.refresh_from_db()
+        self.assertTrue(self.superuser.is_active)
+
+    def test_cannot_deactivate_self(self):
+        response = self.client.patch(self._url(self.researcher), {"is_active": False})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.researcher.refresh_from_db()
+        self.assertTrue(self.researcher.is_active)
+
+    def test_cannot_demote_self(self):
+        response = self.client.patch(
+            self._url(self.researcher), {"is_researcher": False}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.researcher.refresh_from_db()
+        self.assertTrue(
+            self.researcher.groups.filter(name=RESEARCHER_GROUP_NAME).exists()
+        )
