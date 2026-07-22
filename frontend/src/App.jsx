@@ -15,6 +15,7 @@ import PostQuestionnairePage from './pages/PostQuestionnairePage'
 import DebriefingPage from './pages/DebriefingPage'
 import PlatformFeedbackPage from './pages/PlatformFeedbackPage'
 import ViewpointReviewPage from './pages/ViewpointReviewPage'
+import SettingsPage from './pages/SettingsPage'
 import GodotLobby from './pages/GodotLobby'
 
 function TopicChatRoute({ user, issues, issuesLoaded }) {
@@ -175,6 +176,7 @@ function App() {
                 任何登入者都連得到，實際存取控制一律在後端 IsResearcher——
                 一般參與者帳號打開這條路徑只會看到 403 錯誤訊息。 */}
             <Route path="/viewpoint-review" element={<ViewpointReviewPage />} />
+            <Route path="/settings" element={<SettingsPage user={user} />} />
             <Route path="/chat" element={<GodotLobby />} />
           </Routes>
         </div>

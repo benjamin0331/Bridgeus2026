@@ -52,7 +52,15 @@ function Sidebar({ navigate, isTopicPage = false, isResearcher = false }) {
           >
             <img src="/history.svg" alt="" className="utility-icon" />
           </button>
-          <img src="/settings.png" alt="Settings" className="utility-icon" />
+          <button
+            className="sidebar-icon-btn"
+            type="button"
+            onClick={() => handleNavigate('/settings')}
+            aria-label="設定"
+            title="設定"
+          >
+            <img src="/settings.png" alt="" className="utility-icon" />
+          </button>
           {/* 只有屬於「研究者」Group 的帳號才看得到，實際存取控制在後端
               IsResearcher，這裡只是決定要不要顯示連結。 */}
           {isResearcher && (
