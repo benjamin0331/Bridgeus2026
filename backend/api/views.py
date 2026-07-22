@@ -47,6 +47,7 @@ from .serializers import (
     AccountCreateSerializer,
     AccountListSerializer,
     AccountUpdateSerializer,
+    PasswordResetSerializer,
     AIConversationSerializer,
     DialogueReplySerializer,
     DialogueSurveySerializer,
@@ -1563,6 +1564,29 @@ class AccountDetailView(APIView):
                 target.groups.remove(group)
 
         return Response(AccountListSerializer(target).data)
+
+
+class AccountPasswordResetView(APIView):
+    """研究者專用：重設某帳號的密碼。"""
+
+    permission_classes = [IsResearcher]
+
+    def post(self, request, pk: int):
+        target, error = _account_target_or_response(pk)
+        if error:
+            return error
+
+        if target.is_superuser:
+            return Response(
+                {"detail": "不能重設系統管理員帳號的密碼。"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = PasswordResetSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        target.set_password(serializer.validated_data["password"])
+        target.save(update_fields=["password"])
+        return Response({"detail": "密碼已重設。"})
 
 
 class CCNDInsightsView(APIView):

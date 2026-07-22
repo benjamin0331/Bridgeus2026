@@ -151,3 +151,41 @@ class AccountUpdateTests(APITestCase):
         self.assertTrue(
             self.researcher.groups.filter(name=RESEARCHER_GROUP_NAME).exists()
         )
+
+
+class AccountPasswordResetTests(APITestCase):
+    def setUp(self):
+        self.researcher = _make_researcher()
+        self.participant = User.objects.create_user(
+            username="participant", password="old-pw-123456"
+        )
+        self.superuser = User.objects.create_superuser(
+            username="root", password="pw-strong-123"
+        )
+        self.client.force_authenticate(user=self.researcher)
+
+    def _url(self, user):
+        return f"/api/accounts/{user.id}/reset-password/"
+
+    def test_reset_sets_new_password(self):
+        response = self.client.post(
+            self._url(self.participant), {"password": "brand-new-987654"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.participant.refresh_from_db()
+        self.assertTrue(self.participant.check_password("brand-new-987654"))
+        self.assertFalse(self.participant.check_password("old-pw-123456"))
+
+    def test_reset_rejects_weak_password(self):
+        response = self.client.post(self._url(self.participant), {"password": "123"})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.participant.refresh_from_db()
+        self.assertTrue(self.participant.check_password("old-pw-123456"))
+
+    def test_cannot_reset_superuser_password(self):
+        response = self.client.post(
+            self._url(self.superuser), {"password": "brand-new-987654"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.superuser.refresh_from_db()
+        self.assertTrue(self.superuser.check_password("pw-strong-123"))

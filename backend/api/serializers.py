@@ -537,3 +537,14 @@ class AccountCreateSerializer(serializers.Serializer):
 class AccountUpdateSerializer(serializers.Serializer):
     is_active = serializers.BooleanField(required=False)
     is_researcher = serializers.BooleanField(required=False)
+
+
+class PasswordResetSerializer(serializers.Serializer):
+    password = serializers.CharField(write_only=True)
+
+    def validate_password(self, value):
+        try:
+            dj_validate_password(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(list(exc.messages))
+        return value
