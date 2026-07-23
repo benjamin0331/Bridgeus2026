@@ -15,6 +15,7 @@ import PostQuestionnairePage from './pages/PostQuestionnairePage'
 import DebriefingPage from './pages/DebriefingPage'
 import PlatformFeedbackPage from './pages/PlatformFeedbackPage'
 import ViewpointReviewPage from './pages/ViewpointReviewPage'
+import GodotLobby from './pages/GodotLobby'
 
 function TopicChatRoute({ user, issues, issuesLoaded }) {
   const { id } = useParams();
@@ -171,10 +172,10 @@ function App() {
             <Route path="/platform-feedback" element={<PlatformFeedbackPage />} />
             <Route path="/achievement" element={<AchievementPage />} />
             {/* 研究者專用；Sidebar 只在 user.isResearcher 時才顯示連結，但路徑本身
-                任何登入者都連得到，實際存取控制一律在後端 IsAdminUser——
+                任何登入者都連得到，實際存取控制一律在後端 IsResearcher——
                 一般參與者帳號打開這條路徑只會看到 403 錯誤訊息。 */}
             <Route path="/viewpoint-review" element={<ViewpointReviewPage />} />
-            <Route path="/chat" element={<div className="empty-page-message">Godot還在排隊</div>} />
+            <Route path="/chat" element={<GodotLobby />} />
           </Routes>
         </div>
 

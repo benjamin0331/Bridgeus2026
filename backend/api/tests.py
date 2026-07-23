@@ -1489,6 +1489,33 @@ class MatchingApiTests(APITestCase):
         self.assertEqual(new_queue.status, MatchQueueEntry.Status.MATCHING)
         self.assertIsNone(new_queue.match_id)
 
+    def test_matching_join_restart_triggers_m6_pipeline_on_abandoned_match(self):
+        # Regression test: restarting matching used to close the old match by
+        # setting status/closed_at directly instead of going through
+        # _close_locked_match(), so it never registered the
+        # transaction.on_commit() callback that fires the M6 觀點知識庫
+        # pipeline — the abandoned conversation silently never produced a
+        # DialogueSummary/ViewpointNode. See apps/matching/services/matcher.py
+        # enqueue_for_matching()'s restart_existing_match branch.
+        old_match, _ = self._create_match()
+
+        with patch(
+            "apps.summary.pipeline.assemble.run_pipeline_for_match"
+        ) as mock_pipeline:
+            with self.captureOnCommitCallbacks(execute=True):
+                response = self.client.post(
+                    "/api/matching/join/",
+                    {
+                        "topic_id": 102,
+                        "survey_answers": build_supporting_answers(),
+                        "restart_existing_match": True,
+                    },
+                    format="json",
+                )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_pipeline.assert_called_once_with(old_match.id)
+
     def test_matched_users_can_exchange_room_messages(self):
         match, room_id = self._create_match()
 

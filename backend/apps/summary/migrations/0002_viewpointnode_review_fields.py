@@ -47,6 +47,6 @@ class Migration(migrations.Migration):
         ),
         migrations.AddIndex(
             model_name='viewpointnode',
-            index=models.Index(fields=['review_status'], name='summary_vie_review__f0f5e4_idx'),
+            index=models.Index(fields=['review_status'], name='summary_vie_review__64bf61_idx'),
         ),
     ]

@@ -79,6 +79,16 @@ function isElementNearBottom(element) {
   return distanceFromBottom <= MATCH_SCROLL_BOTTOM_THRESHOLD_PX;
 }
 
+function semanticTreePayloadKey(payload) {
+  if (payload?.session_id) {
+    return `ai:${payload.session_id}`;
+  }
+  if (payload?.room_id) {
+    return `match:${payload.room_id}`;
+  }
+  return '';
+}
+
 function mapHistoryToMessages(history, userName) {
   return history.map((message, index) => ({
     id: `${message.role}-${index}`,
@@ -222,6 +232,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const [aiStanceDrift, setAiStanceDrift] = useState(null);
   const [isSending, setIsSending] = useState(false);
   const [isAgentStreaming, setIsAgentStreaming] = useState(false);
+  const [isAiSendCoolingDown, setIsAiSendCoolingDown] = useState(false);
   const [chatError, setChatError] = useState('');
   const [isSessionRestoring, setIsSessionRestoring] = useState(false);
   const [pendingRestoredSession, setPendingRestoredSession] = useState(null);
@@ -248,7 +259,6 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const [isRightPanelOpen, setIsRightPanelOpen] = useState(false);
 
   const messagesContainerRef = useRef(null);
-  const messagesEndRef = useRef(null);
   const isComposingRef = useRef(false);
   const textareaRef = useRef(null);
   const wsRef = useRef(null);
@@ -257,12 +267,18 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const matchWsRoomIdRef = useRef(null);
   const currentAgentMsgIdRef = useRef(null);
   const isSendingRef = useRef(false);
+  const pendingAiReplyCountRef = useRef(0);
+  const aiLastSendAtRef = useRef(0);
+  const aiSendCooldownTimerRef = useRef(null);
+  const sessionCreationPromiseRef = useRef(null);
   const activeMatchRef = useRef({ roomId: null, status: null, topicId: null });
   const leaveRequestSentRef = useRef(false);
   const cancelQueueRequestSentRef = useRef(false);
   const isChatPageMountedRef = useRef(true);
+  const shouldAutoScrollAiRef = useRef(true);
   const shouldAutoScrollMatchRef = useRef(true);
   const semanticTreeAnalyzeSignatureRef = useRef('');
+  const semanticTreeRequestIdRef = useRef(0);
   const currentIssue = issues?.find((item) => item.id === parseInt(id, 10));
   const displayUserName = user?.name || '公民';
   const matchPartnerName = MATCH_PARTNER_NAME;
@@ -302,7 +318,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
   const scrollMessagesToBottom = useCallback((behavior = 'smooth') => {
     window.requestAnimationFrame(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
+      const container = messagesContainerRef.current;
+      if (!container) {
+        return;
+      }
+      container.scrollTo({ top: container.scrollHeight, behavior });
     });
   }, []);
 
@@ -313,6 +333,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
   }, []);
 
   const resetAiSemanticTreeState = useCallback(() => {
+    semanticTreeRequestIdRef.current += 1;
     setSemanticTreePayload(null);
     setSemanticTreeStatus('ready');
     setSemanticTreeMessage('');
@@ -338,6 +359,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setPendingRestoredSession(null);
     setShowSurvey(false);
     setChatError('');
+    shouldAutoScrollAiRef.current = true;
     window.requestAnimationFrame(() => {
       scrollMessagesToBottom('auto');
     });
@@ -366,11 +388,29 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setIsSending(false);
     setIsAgentStreaming(false);
     setStanceRedoConfirmed(false);
+    shouldAutoScrollAiRef.current = true;
     setShowSurvey(true);
   }, [resetAiSemanticTreeState]);
 
   const applySemanticTreePayload = useCallback((payload) => {
-    setSemanticTreePayload(payload || null);
+    if (!payload?.treeData) {
+      return;
+    }
+
+    setSemanticTreePayload((currentPayload) => {
+      if (semanticTreePayloadKey(currentPayload) !== semanticTreePayloadKey(payload)) {
+        return payload;
+      }
+
+      const currentAnalyzedCount = Array.isArray(currentPayload?.analyzedSourceIds)
+        ? currentPayload.analyzedSourceIds.length
+        : 0;
+      const incomingAnalyzedCount = Array.isArray(payload.analyzedSourceIds)
+        ? payload.analyzedSourceIds.length
+        : 0;
+
+      return incomingAnalyzedCount < currentAnalyzedCount ? currentPayload : payload;
+    });
     setSemanticTreeStatus(payload?.analysisStatus || 'ready');
     setSemanticTreeMessage(payload?.message || '');
   }, []);
@@ -391,16 +431,19 @@ function TopicChat({ user, issues, issuesLoaded }) {
   }, []);
 
   const handleMessagesScroll = useCallback((event) => {
+    const isNearBottom = isElementNearBottom(event.currentTarget);
     if (!isMatchingMode) {
+      shouldAutoScrollAiRef.current = isNearBottom;
+      setShowScrollToBottomButton(Boolean(sessionId) && !isNearBottom);
       return;
     }
 
-    const isNearBottom = isElementNearBottom(event.currentTarget);
     shouldAutoScrollMatchRef.current = isNearBottom;
     setShowScrollToBottomButton(isMatchChatReady && !isNearBottom);
-  }, [isMatchChatReady, isMatchingMode]);
+  }, [isMatchChatReady, isMatchingMode, sessionId]);
 
   const handleScrollToBottom = useCallback(() => {
+    shouldAutoScrollAiRef.current = true;
     shouldAutoScrollMatchRef.current = true;
     setShowScrollToBottomButton(false);
     scrollMessagesToBottom('smooth');
@@ -505,6 +548,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
       wsRef.current?.close();
       wsRef.current = null;
       wsSessionIdRef.current = null;
+      if (aiSendCooldownTimerRef.current) {
+        window.clearTimeout(aiSendCooldownTimerRef.current);
+      }
       closeMatchWebSocket();
     };
   }, [closeMatchWebSocket]);
@@ -514,7 +560,12 @@ function TopicChat({ user, issues, issuesLoaded }) {
       return;
     }
 
-    scrollMessagesToBottom('smooth');
+    if (shouldAutoScrollAiRef.current) {
+      scrollMessagesToBottom('auto');
+      setShowScrollToBottomButton(false);
+    } else {
+      setShowScrollToBottomButton(true);
+    }
   }, [isAgentStreaming, isMatchingMode, isSending, messages, scrollMessagesToBottom]);
 
   useEffect(() => {
@@ -530,7 +581,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     }
 
     if (shouldAutoScrollMatchRef.current) {
-      scrollMessagesToBottom('smooth');
+      scrollMessagesToBottom('auto');
       setShowScrollToBottomButton(false);
     } else {
       setShowScrollToBottomButton(true);
@@ -929,12 +980,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
     }
 
     if (!isMatchChatReady || !matchingState?.room_id) {
-      setSemanticTreePayload(null);
-      setSemanticTreeStatus('ready');
-      setSemanticTreeMessage('');
+      semanticTreeRequestIdRef.current += 1;
       setIsSemanticTreeLoading(false);
       setIsSemanticTreeAnalyzing(false);
-      semanticTreeAnalyzeSignatureRef.current = '';
       return undefined;
     }
 
@@ -942,17 +990,19 @@ function TopicChat({ user, issues, issuesLoaded }) {
     const roomId = matchingState.room_id;
 
     const fetchSemanticTree = async () => {
+      const requestId = semanticTreeRequestIdRef.current + 1;
+      semanticTreeRequestIdRef.current = requestId;
       setIsSemanticTreeLoading(true);
       setSemanticTreeStatus('ready');
       setSemanticTreeMessage('');
 
       try {
         const response = await api.get(`/api/matching/rooms/${roomId}/semantic-tree/`);
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           applySemanticTreePayload(response.data);
         }
       } catch (error) {
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           setSemanticTreeStatus(error?.response?.data?.analysisStatus || 'load_failed');
           setSemanticTreeMessage(
             error?.response?.data?.message ||
@@ -981,29 +1031,28 @@ function TopicChat({ user, issues, issuesLoaded }) {
     }
 
     if (!sessionId) {
-      setSemanticTreePayload(null);
-      setSemanticTreeStatus('ready');
-      setSemanticTreeMessage('');
+      semanticTreeRequestIdRef.current += 1;
       setIsSemanticTreeLoading(false);
       setIsSemanticTreeAnalyzing(false);
-      semanticTreeAnalyzeSignatureRef.current = '';
       return undefined;
     }
 
     let cancelled = false;
 
     const fetchSemanticTree = async () => {
+      const requestId = semanticTreeRequestIdRef.current + 1;
+      semanticTreeRequestIdRef.current = requestId;
       setIsSemanticTreeLoading(true);
       setSemanticTreeStatus('ready');
       setSemanticTreeMessage('');
 
       try {
         const response = await api.get(`/api/dialogue/sessions/${sessionId}/semantic-tree/`);
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           applySemanticTreePayload(response.data);
         }
       } catch (error) {
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           setSemanticTreeStatus(error?.response?.data?.analysisStatus || 'load_failed');
           setSemanticTreeMessage(
             error?.response?.data?.message ||
@@ -1043,16 +1092,18 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
     let cancelled = false;
     const timer = window.setTimeout(async () => {
+      const requestId = semanticTreeRequestIdRef.current + 1;
+      semanticTreeRequestIdRef.current = requestId;
       setIsSemanticTreeAnalyzing(true);
 
       try {
         const response = await api.post(`/api/matching/rooms/${roomId}/semantic-tree/analyze/`);
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           applySemanticTreePayload(response.data);
           semanticTreeAnalyzeSignatureRef.current = signature;
         }
       } catch (error) {
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           setSemanticTreeStatus(error?.response?.data?.analysisStatus || 'analyze_failed');
           setSemanticTreeMessage(
             error?.response?.data?.message ||
@@ -1062,7 +1113,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
           semanticTreeAnalyzeSignatureRef.current = signature;
         }
       } finally {
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           setIsSemanticTreeAnalyzing(false);
         }
       }
@@ -1086,16 +1137,18 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
     let cancelled = false;
     const timer = window.setTimeout(async () => {
+      const requestId = semanticTreeRequestIdRef.current + 1;
+      semanticTreeRequestIdRef.current = requestId;
       setIsSemanticTreeAnalyzing(true);
 
       try {
         const response = await api.post(`/api/dialogue/sessions/${sessionId}/semantic-tree/analyze/`);
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           applySemanticTreePayload(response.data);
           semanticTreeAnalyzeSignatureRef.current = signature;
         }
       } catch (error) {
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           setSemanticTreeStatus(error?.response?.data?.analysisStatus || 'analyze_failed');
           setSemanticTreeMessage(
             error?.response?.data?.message ||
@@ -1105,7 +1158,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
           semanticTreeAnalyzeSignatureRef.current = signature;
         }
       } finally {
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           setIsSemanticTreeAnalyzing(false);
         }
       }
@@ -1173,6 +1226,13 @@ function TopicChat({ user, issues, issuesLoaded }) {
     };
   }, [isMatchingMode, triggerAutoCancelMatchingQueue]);
 
+  const updatePendingAiReplyCount = (delta) => {
+    const nextCount = Math.max(0, pendingAiReplyCountRef.current + delta);
+    pendingAiReplyCountRef.current = nextCount;
+    setIsSending(nextCount > 0);
+    return nextCount;
+  };
+
   const connectDialogueWebSocket = (activeSessionId) => {
     const token = localStorage.getItem('access');
     if (!token) {
@@ -1221,7 +1281,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
         currentAgentMsgIdRef.current = null;
         setAiStanceDrift(extractStanceDrift(data));
         setIsAgentStreaming(false);
-        setIsSending(false);
+        updatePendingAiReplyCount(-1);
         return;
       }
 
@@ -1229,11 +1289,12 @@ function TopicChat({ user, issues, issuesLoaded }) {
         currentAgentMsgIdRef.current = null;
         setIsAgentStreaming(false);
         setChatError(data.content || 'AI 回應中斷，請重試。');
-        setIsSending(false);
+        updatePendingAiReplyCount(-1);
       }
     };
 
     socket.onerror = () => {
+      pendingAiReplyCountRef.current = 0;
       setIsAgentStreaming(false);
       setChatError('WebSocket 連線錯誤，請重新整理頁面。');
       setIsSending(false);
@@ -1246,6 +1307,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
       }
 
       if (isSendingRef.current) {
+        pendingAiReplyCountRef.current = 0;
         setIsAgentStreaming(false);
         setChatError('連線中斷，請重新整理頁面。');
         setIsSending(false);
@@ -1261,19 +1323,25 @@ function TopicChat({ user, issues, issuesLoaded }) {
       return sessionId;
     }
 
-    const response = await api.post('/api/dialogue/sessions/', {
-      topic_id: Number(id),
-      topic_title: currentIssue?.title || `議題 ${id}`,
-      topic_description: currentIssue?.description || '',
-      survey_answers: surveyAnswers,
-      survey_open_answers: surveyOpenAnswers,
-      user_initial_argument: surveyOpenAnswers.Q9 || '',
-    });
+    if (!sessionCreationPromiseRef.current) {
+      sessionCreationPromiseRef.current = api.post('/api/dialogue/sessions/', {
+        topic_id: Number(id),
+        topic_title: currentIssue?.title || `議題 ${id}`,
+        topic_description: currentIssue?.description || '',
+        survey_answers: surveyAnswers,
+        survey_open_answers: surveyOpenAnswers,
+        user_initial_argument: surveyOpenAnswers.Q9 || '',
+      }).then((response) => {
+        setSessionId(response.data.session_id);
+        setAiStanceMeta(extractAiStanceMeta(response.data));
+        setAiStanceDrift(extractStanceDrift(response.data));
+        return response.data.session_id;
+      }).finally(() => {
+        sessionCreationPromiseRef.current = null;
+      });
+    }
 
-    setSessionId(response.data.session_id);
-    setAiStanceMeta(extractAiStanceMeta(response.data));
-    setAiStanceDrift(extractStanceDrift(response.data));
-    return response.data.session_id;
+    return sessionCreationPromiseRef.current;
   };
 
   const requestRestDialogueReply = async (activeSessionId, text) => {
@@ -1375,6 +1443,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
       setSemanticTreeStatus('ready');
       setSemanticTreeMessage('');
       semanticTreeAnalyzeSignatureRef.current = '';
+      shouldAutoScrollAiRef.current = true;
       setShowSurvey(false);
       setChatError('');
       return;
@@ -1434,8 +1503,6 @@ function TopicChat({ user, issues, issuesLoaded }) {
       setInputValue('');
       setMatchChatError('');
       setIsMatchSending(true);
-      shouldAutoScrollMatchRef.current = true;
-      setShowScrollToBottomButton(false);
 
       try {
         const socket = matchWsRef.current;
@@ -1490,9 +1557,19 @@ function TopicChat({ user, issues, issuesLoaded }) {
       return;
     }
 
-    if (isSending) {
+    const now = Date.now();
+    if (now - aiLastSendAtRef.current < 300) {
       return;
     }
+    aiLastSendAtRef.current = now;
+    setIsAiSendCoolingDown(true);
+    if (aiSendCooldownTimerRef.current) {
+      window.clearTimeout(aiSendCooldownTimerRef.current);
+    }
+    aiSendCooldownTimerRef.current = window.setTimeout(() => {
+      setIsAiSendCoolingDown(false);
+      aiSendCooldownTimerRef.current = null;
+    }, 300);
 
     setMessages((prev) => [
       ...prev,
@@ -1505,10 +1582,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
     ]);
     setInputValue('');
     setChatError('');
-    setIsAgentStreaming(false);
-    setIsSending(true);
 
     let activeSessionId = null;
+    let queuedReply = false;
 
     try {
       activeSessionId = await ensureSession();
@@ -1524,9 +1600,13 @@ function TopicChat({ user, issues, issuesLoaded }) {
         : existingSocket;
 
       await waitForSocketOpen(socket);
-      currentAgentMsgIdRef.current = null;
+      updatePendingAiReplyCount(1);
+      queuedReply = true;
       socket.send(JSON.stringify({ type: 'user_message', content: text }));
     } catch (socketError) {
+      if (queuedReply) {
+        updatePendingAiReplyCount(-1);
+      }
       wsRef.current?.close();
       wsRef.current = null;
       wsSessionIdRef.current = null;
@@ -2036,7 +2116,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
   const isInputDisabled = isMatchingMode
     ? !isMatchChatReady || isMatchSending
-    : showSurvey || isSending || isSessionRestoring || Boolean(pendingRestoredSession);
+    : showSurvey || isSessionRestoring || Boolean(pendingRestoredSession);
 
   const activeChatError = isMatchingMode && showSurvey
     ? ''
@@ -2069,7 +2149,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
     : 0;
   const metricMessageCount = isMatchingMode ? matchMessageCount : messages.length;
   const semanticTreeMessageCount = isMatchingMode ? matchMessageCount : aiUserMessageCount;
-  const isSemanticTreeActive = isMatchingMode ? isMatchChatReady : Boolean(sessionId);
+  const isSemanticTreeActive = isMatchingMode
+    ? isMatchChatReady || Boolean(semanticTreePayload)
+    : Boolean(sessionId) || Boolean(semanticTreePayload);
   const driftValueDisplay = isMatchingMode
     ? formatDriftValue(matchStanceDrift?.drift_value)
     : formatDriftValue(aiStanceDrift?.drift_value);
@@ -2190,10 +2272,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
               )}
             </>
           )}
-          <div ref={messagesEndRef} />
         </div>
 
-        {isMatchingMode && isMatchChatReady && showScrollToBottomButton && (
+        {(isMatchingMode ? isMatchChatReady : Boolean(sessionId)) && showScrollToBottomButton && (
           <button
             className="scroll-to-bottom-btn"
             type="button"
@@ -2253,7 +2334,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
               onClick={() => {
                 void handleSendMessage();
               }}
-              disabled={isInputDisabled || !inputValue.trim()}
+              disabled={isInputDisabled || isAiSendCoolingDown || !inputValue.trim()}
               aria-label="發送訊息"
             >
               <img src="/arrow-right.png" alt="發送" className="send-icon" />

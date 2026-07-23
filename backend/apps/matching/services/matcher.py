@@ -478,9 +478,10 @@ def enqueue_for_matching(
                 )
 
         if active_match and restart_existing_match:
-            active_match.status = DialogueMatch.Status.CLOSED
-            active_match.closed_at = now
-            active_match.save(update_fields=["status", "closed_at"])
+            # 一定要走 _close_locked_match()，不能自己 set status 存檔——
+            # 否則不會註冊 transaction.on_commit() 觸發 M6 觀點知識庫 pipeline，
+            # 這場被放棄重配的對話就永遠不會產生 DialogueSummary/ViewpointNode。
+            _close_locked_match(active_match, now=now)
             active_match = None
 
         if active_match:

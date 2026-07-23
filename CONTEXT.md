@@ -1,6 +1,6 @@
 # CONTEXT.md — BridgeUs 開發狀態
 
-> 最後更新：2026-07-11
+> 最後更新：2026-07-23
 > 用途：每次對話開始先讀此檔。**「待提交變更」區塊** = 尚未 commit 的工作，下次 commit 直接依此即可；commit 完就把該項移除。
 
 ---
@@ -43,6 +43,10 @@
   - `api/serializers.py::BridgeUsTokenObtainPairSerializer` 的 JWT claim 從 `token["is_staff"]` 改成 `token["is_researcher"] = user.groups.filter(name=RESEARCHER_GROUP_NAME).exists()`。
   - 前端 `LoginPage.jsx` 解出 `tokenPayload.is_researcher` 存進 `user.isResearcher`（原本叫 `isStaff`）；`Sidebar.jsx` 的 prop 改名 `isResearcher`，為真才顯示「觀點知識庫審核」連結（📋 icon，導去 `/viewpoint-review`）；`App.jsx` 把 `user?.isResearcher` 傳給 `Sidebar`。同樣**只是前端顯示依據，不是安全邊界**，真正的存取控制在後端 `IsResearcher`。
   - 測試：`api/tests_token_is_staff_claim.py` 刪掉，改成 `api/tests_token_is_researcher_claim.py`（3 案例，含「單純 `is_staff=True` 但沒加入 Group 不會拿到 `is_researcher: true`」這個關鍵案例，確認兩者真的獨立）。`api/tests_viewpoint_review.py` 的研究者帳號建立方式改成 `_make_researcher()`（建立/取得「研究者」Group 並加入），新增一個「`is_staff=True` 但沒在 Group 裡不能審核」的權限案例。
+- 2026-07-23 追加（同一批未 commit 變更內；接續上面「仍未解決」那筆，補上 `DialogueSummary`/`ViewpointNode` 剩餘欄位的填值邏輯）：
+  - `apps/summary/pipeline/assemble.py::run_pipeline_for_match()` 補上 `DialogueSummary`（`summary_text`/`side_a_stance`/`side_b_stance`/`quality_score`/`stance_shift_magnitude`）與 `ViewpointNode`（`viewpoint_summary`/`stance_direction`）的填值邏輯（原本這些欄位都是空值，只有 `dialogue_id`/`topic_id` 有寫）。`side_a_stance`/`side_b_stance` 用 `DialogueMatch.user_a_score`/`user_b_score` 換算（`api.views._resolve_stance_category()`）；`quality_score` 取 ranked pairs 的 `composite_score` 平均；`stance_shift_magnitude` 取雙方 `MatchStanceDrift` 的 `|最後一筆－第一筆|` 平均；`summary_text` 是雙方逐字發言紀錄（非 LLM 摘要，範圍較大另外處理）；`viewpoint_summary`/`stance_direction` 來自該則發言在 CCND 語意樹點亮的節點名稱/立場。
+  - `apps/matching/services/semantic_tree.py` 新增 `get_message_lit_nodes()`（回傳該則訊息命中的 CCND 節點 `{"name", "stance"}`）。
+- 2026-07-23 追加（同一批未 commit 變更內；M6 觸發漏洞修復）：`apps/matching/services/matcher.py::enqueue_for_matching()` 的 `restart_existing_match=True` 分支，原本直接 `active_match.status = CLOSED` 存檔，沒有經過 `_close_locked_match()`，導致沒有註冊 `transaction.on_commit()`、M6 pipeline 永遠不會被觸發（`/matching/request/` API 真實可觸發的路徑，使用者要求重新配對且目前有進行中配對房時會走到）。改成呼叫 `_close_locked_match(active_match, now=now)`。補了 regression test `api/tests.py::test_matching_join_restart_triggers_m6_pipeline_on_abandoned_match`。以上兩批改動都還沒在有完整環境（`uv`/PostgreSQL/`corsheaders`/`channels`/`rest_framework` 等）的機器上跑過 `manage.py test`，是逐行手動追過邏輯確認的，commit 前請務必在有完整環境的機器上跑一次。
 
 _（未追蹤的資料/設定檔 `.claude/`、`chroma_data/`、`*.csv`、`0530…txt` 不納入 commit。）_
 
@@ -88,7 +92,7 @@ BridgeUs（橋得攏）— AI 驅動的去極化對話平台。
 | M3 配對 + AI Agent | ✅（持續調整） | `apps/matching/services/matcher.py`（立場向量配對）、`ai_agent.py`（RAG+Claude、三階段策略、streaming）；近期加了 focus signal 偵測、reasoning mode 升級 |
 | M4 對話室 | ✅ | `api/consumers.py`：H-AI streaming + H-H 配對房 WebSocket；離題/情緒/僵局介入 |
 | M5 NLP/CCND | 🟡 進行中 | 語意樹 `apps/matching/services/semantic_tree.py`（topic-aware anchors）、立場偏移 drift；D3 前端指標列。CCND 視覺化持續中 |
-| M6 摘要/知識庫 | 🟡 | ✅ 對話後問卷（`PostDialogueResponse`）+ debriefing 同意/撤回 + Part F 平台體驗回饋（`PlatformFeedback`）；⬜ 立場偏移報告、知識庫沉澱 |
+| M6 摘要/知識庫 | 🟡 | ✅ 對話後問卷（`PostDialogueResponse`）+ debriefing 同意/撤回 + Part F 平台體驗回饋（`PlatformFeedback`）；✅ 觀點知識庫沉澱 pipeline（配對房 CLOSED 時自動觸發，品質篩選→去重→寫入 `DialogueSummary`/`ViewpointNode`，含 `viewpoint_summary` 抓 CCND 點亮節點名稱）；✅ Step 4 人工終審（`ViewpointReviewListView`/`ViewpointReviewDecisionView` + 前端 `ViewpointReviewPage.jsx`）；⬜ `summary_text` 目前是雙方逐字發言紀錄、非 LLM 摘要；⬜ 沒有對外的立場偏移報告 API（`docs/BridgeUs_API_Spec.md` 的 `GET /summary/<session_id>/` 還沒實作 view） |
 
 ---
 
@@ -156,7 +160,8 @@ npm run dev      # Vite，port 5173
 **近期**
 - [ ] 問卷初始立場 embedding（Q9）確實填入配對/ session 流程（M2/M3 整合）— 影響 drift 是否有基準
 - [ ] CCND 前端視覺化 / WebSocket 推送收尾
-- [ ] M6：立場偏移量化報告、觀點知識庫沉澱
+- [ ] M6：立場偏移量化報告的對外 API/前端呈現（`GET /summary/<session_id>/`，觀點知識庫沉澱本身已完成，見上方模組現況）
+- [ ] M6：`DialogueSummary.summary_text` 改成 LLM 生成摘要（目前是雙方逐字發言紀錄，先頂著）
 - [ ] 清理 `chat` app dead code（drift/session/stalemate/topic/ai_assist + 對應 tests）
 - [ ] `docs/BridgeUs_API_Spec.md` 更新（新增 `platform-feedback`、`post-questionnaire` 等）
 

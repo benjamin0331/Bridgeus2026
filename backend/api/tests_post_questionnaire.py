@@ -161,6 +161,20 @@ class TestPostQuestionnaire:
         assert response2.status_code == 201, response2.data
         assert float(response2.data["s_post"]) == pytest.approx(41 / 8)
 
+    def test_topic_103_uses_its_own_reverse_scoring_rules(self, auth_client):
+        """Women-in-service reverses Q2/Q4/Q6/Q8, not the nuclear item set."""
+        client, _ = auth_client
+        response = client.post(
+            "/api/post-questionnaire/",
+            _make_ai_payload(topic_id=103),
+            format="json",
+        )
+
+        assert response.status_code == 201, response.data
+        # Post order is Q8,Q5,Q3,Q7,Q1,Q4,Q6,Q2, so topic 103 reverses
+        # post items 1,6,7,8: 2+3+4+5+6+6+5+4 = 35.
+        assert float(response.data["s_post"]) == pytest.approx(35 / 8)
+
     def test_discomfort_creates_report(self, auth_client, db):
         """discomfort_flag=True 且 detail 填寫時，應建立 DiscomfortReport。"""
         from api.models import DiscomfortReport

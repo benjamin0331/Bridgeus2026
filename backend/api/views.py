@@ -1,11 +1,14 @@
 import logging
 import os
+import re
 import uuid as _uuid_mod
+from decimal import Decimal
 from functools import lru_cache
 from uuid import uuid4
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import generics, permissions, status
@@ -18,7 +21,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from apps.matching.services.semantic import build_q9_embedding
 from apps.summary.models import ViewpointNode
 
-from .permissions import IsResearcher
+from .permissions import IsGodotServiceToken, IsResearcher
 
 from .models import (
     AIConversation,
@@ -26,10 +29,13 @@ from .models import (
     DialogueSessionRecord,
     DiscomfortReport,
     Issue,
+    IssueReaction,
     MatchStanceDrift,
     PlatformFeedback,
     PostDialogueResponse,
+    Title,
     UserStanceProfile,
+    UserTitle,
 )
 from .dialogue_topics import (
     TOPIC_CONFIGS,
@@ -2151,6 +2157,220 @@ class IssueListCreateView(APIView):
                 "body": issue.body,
                 "author_id": issue.author_id,
                 "created_at": issue.created_at,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+_HEX_COLOR_RE = re.compile(r"#[0-9a-fA-F]{6}")
+
+
+class TitleMeView(APIView):
+    """GET/POST /api/titles/me/ — 玩家在 Godot 大廳看/選自己擁有的頭銜。
+    頭銜本身怎麼解鎖由主功能成就系統決定（見 UserTitle 模型註解），這裡只管
+    「我有哪些、目前選哪個」。契約見 godot-backend-integration.md §3.1。"""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        owned = UserTitle.objects.filter(user=request.user).select_related("title")
+        selected = next((ut for ut in owned if ut.is_selected), None)
+        return Response(
+            {
+                "owned": [{"id": ut.title_id, "name": ut.title.name} for ut in owned],
+                "selected_id": selected.title_id if selected else None,
+                "color": (selected.color or selected.title.color) if selected else None,
+            }
+        )
+
+    def post(self, request):
+        # 「沒帶 title_id」跟「明確傳 title_id: null」意義不同：後者是「取消顯示
+        # 頭銜」，前者多半是呼叫端漏帶。不分辨的話，只想改顏色的請求會意外把
+        # 使用者的頭銜選擇清掉，所以這裡要求一定要明確帶上。
+        if "title_id" not in request.data:
+            return Response(
+                {"detail": "必須帶 title_id（要取消顯示請明確傳 null）。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        title_id = request.data.get("title_id")
+        color = request.data.get("color")
+
+        # color 直接進 DB，但 Django 不會在 save() 時檢查 max_length——SQLite 會
+        # 默默存進怪字串，PostgreSQL 則會丟 DataError 變成 500。在這裡擋掉。
+        if color is not None and color != "" and not _HEX_COLOR_RE.fullmatch(str(color)):
+            return Response(
+                {"detail": "color 需為 #RRGGBB 格式。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        target = None
+        if title_id is not None:
+            try:
+                target = UserTitle.objects.get(user=request.user, title_id=title_id)
+            except UserTitle.DoesNotExist:
+                return Response(
+                    {"detail": "尚未擁有這個頭銜。"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        # 驗證擁有權先於任何寫入——避免「清掉舊選擇後才發現目標無效」把使用者
+        # 的選擇狀態意外清空。
+        with transaction.atomic():
+            UserTitle.objects.filter(user=request.user, is_selected=True).update(
+                is_selected=False
+            )
+            if target is not None:
+                # ponytail: 傳空字串/null 不會清回 Title 預設色，只是「不改色」——
+                # 目前沒有「重設為預設色」的需求，有再加。
+                if color:
+                    target.color = color
+                target.is_selected = True
+                target.save(update_fields=["is_selected", "color"])
+
+        return self.get(request)
+
+
+class IssueReactionsView(APIView):
+    """GET/POST /api/issues/<issue_id>/reactions/ — 議題表情回復（5 選 1）。
+    upsert：同一 reactor 對同一 issue 再送 = 覆蓋，不是疊加。契約見
+    godot-backend-integration.md §3.2。"""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, issue_id: int):
+        if not Issue.objects.filter(pk=issue_id).exists():
+            return Response(
+                {"detail": "找不到這個議題。"}, status=status.HTTP_404_NOT_FOUND
+            )
+        counts: dict[str, int] = {}
+        for idx in IssueReaction.objects.filter(issue_id=issue_id).values_list(
+            "emoji_index", flat=True
+        ):
+            counts[str(idx)] = counts.get(str(idx), 0) + 1
+        mine = (
+            IssueReaction.objects.filter(issue_id=issue_id, reactor=request.user)
+            .values_list("emoji_index", flat=True)
+            .first()
+        )
+        return Response({"counts": counts, "mine": mine})
+
+    def post(self, request, issue_id: int):
+        try:
+            issue = Issue.objects.get(pk=issue_id)
+        except Issue.DoesNotExist:
+            return Response(
+                {"detail": "找不到這個議題。"}, status=status.HTTP_404_NOT_FOUND
+            )
+        emoji_index = request.data.get("emoji_index")
+        # 必須是真的 int：bool 是 int 的子類別，JSON 的 true 會被當成 1，所以
+        # 額外排除 bool；字串 "3" 也不接受，避免前端型別漂移悄悄過關。
+        if (
+            isinstance(emoji_index, bool)
+            or not isinstance(emoji_index, int)
+            or not (0 <= emoji_index <= 4)
+        ):
+            return Response(
+                {"detail": "emoji_index 必須是 0-4 的整數。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        IssueReaction.objects.update_or_create(
+            issue=issue,
+            reactor=request.user,
+            defaults={"emoji_index": emoji_index},
+        )
+        return self.get(request, issue_id)
+
+
+class GodotMatchRoomView(APIView):
+    """POST /api/godot/match-rooms/ — 給常駐 headless Godot server 呼叫，把兩位
+    已在主功能登入的玩家直接配成一間議題聊天室，不走 M3 立場配對佇列
+    （MatchingJoinView/enqueue_for_matching）。契約見
+    godot-backend-integration.md §3.3；身份用共用服務金鑰而非 user JWT，見
+    godot-web-deployment-spec.md §4。"""
+
+    # 呼叫者是 Godot server、不是使用者，沒有也不該有 JWT。清空 authentication_classes
+    # 是必要的：預設的 JWTAuthentication 遇到過期/損壞的 Authorization header 會
+    # 直接丟 401，根本輪不到底下的服務金鑰驗證跑。
+    authentication_classes = []
+    permission_classes = [IsGodotServiceToken]
+
+    def post(self, request):
+        topic_id = request.data.get("topic_id")
+        user_ids = request.data.get("user_ids")
+
+        if not isinstance(topic_id, int) or topic_id not in TOPIC_CONFIGS:
+            return Response(
+                {"detail": "topic_id 無效。"}, status=status.HTTP_400_BAD_REQUEST
+            )
+        # 元素型別也要擋：User.objects.get(pk="a") 丟的是 ValueError 不是
+        # DoesNotExist，下面的 try/except 接不到，會變成 500。bool 一併排除
+        # （bool 是 int 的子類別，True 會被當成 pk=1）。
+        if (
+            not isinstance(user_ids, list)
+            or len(user_ids) != 2
+            or any(isinstance(u, bool) or not isinstance(u, int) for u in user_ids)
+            or user_ids[0] == user_ids[1]
+        ):
+            return Response(
+                {"detail": "user_ids 需為兩個不同的使用者 id（整數）。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            user_a = User.objects.get(pk=user_ids[0])
+            user_b = User.objects.get(pk=user_ids[1])
+        except User.DoesNotExist:
+            return Response(
+                {"detail": "找不到其中一位使用者。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # 冪等：同一對人、同一議題已經有進行中的房間就直接沿用，不再開一間。
+        # Godot server 重試或玩家重複觸發都可能打第二次，而下游
+        # _get_active_match() 是 .first() 且沒有 order_by——真的開出兩間 ACTIVE
+        # 的話，兩位參與者可能各自被導到不同房間、看到空的聊天室。
+        existing = (
+            DialogueMatch.objects.filter(
+                topic_id=topic_id,
+                status=DialogueMatch.Status.ACTIVE,
+            )
+            .filter(
+                Q(user_a=user_a, user_b=user_b) | Q(user_a=user_b, user_b=user_a)
+            )
+            .order_by("-created_at")
+            .first()
+        )
+        if existing:
+            return Response(
+                {
+                    "room_id": existing.room_id,
+                    "redirect_url": f"/topic/{topic_id}?mode=match",
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        # Godot 木樁配對只做「同議題湊一對」，不跑 M3 立場向量配對，所以沒有
+        # 真實 stance score 可用——user_a_score/user_b_score 只是滿足 DB 1-7
+        # constraint 的中性佔位值。matching_algorithm_version 標成
+        # "godot_manual"，方便日後分析時跟真正演算法配對的資料分開看。
+        match = DialogueMatch.objects.create(
+            topic_id=topic_id,
+            user_a=user_a,
+            user_b=user_b,
+            user_a_score=Decimal("4.00"),
+            user_b_score=Decimal("4.00"),
+            matching_algorithm_version="godot_manual",
+            room_id=uuid4().hex,
+            status=DialogueMatch.Status.ACTIVE,
+        )
+
+        return Response(
+            {
+                "room_id": match.room_id,
+                # 前端沒有獨立的 /dialogue/room/<id> 路由——配對聊天室其實是
+                # TopicChat.jsx 掛在 /topic/<topic_id>?mode=match，內部再用
+                # GET /api/matching/status/?topic_id= 找到這筆 DialogueMatch。
+                "redirect_url": f"/topic/{topic_id}?mode=match",
             },
             status=status.HTTP_201_CREATED,
         )

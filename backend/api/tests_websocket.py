@@ -35,6 +35,13 @@ class FakeStreamingDialogueAgent:
         yield f"AI reply to: {session.history[-1].content}"
 
 
+class SlowStreamingDialogueAgent:
+    async def astream_respond(self, session):
+        content = session.history[-1].content
+        yield f"AI reply to: {content}"
+        await asyncio.sleep(0.05)
+
+
 async def _access_token_for(user):
     return await sync_to_async(lambda: str(AccessToken.for_user(user)))()
 
@@ -113,6 +120,71 @@ async def test_dialogue_websocket_persists_completed_turn():
     assert saved_turn.topic_id == 102
     assert saved_turn.user_prompt == "核能真的比較穩定嗎？"
     assert saved_turn.ai_response == "AI reply to: 核能真的比較穩定嗎？"
+
+    await communicator.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_dialogue_websocket_queues_messages_and_replies_in_order():
+    from BridgeUs_Django.asgi import application
+    from apps.matching.services.ai_agent import DialogueSession
+
+    user = await create_user(username="ai_ws_queue_user", password="secret123")
+    session_id = uuid4().hex
+    session = DialogueSession(
+        topic="女性義務兵役討論",
+        topic_description="討論女性是否應納入義務兵役。",
+        agent_stance="提出相反觀點",
+        agent_stance_summary="",
+        user_stance_label="立場尚未明確",
+        user_stance_score=4.0,
+    )
+    await sync_to_async(cache.set)(
+        f"dialogue_session:{session_id}",
+        {
+            "user_id": user.id,
+            "session_id": session_id,
+            "topic_id": 103,
+            "topic_title": "女性義務兵役討論",
+            "collection_name": "military_service_women_news",
+            "survey_context": {},
+            "session": session.to_dict(),
+        },
+    )
+
+    communicator = WebsocketCommunicator(
+        application,
+        f"/ws/dialogue/{session_id}/?token={await _access_token_for(user)}",
+    )
+    with (
+        patch("api.views.get_dialogue_agent", return_value=SlowStreamingDialogueAgent()),
+        patch("api.consumers.aget_embedding", new=AsyncMock(return_value=make_test_embedding(1))),
+    ):
+        assert (await communicator.connect())[0]
+        await communicator.send_json_to({"type": "user_message", "content": "第一則"})
+        await communicator.send_json_to({"type": "user_message", "content": "第二則"})
+
+        replies = [await communicator.receive_json_from(timeout=3) for _ in range(4)]
+
+    assert [item["type"] for item in replies] == [
+        "agent_stream",
+        "agent_stream_end",
+        "agent_stream",
+        "agent_stream_end",
+    ]
+    assert replies[0]["content"] == "AI reply to: 第一則"
+    assert replies[2]["content"] == "AI reply to: 第二則"
+    saved = [
+        turn
+        async for turn in AIConversation.objects.filter(session_id=session_id).order_by("id")
+    ]
+    assert [turn.user_prompt for turn in saved] == ["第一則", "第二則"]
+    assert [turn.ai_response for turn in saved] == [
+        "AI reply to: 第一則",
+        "AI reply to: 第二則",
+    ]
 
     await communicator.disconnect()
 

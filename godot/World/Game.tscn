@@ -1,6 +1,6 @@
 [gd_scene format=4 uid="uid://bu0s521nxp0w5"]
 
-[ext_resource type="Script" uid="uid://cgplxkbur14gv" path="res://World/game.gd" id="1_2ntvn"]
+[ext_resource type="Script" uid="uid://bssldroq6hw5c" path="res://World/game.gd" id="1_2ntvn"]
 [ext_resource type="Texture2D" uid="uid://b1eugsyx3rnma" path="res://Assets/ForgottenMemories/TileSet.png" id="1_vb84i"]
 [ext_resource type="Texture2D" uid="uid://di7igd8hlj1eo" path="res://Assets/ForgottenMemories/WaterTiles-6frames.png" id="2_723o5"]
 [ext_resource type="Texture2D" uid="uid://cntsi5aafunb1" path="res://Assets/ForgottenMemories/Trees_seperated.png" id="3_yaxdk"]
@@ -8,6 +8,11 @@
 [ext_resource type="Texture2D" uid="uid://clxv4hdf7hnnm" path="res://Assets/ForgottenMemories/Props.png" id="4_aduw6"]
 [ext_resource type="Texture2D" uid="uid://c3s1hkkn451xc" path="res://Assets/ForgottenMemories/campfire-Sheet.png" id="6_aduw6"]
 [ext_resource type="PackedScene" uid="uid://l1h0wq6obvlk" path="res://World/trunk.tscn" id="9_aduw6"]
+[ext_resource type="PackedScene" uid="uid://db2w41lcr044s" path="res://UI/GameUI.tscn" id="10_gameui"]
+[ext_resource type="PackedScene" uid="uid://cv7m17p1q5muw" path="res://Entities/npc/npc_frog.tscn" id="11_h35pg"]
+[ext_resource type="PackedScene" path="res://UI/IssueForm.tscn" id="11_issuef"]
+[ext_resource type="PackedScene" uid="uid://4olwgwp2vlkd" path="res://UI/dialogue_manager.tscn" id="12_dlgmgr"]
+[ext_resource type="PackedScene" uid="uid://beqjaafens0fu" path="res://Entities/npc/npc_frog2.tscn" id="13_848uq"]
 
 [sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_7lihs"]
 texture = ExtResource("1_vb84i")
@@ -32699,35 +32704,17 @@ shape = SubResource("SegmentShape2D_4c1bv")
 [node name="Entities" type="Node2D" parent="." unique_id=1589267524]
 y_sort_enabled = true
 
-[node name="Trunk" parent="Entities" unique_id=1967746299 instance=ExtResource("9_aduw6")]
-position = Vector2(-231, -267)
+[node name="L_1" parent="Entities" unique_id=1967746299 instance=ExtResource("9_aduw6")]
+position = Vector2(-284, -217)
 
-[node name="Trunk2" parent="Entities" unique_id=1033650339 instance=ExtResource("9_aduw6")]
-position = Vector2(-186, -235)
+[node name="L_2" parent="Entities" unique_id=977102003 instance=ExtResource("9_aduw6")]
+position = Vector2(-193, -238)
 
-[node name="Trunk6" parent="Entities" unique_id=725177926 instance=ExtResource("9_aduw6")]
-position = Vector2(-80, -164)
+[node name="R_2" parent="Entities" unique_id=1784387673 instance=ExtResource("9_aduw6")]
+position = Vector2(0, -121)
 
-[node name="Trunk7" parent="Entities" unique_id=218310278 instance=ExtResource("9_aduw6")]
-position = Vector2(-11, -156)
-
-[node name="Trunk8" parent="Entities" unique_id=638433570 instance=ExtResource("9_aduw6")]
-position = Vector2(0, -108)
-
-[node name="Trunk9" parent="Entities" unique_id=1784387673 instance=ExtResource("9_aduw6")]
-position = Vector2(-57, -96)
-
-[node name="Trunk10" parent="Entities" unique_id=1475817146 instance=ExtResource("9_aduw6")]
-position = Vector2(-107, -124)
-
-[node name="Trunk3" parent="Entities" unique_id=977102003 instance=ExtResource("9_aduw6")]
-position = Vector2(-223, -201)
-
-[node name="Trunk4" parent="Entities" unique_id=91132095 instance=ExtResource("9_aduw6")]
-position = Vector2(-283, -210)
-
-[node name="Trunk5" parent="Entities" unique_id=1835888222 instance=ExtResource("9_aduw6")]
-position = Vector2(-289, -251)
+[node name="R_1" parent="Entities" unique_id=1475817146 instance=ExtResource("9_aduw6")]
+position = Vector2(-98, -138)
 
 [node name="CanvasLayer" type="CanvasLayer" parent="." unique_id=1458463792]
 
@@ -32736,8 +32723,11 @@ layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
+offset_left = -2.0
+offset_right = -2.0
 grow_horizontal = 2
 grow_vertical = 2
+mouse_filter = 2
 
 [node name="HostButton" type="Button" parent="CanvasLayer/UI_Root" unique_id=557231690]
 layout_mode = 1
@@ -32758,6 +32748,120 @@ offset_bottom = 91.0
 text = "Join"
 metadata/_edit_use_anchors_ = true
 
+[node name="CanvasLayer_issue" type="CanvasLayer" parent="." unique_id=1639104497]
+
+[node name="Control" type="Control" parent="CanvasLayer_issue" unique_id=1919540236]
+layout_mode = 3
+anchors_preset = 0
+offset_right = 40.0
+offset_bottom = 40.0
+
+[node name="IssueButton" type="Button" parent="CanvasLayer_issue/Control" unique_id=275796639]
+layout_mode = 0
+offset_left = 20.0
+offset_top = 20.0
+offset_right = 97.0
+offset_bottom = 51.0
+text = "提交議題 "
+
+[node name="OptionButton" type="OptionButton" parent="CanvasLayer_issue/Control" unique_id=1358525693]
+layout_mode = 0
+offset_left = 20.0
+offset_top = 60.0
+offset_right = 160.0
+offset_bottom = 91.0
+
+[node name="BannerColorButton" type="ColorPickerButton" parent="CanvasLayer_issue/Control" unique_id=688389974]
+layout_mode = 0
+offset_left = 168.0
+offset_top = 60.0
+offset_right = 248.0
+offset_bottom = 91.0
+color = Color(0.15, 0.15, 0.15, 0.85)
+
+[node name="IssueForm" parent="CanvasLayer_issue" unique_id=77715054 instance=ExtResource("11_issuef")]
+
+[node name="GameUI" parent="." unique_id=124725636 instance=ExtResource("10_gameui")]
+
 [node name="MultiplayerSpawner" type="MultiplayerSpawner" parent="." unique_id=863148584]
 _spawnable_scenes = PackedStringArray("uid://cawtmw8w8bom1")
 spawn_path = NodePath("..")
+
+[node name="Control" type="Control" parent="." unique_id=951913563]
+z_index = 4096
+layout_mode = 3
+anchors_preset = 0
+offset_left = 234.0
+offset_top = -384.0
+offset_right = 344.0
+offset_bottom = -294.0
+scale = Vector2(0.5, 0.5)
+
+[node name="NuclearEnegry" type="Button" parent="Control" unique_id=684619070]
+layout_mode = 0
+offset_left = -1010.0
+offset_top = 220.0
+offset_right = -900.0
+offset_bottom = 260.0
+text = "核四議題"
+
+[node name="WomenSoldier" type="Button" parent="Control" unique_id=2028435297]
+layout_mode = 0
+offset_left = -594.0
+offset_top = 398.0
+offset_right = -484.0
+offset_bottom = 438.0
+text = "女性兵役"
+
+[node name="WaitingLayer" type="CanvasLayer" parent="." unique_id=1767494167]
+
+[node name="Panel" type="Panel" parent="WaitingLayer" unique_id=1982347994]
+visible = false
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -130.0
+offset_top = -60.0
+offset_right = 130.0
+offset_bottom = 60.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="VBox" type="VBoxContainer" parent="WaitingLayer/Panel" unique_id=169000189]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 12.0
+offset_top = 12.0
+offset_right = -12.0
+offset_bottom = -12.0
+grow_horizontal = 2
+grow_vertical = 2
+alignment = 1
+
+[node name="Label" type="Label" parent="WaitingLayer/Panel/VBox" unique_id=279076367]
+layout_mode = 2
+text = "等待第二名玩家中……"
+horizontal_alignment = 1
+
+[node name="CancelButton" type="Button" parent="WaitingLayer/Panel/VBox" unique_id=1355911416]
+layout_mode = 2
+text = "取消等待"
+
+[node name="npc_frog" parent="." unique_id=358618618 instance=ExtResource("11_h35pg")]
+position = Vector2(326, -291)
+
+[node name="SpawnPoint" type="Marker2D" parent="." unique_id=375429483]
+position = Vector2(289, -290)
+
+[node name="DialogueManager" parent="." unique_id=1268683034 instance=ExtResource("12_dlgmgr")]
+
+[node name="npc_frog2" parent="." unique_id=1750446569 instance=ExtResource("13_848uq")]
+position = Vector2(247, -291)
+
+[connection signal="pressed" from="CanvasLayer_issue/Control/IssueButton" to="." method="_on_issue_button_pressed"]
+[connection signal="pressed" from="Control/NuclearEnegry" to="." method="_on_nuclear_enegry_pressed"]
+[connection signal="pressed" from="Control/WomenSoldier" to="." method="_on_women_soldier_pressed"]

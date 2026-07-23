@@ -1,23 +1,14 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import api from '../api/client';
 import './PostQuestionnairePage.css';
 
 // --- Static question data -----------------------------------------------
 
-const C1_QUESTIONS = [
-  { index: 1, preQ: 'Q8', text: '在再生能源尚無法滿足基載電力需求的過渡期，核電是必要的橋接方案。' },
-  { index: 2, preQ: 'Q5', text: '考量台灣的地震與海嘯風險，核電廠的存在對周邊居民構成不可接受的威脅。', reverse: true },
-  { index: 3, preQ: 'Q3', text: '與其他能源相比，核電在發電成本與供電穩定性上具有明顯優勢。' },
-  { index: 4, preQ: 'Q7', text: '核電是目前能大規模穩定供電的低碳能源中，最務實可行的選項。' },
-  { index: 5, preQ: 'Q1', text: '我認為台灣現有的核電技術與管理能力，足以確保核電廠的安全運轉。' },
-  { index: 6, preQ: 'Q4', text: '台灣應優先發展再生能源，而非依賴核電來達成淨零碳排目標。', reverse: true },
-  { index: 7, preQ: 'Q6', text: '核電廠的建設、維護與除役成本被嚴重低估，實際上並不划算。', reverse: true },
-  { index: 8, preQ: 'Q2', text: '核廢料的長期處置風險，使核電不應被視為環保的能源選項。', reverse: true },
-];
+const POST_QUESTION_ORDER = [8, 5, 3, 7, 1, 4, 6, 2];
 
 const C2_QUESTIONS = [
-  { key: 'exp_stance_change_1', text: '經過這次對話，我對核電議題的看法有了一些改變。' },
+  { key: 'exp_stance_change_1', text: '經過這次對話，我對這個議題的看法有了一些改變。' },
   { key: 'exp_stance_change_2', text: '我現在比對話前更能理解對方立場的合理之處。' },
   { key: 'exp_quality_1', text: '這次對話過程是理性且有建設性的。' },
   { key: 'exp_quality_2', text: '對話中我有感受到被尊重，而非被攻擊。' },
@@ -79,14 +70,14 @@ function LikertItem({ label, text, value, onChange, tag }) {
 
 // --- Steps ----------------------------------------------------------------
 
-function StepC1({ answers, onChange }) {
+function StepC1({ answers, onChange, questions }) {
   return (
     <div className="pq-step-content">
       <div className="pq-part-header">
         <h3>Part C-1：立場重測</h3>
         <p>以下題目與先前問卷相同，請依照你目前的想法重新作答（1＝非常不同意，7＝非常同意）。</p>
       </div>
-      {C1_QUESTIONS.map((q) => (
+      {questions.map((q) => (
         <LikertItem
           key={q.index}
           label={`C1-${q.index}`}
@@ -172,7 +163,7 @@ function StepC4({ value, onChange }) {
   );
 }
 
-function StepD({ d1, d2, onD1Change, onD2Change }) {
+function StepD({ d1, d2, questionText, onD1Change, onD2Change }) {
   const d1Length = d1.trim().length;
   const d1Valid = d1Length >= 50;
   return (
@@ -182,10 +173,7 @@ function StepD({ d1, d2, onD1Change, onD2Change }) {
       </div>
       <div className="pq-survey-item pq-survey-item-open">
         <h4>D1 | 對立觀點陳述</h4>
-        <p>
-          經過這次對話，你認為反對（或支持）核電的人，他們最有力的論點是什麼？
-          請試著用他們的角度來陳述。
-        </p>
+        <p>{questionText}</p>
         <textarea
           className={`pq-open-textarea ${!d1Valid && d1.length > 0 ? 'invalid' : ''}`}
           placeholder="請用對方的角度陳述其最有力的論點（最低 50 字）"
@@ -272,6 +260,57 @@ export default function PostQuestionnairePage() {
   } = location.state || {};
 
   const isHH = condition === 'hh';
+  const [topicSurvey, setTopicSurvey] = useState(null);
+  const [topicSurveyError, setTopicSurveyError] = useState('');
+  const numericTopicId = Number(topicId);
+  const hasValidTopicId = Number.isInteger(numericTopicId) && numericTopicId > 0;
+  const resolvedTopicSurveyError = hasValidTopicId
+    ? topicSurveyError
+    : '找不到後測問卷的議題資訊。';
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!hasValidTopicId) {
+      return undefined;
+    }
+
+    api.get(`/api/dialogue/topics/${numericTopicId}/survey/`)
+      .then((response) => {
+        if (!cancelled) setTopicSurvey(response.data);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setTopicSurveyError('無法載入這個議題的後測題目，請稍後再試。');
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hasValidTopicId, numericTopicId]);
+
+  const c1Questions = useMemo(() => {
+    const questionsById = new Map(
+      (topicSurvey?.questions || []).map((question) => [Number(question.id), question]),
+    );
+    return POST_QUESTION_ORDER
+      .map((preQuestionId, index) => {
+        const question = questionsById.get(preQuestionId);
+        if (!question) return null;
+        return {
+          index: index + 1,
+          preQ: `Q${preQuestionId}`,
+          text: question.text,
+          reverse: Boolean(question.reverse_scored),
+        };
+      })
+      .filter(Boolean);
+  }, [topicSurvey]);
+
+  const d1QuestionText = useMemo(
+    () => (topicSurvey?.open_questions || []).find((question) => question.code === 'Q10')?.text || '',
+    [topicSurvey],
+  );
 
   const [step, setStep] = useState(0);
   const [c1Answers, setC1Answers] = useState({});
@@ -300,7 +339,10 @@ export default function PostQuestionnairePage() {
   };
 
   const canAdvance = () => {
-    if (step === 0) return C1_QUESTIONS.every((q) => c1Answers[q.index] !== undefined);
+    if (step === 0) {
+      return c1Questions.length === POST_QUESTION_ORDER.length
+        && c1Questions.every((q) => c1Answers[q.index] !== undefined);
+    }
     if (step === 1) return C2_QUESTIONS.every((q) => c2Answers[q.key] !== undefined);
     if (step === 2) return C3_QUESTIONS.every((q) => c3Answers[q.key] !== undefined);
     if (!isHH && step === 3) return c4Answer !== null;
@@ -395,6 +437,23 @@ export default function PostQuestionnairePage() {
     );
   }
 
+  if (resolvedTopicSurveyError || !topicSurvey) {
+    return (
+      <div className="pq-page">
+        <div className="pq-container">
+          <p className={resolvedTopicSurveyError ? 'pq-error' : 'pq-subtitle'}>
+            {resolvedTopicSurveyError || '正在載入後測問卷...'}
+          </p>
+          {resolvedTopicSurveyError && (
+            <button className="pq-btn pq-btn-primary" onClick={() => navigate(-1)}>
+              返回對話
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="pq-page">
       <div className="pq-container">
@@ -409,6 +468,7 @@ export default function PostQuestionnairePage() {
           {step === 0 && (
             <StepC1
               answers={c1Answers}
+              questions={c1Questions}
               onChange={(idx, v) => setC1Answers((prev) => ({ ...prev, [idx]: v }))}
             />
           )}
@@ -431,6 +491,7 @@ export default function PostQuestionnairePage() {
             <StepD
               d1={d1}
               d2={d2}
+              questionText={d1QuestionText}
               onD1Change={setD1}
               onD2Change={setD2}
             />

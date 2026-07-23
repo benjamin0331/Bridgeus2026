@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-  easeCubicOut,
   hierarchy,
   linkRadial,
   max,
@@ -547,7 +546,7 @@ function ConversationTreePanel({
     ? '雙方想法脈絡'
     : '我的想法脈絡';
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const svgNode = svgRef.current;
     const shellNode = shellRef.current;
     if (!svgNode || !shellNode) {
@@ -555,10 +554,22 @@ function ConversationTreePanel({
     }
 
     const svg = select(svgNode);
+    let lastWidth = null;
+    let lastHeight = null;
     const renderChart = () => {
       const bounds = shellNode.getBoundingClientRect();
-      const width = Math.max(bounds.width, 340);
-      const height = Math.max(bounds.height, 320);
+      // ResizeObserver 在開始觀察時會立刻再回呼一次；若每次都先清空 SVG，
+      // 同一尺寸就會連續拆掉並重建文字，看起來像節點標籤一直閃爍。
+      // 尺寸取整也能避免子像素抖動造成無限重繪。
+      // 400px 的虛擬畫布可容納最外圈節點與標籤；實際容器較窄時 SVG
+      // 會等比例縮放，避免手機與窄桌機右欄把左右節點裁掉。
+      const width = Math.max(Math.round(bounds.width), 400);
+      const height = Math.max(Math.round(bounds.height), 400);
+      if (width === lastWidth && height === lastHeight) {
+        return;
+      }
+      lastWidth = width;
+      lastHeight = height;
       const root = hierarchy(visibleTreeData);
 
       svg.selectAll('*').remove();
@@ -601,8 +612,6 @@ function ConversationTreePanel({
       const radialLink = linkRadial()
         .angle((node) => node.angle)
         .radius((node) => node.radius);
-      const transition = svg.transition().duration(420).ease(easeCubicOut);
-
       zoomLayer
         .append('g')
         .attr('class', 'conversation-tree-links')
@@ -610,10 +619,7 @@ function ConversationTreePanel({
         .data(root.links())
         .join('path')
         .attr('class', 'conversation-tree-link')
-        .attr('d', radialLink)
-        .attr('opacity', 0)
-        .transition(transition)
-        .attr('opacity', 1);
+        .attr('d', radialLink);
 
       const node = zoomLayer
         .append('g')
@@ -623,7 +629,6 @@ function ConversationTreePanel({
         .join('g')
         .attr('class', nodeClassName)
         .attr('transform', transformFromPosition)
-        .attr('opacity', 0)
         .on('click', (event, item) => {
           event.stopPropagation();
           setSelectedNodeId(item.data.id);
@@ -647,10 +652,6 @@ function ConversationTreePanel({
           return [item.data.name, ...messages].join('\n');
         });
 
-      node
-        .transition(transition)
-        .attr('opacity', 1);
-
       const zoomBehavior = zoom()
         .scaleExtent([0.58, 2.5])
         .on('zoom', (event) => {
@@ -670,14 +671,29 @@ function ConversationTreePanel({
 
     renderChart();
 
-    const resizeObserver = new ResizeObserver(renderChart);
+    const view = shellNode.ownerDocument.defaultView;
+    let renderFrameId = null;
+    const scheduleRender = () => {
+      if (renderFrameId !== null) {
+        view.cancelAnimationFrame(renderFrameId);
+      }
+      renderFrameId = view.requestAnimationFrame(() => {
+        renderFrameId = null;
+        renderChart();
+      });
+    };
+    // 不在 ResizeObserver 的同步通知階段直接改寫整棵 SVG；延到下一幀可避免
+    // 版面更新再次觸發 observer，形成 ResizeObserver loop 與畫面抖動。
+    const resizeObserver = new ResizeObserver(scheduleRender);
     resizeObserver.observe(shellNode);
 
     return () => {
       resizeObserver.disconnect();
+      if (renderFrameId !== null) {
+        view.cancelAnimationFrame(renderFrameId);
+      }
       svg.on('.zoom', null);
       svg.on('click', null);
-      svg.selectAll('*').remove();
     };
   }, [isActive, visibleTreeData]);
 

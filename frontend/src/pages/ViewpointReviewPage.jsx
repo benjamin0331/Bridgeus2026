@@ -2,9 +2,10 @@ import { useEffect, useState } from 'react';
 import api from '../api/client';
 import './ViewpointReviewPage.css';
 
-// 研究者專用頁面，不放進參與者看得到的 Sidebar/Navbar——後端也是
-// IsAdminUser 擋著，理由跟 CCNDSnapshotAnalysisView 一樣：這裡列的是還沒
-// 定案的候選觀點，不是給參與者看的東西。直接開 /viewpoint-review 網址進來。
+// 研究者專用頁面。Sidebar 只在 user.isResearcher 時才顯示連結，但實際存取
+// 控制一律在後端 IsResearcher（api/permissions.py）：這裡列的是還沒定案的
+// 候選觀點，不是給參與者看的東西，一般帳號直接開 /viewpoint-review 也只會
+// 收到 403。
 
 const TABS = [
   { id: 'pending', label: '待審核' },
@@ -37,6 +38,7 @@ function ViewpointReviewPage() {
   const [notes, setNotes] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [actionError, setActionError] = useState('');
+  const [notesResetForId, setNotesResetForId] = useState(selectedId);
 
   useEffect(() => {
     let cancelled = false;
@@ -73,10 +75,14 @@ function ViewpointReviewPage() {
     };
   }, [status]);
 
-  useEffect(() => {
+  // 選中的觀點換了就清空備註/錯誤訊息；照 React 官方建議在渲染時直接調整
+  // state（比對 selectedId 是否變過），不要在 useEffect 裡同步呼叫 setState
+  // 觸發連鎖重繪。
+  if (notesResetForId !== selectedId) {
+    setNotesResetForId(selectedId);
     setNotes('');
     setActionError('');
-  }, [selectedId]);
+  }
 
   const selected = items.find((item) => item.id === selectedId) || null;
 

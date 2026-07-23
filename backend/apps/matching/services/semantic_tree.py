@@ -1191,6 +1191,38 @@ def get_message_dimension(
     return None
 
 
+def get_message_lit_nodes(
+    match: DialogueMatch,
+    *,
+    owner_key: str,
+    source_message_id: str,
+) -> list[dict[str, str]]:
+    """回傳某位參與者在 source_message_id 那則訊息點亮（命中）的所有 CCND 節點，
+    每筆為 {"name": node_name, "stance": 支持/反對/中立/混合}。
+
+    給 M6 觀點知識庫 pipeline（apps/summary/pipeline/assemble.py）用來組
+    ViewpointNode.viewpoint_summary（join 所有 name）與 stance_direction
+    （取第一筆的 stance，同 get_message_dimension 只取第一個命中的慣例）：
+    一則訊息最多命中 MAX_ANALYSIS_ITEMS=2 個節點，這裡依 flatten_tree 出現
+    順序回傳全部命中。訊息沒有任何 CCND 分析紀錄（不曾命中任何節點）時回傳
+    空 list，呼叫端應該視為「沒有可用節點」而留空，不要自己編內容。
+    """
+    from apps.matching.services.ccnd_snapshot_analysis import flatten_tree
+
+    state = get_semantic_tree_state(match, root_name="核電")
+    owner_state = state["participants"].get(owner_key)
+    if not owner_state:
+        return []
+
+    target_id = clean_text(source_message_id)
+    hits = flatten_tree(owner_state["treeData"], owner_key=owner_key)
+    return [
+        {"name": hit["node_name"], "stance": clean_text(hit.get("stance"))}
+        for hit in hits
+        if clean_text(hit.get("source_message_id")) == target_id and hit.get("node_name")
+    ]
+
+
 def _owner_payload(
     owner_state: dict[str, Any],
     *,

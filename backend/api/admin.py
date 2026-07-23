@@ -4,11 +4,14 @@ from .models import (
     AIConversation,
     CCNDTimelineUnlock,
     DialogueMatch,
+    IssueReaction,
     MatchAISuggestion,
     MatchMessage,
     MatchQueueEntry,
     MatchStanceDrift,
+    Title,
     UserStanceProfile,
+    UserTitle,
 )
 
 
@@ -125,3 +128,22 @@ class CCNDTimelineUnlockAdmin(admin.ModelAdmin):
         if obj.granted_by_id is None:
             obj.granted_by = request.user
         super().save_model(request, obj, form, change)
+
+
+@admin.register(Title)
+class TitleAdmin(admin.ModelAdmin):
+    list_display = ("id", "name", "color")
+    search_fields = ("name",)
+
+
+@admin.register(UserTitle)
+class UserTitleAdmin(admin.ModelAdmin):
+    list_display = ("id", "user", "title", "is_selected", "unlocked_at")
+    list_filter = ("is_selected",)
+    search_fields = ("user__username", "title__name")
+
+
+@admin.register(IssueReaction)
+class IssueReactionAdmin(admin.ModelAdmin):
+    list_display = ("id", "issue", "reactor", "emoji_index", "created_at")
+    search_fields = ("issue__title", "reactor__username")

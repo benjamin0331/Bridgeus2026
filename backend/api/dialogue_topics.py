@@ -3,6 +3,12 @@ TOPIC_CONFIGS = {
         "title": "台灣核能議題討論",
         "topic_description": "台灣是否應重啟核電廠以應對能源轉型與減碳需求",
         "collection_name": "nuclear_energy_all",
+        "off_topic_detection": {
+            "anchor_text": "台灣是否應該擴大發展核能發電",
+            "threshold": 0.35,
+            "window_size": 3,
+            "min_messages": 2,
+        },
         "date": "2026/04/27",
         "display_order": 1,
         "anchors": [
@@ -43,6 +49,12 @@ TOPIC_CONFIGS = {
         "title": "女性義務兵役討論",
         "topic_description": "台灣是否應將女性納入義務兵役制度",
         "collection_name": "military_service_women_news",
+        "off_topic_detection": {
+            "anchor_text": "台灣是否應將女性納入義務兵役制度",
+            "threshold": 0.25,
+            "window_size": 3,
+            "min_messages": 2,
+        },
         "date": "2026/06/25",
         "display_order": 2,
         "anchors": [

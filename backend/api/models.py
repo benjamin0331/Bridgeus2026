@@ -353,10 +353,25 @@ class MatchStanceDrift(models.Model):
 # Post-dialogue questionnaire
 # ---------------------------------------------------------------------------
 
-# C1 reversed items: C1-2→Q5, C1-6→Q4, C1-7→Q6, C1-8→Q2
-_POST_LIKERT_REVERSED = {2, 6, 7, 8}
 # (post_index, pre_question_id) — needed for research cross-referencing
 POST_LIKERT_TO_PRE_QUESTION = {1: 8, 2: 5, 3: 3, 4: 7, 5: 1, 6: 4, 7: 6, 8: 2}
+
+
+def _post_likert_reversed_indices(topic_id: int) -> set[int]:
+    """Resolve reverse-scored post items from the topic's pre-survey config."""
+    from .dialogue_topics import get_dialogue_survey
+
+    survey = get_dialogue_survey(topic_id) or {}
+    reversed_pre_questions = {
+        int(question["id"])
+        for question in survey.get("questions", [])
+        if question.get("reverse_scored")
+    }
+    return {
+        post_index
+        for post_index, pre_question_id in POST_LIKERT_TO_PRE_QUESTION.items()
+        if pre_question_id in reversed_pre_questions
+    }
 
 
 def _likert_field(verbose_name):
@@ -452,10 +467,11 @@ class PostDialogueResponse(models.Model):
     # --- Scoring methods ---
 
     def _adjusted_c1_scores(self) -> list[float]:
+        reversed_indices = _post_likert_reversed_indices(self.topic_id)
         scores = []
         for i in range(1, 9):
             raw = getattr(self, f"post_likert_{i}")
-            scores.append(8 - raw if i in _POST_LIKERT_REVERSED else float(raw))
+            scores.append(8 - raw if i in reversed_indices else float(raw))
         return scores
 
     def s_post(self) -> float:
@@ -576,6 +592,65 @@ class Issue(models.Model):
 
     def __str__(self):
         return f"Issue({self.id}) by user={self.author_id}: {self.title[:40]}"
+
+
+class Title(models.Model):
+    """一個頭銜的定義。擁有/解鎖關係另存在 UserTitle——由主功能的成就系統
+    決定誰擁有什麼，這裡只是頭銜本身的名稱與預設顏色。"""
+    name = models.CharField(max_length=50, unique=True)
+    color = models.CharField(max_length=7, null=True, blank=True)  # 預設 hex 色，UserTitle.color 可覆蓋
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
+class UserTitle(models.Model):
+    """使用者擁有某個頭銜的紀錄，外加是否為目前選擇顯示、以及玩家自訂顏色。
+    一個使用者同時只能選一個頭銜——用 partial unique index 在 DB 層擋住
+    （SQLite 3.8+ 與 PostgreSQL 都支援），不只靠 view 端的寫入順序保證。
+    view 端仍要「先清掉舊選擇、再設新的」，否則會撞到這個 constraint。"""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="owned_titles")
+    title = models.ForeignKey(Title, on_delete=models.CASCADE, related_name="holders")
+    unlocked_at = models.DateTimeField(auto_now_add=True)
+    is_selected = models.BooleanField(default=False)
+    color = models.CharField(max_length=7, null=True, blank=True)  # 玩家自訂色，蓋過 Title.color
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["user", "title"], name="user_title_unique"),
+            models.UniqueConstraint(
+                fields=["user"],
+                condition=Q(is_selected=True),
+                name="user_one_selected_title",
+            ),
+        ]
+        ordering = ["unlocked_at"]
+
+    def __str__(self):
+        return f"{self.user_id}:{self.title.name}"
+
+
+class IssueReaction(models.Model):
+    """一位讀者對一則議題的表情回復（5 選 1，emoji 圖在 Godot 端，這裡只存
+    int index）。一人一議題一個，重送 = 覆蓋（見 views.IssueReactionsView）。"""
+    issue = models.ForeignKey(Issue, on_delete=models.CASCADE, related_name="reactions")
+    reactor = models.ForeignKey(User, on_delete=models.CASCADE, related_name="issue_reactions")
+    emoji_index = models.PositiveSmallIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["issue", "reactor"], name="issue_reaction_one_per_reader"
+            ),
+        ]
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"issue={self.issue_id} reactor={self.reactor_id} idx={self.emoji_index}"
 
 
 class CCNDTimelineUnlock(models.Model):

@@ -103,4 +103,10 @@ urlpatterns = [
     ),
     path('guest/', views.GuestLoginView.as_view()),
     path('issues/', views.IssueListCreateView.as_view()),
+    path('titles/me/', views.TitleMeView.as_view()),
+    path(
+        'issues/<int:issue_id>/reactions/',
+        views.IssueReactionsView.as_view(),
+    ),
+    path('godot/match-rooms/', views.GodotMatchRoomView.as_view()),
 ]
