@@ -22,6 +22,8 @@ from .models import (
     DialogueSessionRecord,
     DiscomfortReport,
     Issue,
+    MatchMessage,
+    MessageReaction,
     MatchStanceDrift,
     PlatformFeedback,
     PostDialogueResponse,
@@ -47,6 +49,7 @@ from .serializers import (
     MatchingRoomSemanticTreeTimelineSerializer,
     MatchingStateSerializer,
     MatchingTopicSerializer,
+    MessageReactionSerializer,
     PlatformFeedbackSerializer,
     PlatformFeedbackOutputSerializer,
     PostDialogueResponseConsentSerializer,
@@ -170,7 +173,16 @@ def _dialogue_session_response_payload(
     restored_from: str,
 ) -> dict:
     session_state = session_record.get("session") or {}
-    history = session_state.get("history") or []
+    # Prefer the id-bearing history so the frontend can attach 讚/倒讚 to AI
+    # replies; fall back to the raw session_state history if there are no turns.
+    history = (
+        _live_history_with_turn_ids(
+            session_id=session_record["session_id"],
+            user_id=session_record["user_id"],
+        )
+        or session_state.get("history")
+        or []
+    )
     stance_drift = session_state.get("stance_drift")
     stance_score = session_state.get("user_stance_score")
     try:
@@ -646,6 +658,31 @@ def _history_ai_messages(record: DialogueSessionRecord) -> list[dict]:
     return messages
 
 
+def _live_history_with_turn_ids(*, session_id: str, user_id: int) -> list[dict]:
+    """Live-chat history entries carrying the AIConversation turn id.
+
+    Same {role, content} sequence the session_state history yields, but with a
+    stable `turn_id` on each message so the frontend can attach 讚/倒讚 to the AI
+    reply. Read straight from AIConversation (order-stable) so it is uniform
+    regardless of whether the session was restored from cache or DB.
+    """
+    history = []
+    turns = AIConversation.objects.filter(
+        user_id=user_id,
+        session_id=session_id,
+    ).order_by("created_at", "id")
+    for turn in turns:
+        if turn.user_prompt:
+            history.append(
+                {"role": "user", "content": turn.user_prompt, "turn_id": turn.id}
+            )
+        if turn.ai_response:
+            history.append(
+                {"role": "agent", "content": turn.ai_response, "turn_id": turn.id}
+            )
+    return history
+
+
 def _history_match_messages(match: DialogueMatch, *, user_id: int) -> list[dict]:
     messages = []
     for message in match.messages.select_related("sender").order_by("created_at", "id"):
@@ -1103,7 +1140,9 @@ class DialogueSessionReplyView(APIView):
                 ),
                 "stance_label": session.user_stance_label,
                 "stance_drift": stance_drift,
-                "history": session_record["session"]["history"],
+                "history": _live_history_with_turn_ids(
+                    session_id=session_id, user_id=request.user.id
+                ),
             }
         )
 
@@ -1895,6 +1934,119 @@ class MatchingRoomLeaveView(APIView):
                 user_id=request.user.id,
             )
         )
+
+
+class MessageReactionView(APIView):
+    """讚 / 倒讚 on an opponent's message, in either dialogue mode.
+
+    GET  /api/message-reactions/?target_type=ai&conversation_id=<session_id>
+    GET  /api/message-reactions/?target_type=match&conversation_id=<room_id>
+        → { "reactions": [ {target_id, value}, ... ] } for the current user.
+
+    POST /api/message-reactions/  body: {target_type, target_id, value}
+        value = 1 (讚) / -1 (倒讚) / 0 (remove). Only the *opponent's* messages
+        may be reacted to; reacting to your own is rejected.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        target_type = request.query_params.get("target_type")
+        conversation_id = request.query_params.get("conversation_id") or ""
+        if target_type not in ("ai", "match"):
+            return Response(
+                {"detail": "target_type 必須是 ai 或 match。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        reactions = MessageReaction.objects.filter(
+            user=request.user,
+            target_type=target_type,
+        )
+        if conversation_id:
+            reactions = reactions.filter(conversation_id=conversation_id)
+
+        return Response(
+            {
+                "reactions": [
+                    {"target_id": r.target_id, "value": r.value}
+                    for r in reactions.only("target_id", "value")
+                ]
+            }
+        )
+
+    def post(self, request):
+        serializer = MessageReactionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        target_type = serializer.validated_data["target_type"]
+        target_id = serializer.validated_data["target_id"]
+        value = serializer.validated_data["value"]
+
+        # Resolve + authorize the target, and pull denormalized context.
+        if target_type == "ai":
+            context = self._resolve_ai_target(request.user, target_id)
+        else:
+            context = self._resolve_match_target(request.user, target_id)
+
+        if context is None:
+            return Response(
+                {"detail": "找不到可回應的對方發言，或你無權對其反應。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if value == 0:
+            MessageReaction.objects.filter(
+                user=request.user,
+                target_type=target_type,
+                target_id=target_id,
+            ).delete()
+            return Response(
+                {"target_type": target_type, "target_id": target_id, "value": None}
+            )
+
+        MessageReaction.objects.update_or_create(
+            user=request.user,
+            target_type=target_type,
+            target_id=target_id,
+            defaults={
+                "value": value,
+                "topic_id": context.get("topic_id"),
+                "conversation_id": context.get("conversation_id") or "",
+            },
+        )
+        return Response(
+            {"target_type": target_type, "target_id": target_id, "value": value},
+            status=status.HTTP_200_OK,
+        )
+
+    def _resolve_ai_target(self, user, target_id):
+        """The AI reply belongs to the user's own session — reacting to the
+        agent's turn. Require ai_response present (something to react to)."""
+        turn = (
+            AIConversation.objects.filter(id=target_id, user=user)
+            .exclude(ai_response__isnull=True)
+            .exclude(ai_response="")
+            .first()
+        )
+        if turn is None:
+            return None
+        return {"topic_id": turn.topic_id, "conversation_id": turn.session_id}
+
+    def _resolve_match_target(self, user, target_id):
+        """Only the partner's messages are reactable; the user's own are not."""
+        message = (
+            MatchMessage.objects.select_related("match")
+            .filter(id=target_id)
+            .first()
+        )
+        if message is None:
+            return None
+        match = message.match
+        if user.id not in (match.user_a_id, match.user_b_id):
+            return None
+        if message.sender_id == user.id:
+            return None
+        return {"topic_id": match.topic_id, "conversation_id": match.room_id}
 
 
 class PostDialogueResponseView(APIView):

@@ -8,6 +8,7 @@ from .models import (
     MatchMessage,
     MatchQueueEntry,
     MatchStanceDrift,
+    MessageReaction,
     PostDialogueResponse,
     UserStanceProfile,
 )
@@ -133,6 +134,22 @@ class PostDialogueResponseAdmin(admin.ModelAdmin):
     @admin.display(description="s_post")
     def s_post_display(self, obj):
         return obj.s_post()
+
+
+@admin.register(MessageReaction)
+class MessageReactionAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "user",
+        "target_type",
+        "target_id",
+        "value",
+        "topic_id",
+        "conversation_id",
+        "updated_at",
+    )
+    list_filter = ("target_type", "value", "topic_id")
+    search_fields = ("user__username", "conversation_id")
 
 
 @admin.register(CCNDTimelineUnlock)

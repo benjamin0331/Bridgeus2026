@@ -663,3 +663,64 @@ class CCNDTimelineUnlock(models.Model):
             f"CCNDTimelineUnlock user={self.user_id} "
             f"{self.kind}={self.conversation_id}"
         )
+
+
+class MessageReaction(models.Model):
+    """A participant's 讚 / 倒讚 on an opponent's message.
+
+    Targets are polymorphic so the same table records reactions in both dialogue
+    modes: `target_type=ai` → an ``AIConversation`` turn id (the AI reply);
+    `target_type=match` → a ``MatchMessage`` id (the human partner's message).
+    One row per (user, target) — re-reacting updates ``value``; removing the
+    reaction deletes the row. ``value`` is +1 (讚) or -1 (倒讚).
+    """
+
+    class TargetType(models.TextChoices):
+        AI = "ai", "AI 回應"
+        MATCH = "match", "配對訊息"
+
+    class Value(models.IntegerChoices):
+        LIKE = 1, "讚"
+        DISLIKE = -1, "倒讚"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="message_reactions",
+    )
+    target_type = models.CharField(max_length=8, choices=TargetType.choices)
+    # AIConversation.id (ai) or MatchMessage.id (match)
+    target_id = models.BigIntegerField()
+    value = models.SmallIntegerField(choices=Value.choices)
+
+    # Denormalized context for research querying (filled at write time).
+    topic_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    # session_id (ai) or room_id (match)
+    conversation_id = models.CharField(max_length=64, blank=True, db_index=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "target_type", "target_id"],
+                name="uniq_message_reaction_user_target",
+            ),
+            models.CheckConstraint(
+                condition=Q(value__in=[1, -1]),
+                name="message_reaction_value_like_dislike",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["target_type", "conversation_id"],
+                name="msg_reaction_conv_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"reaction user={self.user_id} {self.target_type}={self.target_id} "
+            f"value={self.value}"
+        )

@@ -79,13 +79,24 @@ function isElementNearBottom(element) {
   return distanceFromBottom <= MATCH_SCROLL_BOTTOM_THRESHOLD_PX;
 }
 
+function reactionKey(target) {
+  return target ? `${target.type}:${target.id}` : null;
+}
+
 function mapHistoryToMessages(history, userName) {
-  return history.map((message, index) => ({
-    id: `${message.role}-${index}`,
-    type: message.role === 'agent' ? 'agent' : 'user',
-    userName: message.role === 'agent' ? 'BridgeUs' : userName,
-    text: message.content,
-  }));
+  return history.map((message, index) => {
+    const isAgent = message.role === 'agent';
+    const turnId = message.turn_id ?? null;
+    return {
+      id: `${message.role}-${index}`,
+      type: isAgent ? 'agent' : 'user',
+      userName: isAgent ? 'BridgeUs' : userName,
+      text: message.content,
+      // Only the AI reply (opponent) is reactable, and only once we know its
+      // AIConversation turn id.
+      reactTarget: isAgent && turnId ? { type: 'ai', id: turnId } : null,
+    };
+  });
 }
 
 function formatTimestamp(value) {
@@ -191,8 +202,41 @@ function mapMatchMessagesToDisplay(messages, userId) {
       userName: isCurrentUser ? MATCH_SELF_NAME : MATCH_PARTNER_NAME,
       text: message.content,
       timestamp: message.created_at,
+      // Only the partner's messages are reactable.
+      reactTarget: isCurrentUser ? null : { type: 'match', id: Number(message.id) },
     };
   });
+}
+
+function MessageReactions({ target, value, onReact, disabled }) {
+  if (!target) {
+    return null;
+  }
+
+  return (
+    <div className="message-reactions">
+      <button
+        type="button"
+        className={`reaction-btn ${value === 1 ? 'active like' : ''}`}
+        onClick={() => onReact(target, 1)}
+        aria-label="讚"
+        aria-pressed={value === 1}
+        disabled={disabled}
+      >
+        <span className="reaction-icon">👍</span>
+      </button>
+      <button
+        type="button"
+        className={`reaction-btn ${value === -1 ? 'active dislike' : ''}`}
+        onClick={() => onReact(target, -1)}
+        aria-label="倒讚"
+        aria-pressed={value === -1}
+        disabled={disabled}
+      >
+        <span className="reaction-icon">👎</span>
+      </button>
+    </div>
+  );
 }
 
 function TopicChat({ user, issues, issuesLoaded }) {
@@ -246,6 +290,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const [showScrollToBottomButton, setShowScrollToBottomButton] = useState(false);
 
   const [isRightPanelOpen, setIsRightPanelOpen] = useState(false);
+
+  // 讚/倒讚 on opponents' messages, keyed by `${type}:${id}` → 1 | -1.
+  const [reactions, setReactions] = useState({});
 
   const messagesContainerRef = useRef(null);
   const messagesEndRef = useRef(null);
@@ -310,6 +357,63 @@ function TopicChat({ user, issues, issuesLoaded }) {
     window.requestAnimationFrame(() => {
       textareaRef.current?.focus({ preventScroll: true });
     });
+  }, []);
+
+  const mergeFetchedReactions = useCallback((list, type) => {
+    if (!Array.isArray(list) || list.length === 0) {
+      return;
+    }
+    setReactions((prev) => {
+      const next = { ...prev };
+      list.forEach((item) => {
+        if (item && item.target_id != null) {
+          next[`${type}:${item.target_id}`] = item.value;
+        }
+      });
+      return next;
+    });
+  }, []);
+
+  const handleReact = useCallback(async (target, clickedValue) => {
+    if (!target) {
+      return;
+    }
+
+    const key = `${target.type}:${target.id}`;
+    let previousValue = 0;
+    let nextValue = clickedValue;
+
+    setReactions((prev) => {
+      previousValue = prev[key] || 0;
+      // Clicking the active reaction again clears it (toggle).
+      nextValue = previousValue === clickedValue ? 0 : clickedValue;
+      const next = { ...prev };
+      if (nextValue === 0) {
+        delete next[key];
+      } else {
+        next[key] = nextValue;
+      }
+      return next;
+    });
+
+    try {
+      await api.post('/api/message-reactions/', {
+        target_type: target.type,
+        target_id: target.id,
+        value: nextValue,
+      });
+    } catch {
+      // Revert on failure.
+      setReactions((prev) => {
+        const next = { ...prev };
+        if (previousValue === 0) {
+          delete next[key];
+        } else {
+          next[key] = previousValue;
+        }
+        return next;
+      });
+    }
   }, []);
 
   const resetAiSemanticTreeState = useCallback(() => {
@@ -604,6 +708,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     cancelQueueRequestSentRef.current = false;
     shouldAutoScrollMatchRef.current = true;
     setShowScrollToBottomButton(false);
+    setReactions({});
   }, [closeMatchWebSocket, id, isMatchingMode]);
 
   useEffect(() => {
@@ -1117,6 +1222,55 @@ function TopicChat({ user, issues, issuesLoaded }) {
     };
   }, [aiUserMessageIdsSignature, applySemanticTreePayload, isMatchingMode, isSending, sessionId]);
 
+  useEffect(() => {
+    if (isMatchingMode || !sessionId) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await api.get(
+          `/api/message-reactions/?target_type=ai&conversation_id=${encodeURIComponent(sessionId)}`,
+        );
+        if (!cancelled) {
+          mergeFetchedReactions(response.data?.reactions, 'ai');
+        }
+      } catch {
+        // Best-effort: reactions just won't be pre-highlighted.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isMatchingMode, mergeFetchedReactions, sessionId]);
+
+  useEffect(() => {
+    if (!isMatchChatReady || !matchingState?.room_id) {
+      return undefined;
+    }
+
+    const roomId = matchingState.room_id;
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await api.get(
+          `/api/message-reactions/?target_type=match&conversation_id=${encodeURIComponent(roomId)}`,
+        );
+        if (!cancelled) {
+          mergeFetchedReactions(response.data?.reactions, 'match');
+        }
+      } catch {
+        // Best-effort: reactions just won't be pre-highlighted.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isMatchChatReady, matchingState?.room_id, mergeFetchedReactions]);
+
   const sendCancelMatchingQueueRequest = useCallback((topicId, { keepalive = false } = {}) => {
     if (!topicId) {
       return;
@@ -1218,6 +1372,17 @@ function TopicChat({ user, issues, issuesLoaded }) {
       }
 
       if (data.type === 'agent_stream_end') {
+        const streamedMsgId = currentAgentMsgIdRef.current;
+        const turnId = data.turn_id ?? null;
+        if (streamedMsgId && turnId) {
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === streamedMsgId
+                ? { ...message, reactTarget: { type: 'ai', id: turnId } }
+                : message,
+            ),
+          );
+        }
         currentAgentMsgIdRef.current = null;
         setAiStanceDrift(extractStanceDrift(data));
         setIsAgentStreaming(false);
@@ -1914,6 +2079,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
                 <span className="message-username">{msg.userName}</span>
               </div>
               <div className="message-bubble">{msg.text}</div>
+              <MessageReactions
+                target={msg.reactTarget}
+                value={msg.reactTarget ? reactions[reactionKey(msg.reactTarget)] || 0 : 0}
+                onReact={handleReact}
+              />
             </div>
           ))}
           {isMatchSending && (
@@ -2177,6 +2347,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
                     <span className="message-username">{msg.userName}</span>
                   </div>
                   <div className="message-bubble">{msg.text}</div>
+                  <MessageReactions
+                    target={msg.reactTarget}
+                    value={msg.reactTarget ? reactions[reactionKey(msg.reactTarget)] || 0 : 0}
+                    onReact={handleReact}
+                  />
                 </div>
               ))}
               {isSending && !isAgentStreaming && (

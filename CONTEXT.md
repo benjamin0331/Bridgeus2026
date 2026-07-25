@@ -95,12 +95,23 @@ BridgeUs（橋得攏）— AI 驅動的去極化對話平台。
 
 ---
 
+## 訊息讚/倒讚（MessageReaction）
+
+參與者可對「對方發言」按讚/倒讚，寫入 DB 供研究分析。H-H 與 H-AI 皆支援。
+
+- 模型：`api/models.py::MessageReaction`（`user` + `target_type`(ai/match) + `target_id` + `value`(±1) + 去正規化 `topic_id`/`conversation_id`）。`(user, target_type, target_id)` 唯一 → 重按同一個=切換/取消，按另一個=改值。
+- target：`ai` → `AIConversation.id`（AI 回覆那筆 turn）；`match` → `MatchMessage.id`（對方發言）。
+- 端點：`GET/POST /api/message-reactions/`（`MessageReactionView`）。POST body `{target_type, target_id, value}`，`value=0` 刪除；只允許對「對方」發言反應（AI turn 需屬於本人 session 且有 ai_response；match 訊息 sender 不可為自己且需為房間成員）。GET `?target_type=&conversation_id=` 回傳本人反應清單供前端初始高亮。
+- **AI turn id 串接**：`_live_history_with_turn_ids()` 讓 latest/detail/reply 回傳的 `history` 每則帶 `turn_id`；WS `agent_stream_end` 也帶 `turn_id`（`consumers.py`）。前端 `TopicChat.jsx` 的 `mapHistoryToMessages`/`mapMatchMessagesToDisplay` 產生 `reactTarget`，`MessageReactions` 元件渲染 👍/👎（樂觀更新、失敗回滾）。
+- 後台 `MessageReactionAdmin` 可檢視。migration `0014_messagereaction`。
+
 ## 測試
 
 ```bash
 cd backend
 uv run pytest api/tests.py -v                       # api app（含 matching、post-questionnaire、Part F）
 uv run pytest api/tests.py::PlatformFeedbackApiTests -v   # Part F（6 項）
+uv run pytest api/tests_message_reactions.py -v           # 讚/倒讚（11 項）
 # chat/ 底下的 tests_* 多對應已淘汰服務，屬 legacy
 ```
 

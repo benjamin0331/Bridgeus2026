@@ -895,3 +895,62 @@
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* --- Message reactions (讚 / 倒讚 on opponent messages) ------------------ */
+.message-reactions {
+  display: flex;
+  gap: 6px;
+  align-self: flex-end;
+  margin-bottom: 2px;
+}
+
+.reaction-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background-color: #f0f0f0;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.55;
+  transition: opacity 0.15s, background-color 0.15s, border-color 0.15s, transform 0.1s;
+}
+
+.message-row:hover .reaction-btn {
+  opacity: 0.9;
+}
+
+.reaction-btn:hover {
+  opacity: 1;
+  background-color: #e6e6e6;
+  transform: translateY(-1px);
+}
+
+.reaction-btn:disabled {
+  cursor: default;
+  transform: none;
+}
+
+.reaction-btn.active {
+  opacity: 1;
+}
+
+.reaction-btn.active.like {
+  background-color: #e3efe0;
+  border-color: #6f9a5f;
+}
+
+.reaction-btn.active.dislike {
+  background-color: #f4e2df;
+  border-color: #b46a5c;
+}
+
+.reaction-icon {
+  pointer-events: none;
+  filter: grayscale(0.15);
+}

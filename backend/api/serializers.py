@@ -16,6 +16,14 @@ class AIConversationSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
+class MessageReactionSerializer(serializers.Serializer):
+    """讚/倒讚 on an opponent's message. value 0 = remove the reaction."""
+
+    target_type = serializers.ChoiceField(choices=["ai", "match"])
+    target_id = serializers.IntegerField(min_value=1)
+    value = serializers.ChoiceField(choices=[1, -1, 0])
+
+
 class DialogueSessionCreateSerializer(serializers.Serializer):
     topic_id = serializers.IntegerField()
     topic_title = serializers.CharField(max_length=255)

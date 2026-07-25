@@ -95,6 +95,7 @@ urlpatterns = [
         'platform-feedback/',
         views.PlatformFeedbackView.as_view(),
     ),
+    path('message-reactions/', views.MessageReactionView.as_view()),
     path('guest/', views.GuestLoginView.as_view()),
     path('issues/', views.IssueListCreateView.as_view()),
 ]
