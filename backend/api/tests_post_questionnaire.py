@@ -202,6 +202,62 @@ class TestPostQuestionnaire:
 
 
 @pytest.mark.django_db
+class TestPostQuestionnaireClosesSession:
+    """提交後測問卷後，該筆 AI 對話 session 應結束——不該再被
+    /api/dialogue/sessions/latest/ 當成「可繼續」的對話回傳。"""
+
+    def _make_active_session(self, user, session_id="testsessionid123", topic_id=102):
+        from django.utils import timezone
+
+        from api.models import DialogueSessionRecord
+
+        return DialogueSessionRecord.objects.create(
+            user=user,
+            session_id=session_id,
+            topic_id=topic_id,
+            topic_title="測試議題",
+            collection_name="nuclear_energy_all",
+            last_activity_at=timezone.now(),
+        )
+
+    def test_submitting_closes_matching_session_record(self, auth_client):
+        from api.models import DialogueSessionRecord
+
+        client, user = auth_client
+        self._make_active_session(user)
+
+        response = client.post(
+            "/api/post-questionnaire/", _make_ai_payload(), format="json"
+        )
+        assert response.status_code == 201, response.data
+
+        record = DialogueSessionRecord.objects.get(session_id="testsessionid123")
+        assert record.status == DialogueSessionRecord.Status.CLOSED
+
+    def test_closed_session_no_longer_offered_for_restore(self, auth_client):
+        client, user = auth_client
+        self._make_active_session(user)
+
+        response = client.post(
+            "/api/post-questionnaire/", _make_ai_payload(), format="json"
+        )
+        assert response.status_code == 201, response.data
+
+        restore_response = client.get(
+            "/api/dialogue/sessions/latest/?topic_id=102"
+        )
+        assert restore_response.status_code == 404
+
+    def test_hh_submission_without_session_id_does_not_error(self, auth_client):
+        """H-H 組送出時只有 room_id、沒有 session_id，不該因為找不到 session 而出錯。"""
+        client, _ = auth_client
+        response = client.post(
+            "/api/post-questionnaire/", _make_hh_payload(), format="json"
+        )
+        assert response.status_code == 201, response.data
+
+
+@pytest.mark.django_db
 class TestPostQuestionnaireConsent:
 
     def _submit(self, client, payload=None):

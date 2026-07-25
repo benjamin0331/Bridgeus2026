@@ -164,6 +164,22 @@ def _persist_dialogue_session_record(session_record: dict) -> DialogueSessionRec
     return record
 
 
+def _close_dialogue_session_record(*, session_id: str, user_id: int) -> None:
+    """標記某個 AI 對話 session 為已結束，並清掉快取。
+
+    後測問卷送出後呼叫——沒有這一步的話，該 session 在 DB 裡永遠是 ACTIVE，
+    /api/dialogue/sessions/latest/ 會一直把它當成「可繼續」的對話回傳，使用者
+    填完後測問卷後還是會看到「要繼續上次，還是開始新對話？」的提示。
+    """
+    updated = DialogueSessionRecord.objects.filter(
+        session_id=session_id,
+        user_id=user_id,
+        status=DialogueSessionRecord.Status.ACTIVE,
+    ).update(status=DialogueSessionRecord.Status.CLOSED)
+    if updated:
+        cache.delete(_session_cache_key(session_id))
+
+
 def _restore_dialogue_session_record_for_user(
     *,
     session_id: str,
@@ -2119,6 +2135,11 @@ class PostDialogueResponseView(APIView):
             post_open_feedback=validated.get("post_open_feedback", ""),
             discomfort_flag=validated.get("discomfort_flag", False),
         )
+
+        if response_obj.session_id:
+            _close_dialogue_session_record(
+                session_id=response_obj.session_id, user_id=request.user.id
+            )
 
         if response_obj.discomfort_flag and discomfort_detail.strip():
             DiscomfortReport.objects.create(
