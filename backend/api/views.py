@@ -180,6 +180,35 @@ def _close_dialogue_session_record(*, session_id: str, user_id: int) -> None:
         cache.delete(_session_cache_key(session_id))
 
 
+def _close_superseded_dialogue_sessions(
+    *, user_id: int, topic_id: int, keep_session_id: str
+) -> None:
+    """關掉同一位使用者、同一議題下除了 keep_session_id 以外的所有進行中 session。
+
+    一個 user+topic 最多只該有一個「可恢復」的對話。舊的不關掉的話，使用者選了
+    「開始新對話」之後，被丟下的那筆仍是 active，下次進來
+    /api/dialogue/sessions/latest/ 又會撈到它，於是「要繼續上次，還是開始新對話？」
+    永遠問不完——對話等於結束不掉，也永遠輪不到沿用上次立場的彈窗出現（那個彈窗
+    只在沒有可恢復 session、showSurvey 為 true 時才會渲染）。
+    """
+    stale = list(
+        DialogueSessionRecord.objects.filter(
+            user_id=user_id,
+            topic_id=topic_id,
+            status=DialogueSessionRecord.Status.ACTIVE,
+        )
+        .exclude(session_id=keep_session_id)
+        .values_list("session_id", flat=True)
+    )
+    if not stale:
+        return
+
+    DialogueSessionRecord.objects.filter(session_id__in=stale).update(
+        status=DialogueSessionRecord.Status.CLOSED
+    )
+    cache.delete_many([_session_cache_key(s) for s in stale])
+
+
 def _restore_dialogue_session_record_for_user(
     *,
     session_id: str,
@@ -971,6 +1000,11 @@ class DialogueSessionCreateView(APIView):
         }
         _cache_dialogue_session_record(session_record)
         _persist_dialogue_session_record(session_record)
+        _close_superseded_dialogue_sessions(
+            user_id=request.user.id,
+            topic_id=validated["topic_id"],
+            keep_session_id=session_id,
+        )
 
         return Response(
             {

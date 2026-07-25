@@ -701,6 +701,93 @@ class DialogueSessionApiTests(APITestCase):
         self.assertIsNotNone(cache.get(f"dialogue_session:{session_id}"))
 
 
+class SingleActiveDialogueSessionTests(APITestCase):
+    """一位使用者在同一個議題下，最多只該有一個「可恢復」的 AI 對話 session。
+
+    沒有這個不變量的話，每按一次「開始新對話」就會殘留一筆 status=active 的
+    舊紀錄，/api/dialogue/sessions/latest/ 會一直撈到它們，使用者就算填完後測
+    問卷也永遠跳不出「要繼續上次，還是開始新對話？」——等於對話結束不掉，也
+    永遠看不到沿用上次立場的彈窗（那個彈窗只在 showSurvey 為 true 時才出現）。
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.user = get_user_model().objects.create_user(
+            username="serial_dialoguer",
+            password="secret123",
+        )
+        self.client.force_authenticate(user=self.user)
+
+    def _create_session(self, topic_id=102):
+        response = self.client.post(
+            "/api/dialogue/sessions/",
+            {"topic_id": topic_id, "topic_title": "核能發電在減碳中的角色"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        return response.data["session_id"]
+
+    def test_new_session_closes_previous_active_session(self):
+        first = self._create_session()
+        second = self._create_session()
+
+        self.assertEqual(
+            DialogueSessionRecord.objects.get(session_id=first).status,
+            DialogueSessionRecord.Status.CLOSED,
+        )
+        self.assertEqual(
+            DialogueSessionRecord.objects.get(session_id=second).status,
+            DialogueSessionRecord.Status.ACTIVE,
+        )
+
+    def test_only_newest_session_is_offered_for_restore(self):
+        self._create_session()
+        newest = self._create_session()
+
+        response = self.client.get("/api/dialogue/sessions/latest/?topic_id=102")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["session_id"], newest)
+
+    def test_superseded_session_cannot_be_restored_directly(self):
+        first = self._create_session()
+        self._create_session()
+        cache.clear()  # 強迫走 DB 而非快取
+
+        response = self.client.get(f"/api/dialogue/sessions/{first}/")
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_other_topics_are_not_closed(self):
+        other_topic = self._create_session(topic_id=103)
+        self._create_session(topic_id=102)
+
+        self.assertEqual(
+            DialogueSessionRecord.objects.get(session_id=other_topic).status,
+            DialogueSessionRecord.Status.ACTIVE,
+        )
+
+    def test_other_users_sessions_are_not_closed(self):
+        stranger = get_user_model().objects.create_user(
+            username="stranger", password="secret123"
+        )
+        stranger_client = APIClient()
+        stranger_client.force_authenticate(user=stranger)
+        stranger_response = stranger_client.post(
+            "/api/dialogue/sessions/",
+            {"topic_id": 102, "topic_title": "核能發電在減碳中的角色"},
+            format="json",
+        )
+        stranger_session = stranger_response.data["session_id"]
+
+        self._create_session()
+
+        self.assertEqual(
+            DialogueSessionRecord.objects.get(session_id=stranger_session).status,
+            DialogueSessionRecord.Status.ACTIVE,
+        )
+
+
 class StanceProfileReuseApiTests(APITestCase):
     def setUp(self):
         cache.clear()
