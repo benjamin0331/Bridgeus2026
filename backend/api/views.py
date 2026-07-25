@@ -1938,6 +1938,21 @@ class PostDialogueResponseView(APIView):
             discomfort_flag=validated.get("discomfort_flag", False),
         )
 
+        # Snapshot the pre-dialogue stance score and derived depolarization
+        # metrics. s_pre = this user's UserStanceProfile for the same topic
+        # (filled during M2 pre-survey); absent → metrics stay NULL.
+        pre_profile = (
+            UserStanceProfile.objects.filter(
+                user=request.user, topic_id=response_obj.topic_id
+            )
+            .values_list("stance_score", flat=True)
+            .first()
+        )
+        response_obj.fill_stance_metrics(pre_profile)
+        response_obj.save(
+            update_fields=["s_pre", "delta_s_value", "stance_centrism_value"]
+        )
+
         if response_obj.discomfort_flag and discomfort_detail.strip():
             DiscomfortReport.objects.create(
                 response=response_obj,

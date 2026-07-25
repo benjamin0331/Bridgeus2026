@@ -53,7 +53,7 @@ BridgeUs（橋得攏）— AI 驅動的去極化對話平台。
 | M3 配對 + AI Agent | ✅（持續調整） | `apps/matching/services/matcher.py`（立場向量配對）、`ai_agent.py`（RAG+Claude、三階段策略、streaming）；近期加了 focus signal 偵測、reasoning mode 升級 |
 | M4 對話室 | ✅ | `api/consumers.py`：H-AI streaming + H-H 配對房 WebSocket；離題/情緒/僵局介入 |
 | M5 NLP/CCND | 🟡 進行中 | 語意樹 `apps/matching/services/semantic_tree.py`（topic-aware anchors）、立場偏移 drift；D3 前端指標列。CCND 視覺化持續中 |
-| M6 摘要/知識庫 | 🟡 | ✅ 對話後問卷（`PostDialogueResponse`）+ debriefing 同意/撤回 + Part F 平台體驗回饋（`PlatformFeedback`）；⬜ 立場偏移報告、知識庫沉澱 |
+| M6 摘要/知識庫 | 🟡 | ✅ 對話後問卷（`PostDialogueResponse`）+ debriefing 同意/撤回 + Part F 平台體驗回饋（`PlatformFeedback`）+ 問卷版立場偏移（`s_pre`/`delta_s`/`stance_centrism` 存檔＋前端結果卡片）；⬜ 語意向量版偏移報告、知識庫沉澱 |
 
 ---
 
@@ -88,7 +88,10 @@ BridgeUs（橋得攏）— AI 驅動的去極化對話平台。
   - 僵局偵測（stalemate）**未跟著改**：獨立時間節流 `_STALEMATE_MIN_INTERVAL_SECONDS=300`（`_match_last_stalemate`，single-process）。
 - 舊版 `chat/services/drift.py::calculate_drift` 為 dead code（見上）。
 - 前端 UI 標籤已更名為「論述移動」（數值/欄位不變）。
-- 另有**問卷版**去極化指標：`PostDialogueResponse.stance_centrism()`（`|S_post-4|-|S_pre-4|`），與語意向量版獨立。
+- 另有**問卷版**去極化指標：`PostDialogueResponse`（`s_pre`/`delta_s_value`/`stance_centrism_value` 三欄），與語意向量版獨立。
+  - 提交後測時（`PostDialogueResponseView.post`）撈該用戶同議題 `UserStanceProfile.stance_score` 當 `s_pre`，經 `fill_stance_metrics()` 算出並存檔；無前測 profile 時三欄為 NULL。
+  - `delta_s = s_post − s_pre`（正=偏支持、負=偏反對）；`stance_centrism = |s_post−4|−|s_pre−4|`（< 0 去極化）。output serializer 以 `s_pre`/`s_post`/`delta_s`/`stance_centrism` 回傳。
+  - 前端：問卷送出後 `PostQuestionnairePage` 顯示「本次對話結果」卡片（前後立場分數 + 兩項指標白話解讀），按「繼續」才進 debriefing。後台 `PostDialogueResponseAdmin` 可檢視。
 
 ---
 

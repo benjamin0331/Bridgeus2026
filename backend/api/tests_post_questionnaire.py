@@ -188,6 +188,67 @@ class TestPostQuestionnaire:
 
 
 @pytest.mark.django_db
+class TestPostQuestionnaireStanceMetrics:
+    """s_pre snapshot + depolarization metrics (delta_s, stance_centrism)."""
+
+    def _profile(self, user, *, topic_id=102, score):
+        from api.models import UserStanceProfile
+
+        return UserStanceProfile.objects.create(
+            user=user,
+            topic_id=topic_id,
+            stance_score=score,
+            stance_category="support",
+        )
+
+    def test_metrics_computed_from_pre_profile(self, auth_client):
+        """有前測 profile 時，s_pre/delta_s/stance_centrism 應正確計算。"""
+        client, user = auth_client
+        self._profile(user, score=6)  # s_pre = 6.0
+        # all raw=4 → s_post = 4.0
+        all_four = {f"post_likert_{i}": 4 for i in range(1, 9)}
+        payload = _make_ai_payload(**all_four)
+        response = client.post("/api/post-questionnaire/", payload, format="json")
+        assert response.status_code == 201, response.data
+        data = response.data
+        assert float(data["s_pre"]) == pytest.approx(6.0)
+        assert float(data["s_post"]) == pytest.approx(4.0)
+        # delta_s = s_post - s_pre = 4 - 6 = -2
+        assert float(data["delta_s"]) == pytest.approx(-2.0)
+        # stance_centrism = |4-4| - |6-4| = 0 - 2 = -2 (depolarized)
+        assert float(data["stance_centrism"]) == pytest.approx(-2.0)
+
+    def test_metrics_null_without_pre_profile(self, auth_client):
+        """無前測 profile 時，三個衍生欄位皆為 NULL。"""
+        client, _ = auth_client
+        payload = _make_ai_payload()
+        response = client.post("/api/post-questionnaire/", payload, format="json")
+        assert response.status_code == 201, response.data
+        assert response.data["s_pre"] is None
+        assert response.data["delta_s"] is None
+        assert response.data["stance_centrism"] is None
+        # s_post is always derivable from the C1 items
+        assert response.data["s_post"] is not None
+
+    def test_metrics_persisted_to_db(self, auth_client):
+        """衍生欄位應寫入 DB（供研究匯出/後台檢視）。"""
+        from api.models import PostDialogueResponse
+
+        client, user = auth_client
+        self._profile(user, score=2)  # s_pre = 2.0
+        all_four = {f"post_likert_{i}": 4 for i in range(1, 9)}  # s_post = 4.0
+        response = client.post(
+            "/api/post-questionnaire/", _make_ai_payload(**all_four), format="json"
+        )
+        assert response.status_code == 201
+        record = PostDialogueResponse.objects.get(id=response.data["id"])
+        assert record.s_pre == pytest.approx(2.0)
+        assert record.delta_s_value == pytest.approx(2.0)  # 4 - 2
+        # |4-4| - |2-4| = 0 - 2 = -2 (moved from extreme toward centre)
+        assert record.stance_centrism_value == pytest.approx(-2.0)
+
+
+@pytest.mark.django_db
 class TestPostQuestionnaireConsent:
 
     def _submit(self, client, payload=None):

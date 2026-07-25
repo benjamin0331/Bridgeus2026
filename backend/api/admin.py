@@ -8,6 +8,7 @@ from .models import (
     MatchMessage,
     MatchQueueEntry,
     MatchStanceDrift,
+    PostDialogueResponse,
     UserStanceProfile,
 )
 
@@ -110,6 +111,28 @@ class MatchAISuggestionAdmin(admin.ModelAdmin):
 class MatchStanceDriftAdmin(admin.ModelAdmin):
     list_display = ("id", "match", "user", "drift_value", "measured_at")
     search_fields = ("match__room_id", "user__username")
+
+
+@admin.register(PostDialogueResponse)
+class PostDialogueResponseAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "user",
+        "topic_id",
+        "experiment_condition",
+        "s_pre",
+        "s_post_display",
+        "delta_s_value",
+        "stance_centrism_value",
+        "consent_confirmed",
+        "created_at",
+    )
+    list_filter = ("topic_id", "experiment_condition", "consent_confirmed")
+    search_fields = ("user__username", "session_id", "room_id")
+
+    @admin.display(description="s_post")
+    def s_post_display(self, obj):
+        return obj.s_post()
 
 
 @admin.register(CCNDTimelineUnlock)

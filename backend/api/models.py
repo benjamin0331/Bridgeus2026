@@ -431,6 +431,25 @@ class PostDialogueResponse(models.Model):
     # Debriefing consent: NULL=pending, True=consent, False=withdrawn
     consent_confirmed = models.BooleanField(null=True, blank=True)
 
+    # --- Derived stance metrics (snapshot, filled at submission) -----------
+    # s_pre = the participant's pre-dialogue stance score (UserStanceProfile
+    # .stance_score at submission time). NULL when no pre-survey profile exists.
+    s_pre = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="前測立場分數快照（1–7）；無前測資料時為 NULL",
+    )
+    delta_s_value = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="立場移動量 s_post − s_pre；正=偏支持、負=偏反對",
+    )
+    stance_centrism_value = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="去極化指標 |s_post−4|−|s_pre−4|；< 0 = 去極化，> 0 = 更極化",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -467,6 +486,22 @@ class PostDialogueResponse(models.Model):
     def stance_centrism(self, s_pre: float) -> float:
         """< 0 = depolarized, > 0 = polarized further, = 0 = unchanged."""
         return round(abs(self.s_post() - 4) - abs(float(s_pre) - 4), 4)
+
+    def fill_stance_metrics(self, s_pre) -> None:
+        """Snapshot s_pre and the two derived metrics onto the stored columns.
+
+        s_pre is the participant's pre-dialogue stance score (1–7) or None when
+        no pre-survey profile exists — in which case the deltas stay NULL.
+        """
+        if s_pre is None:
+            self.s_pre = None
+            self.delta_s_value = None
+            self.stance_centrism_value = None
+            return
+        s_pre = float(s_pre)
+        self.s_pre = round(s_pre, 4)
+        self.delta_s_value = self.delta_s(s_pre)
+        self.stance_centrism_value = self.stance_centrism(s_pre)
 
     def __str__(self):
         return (

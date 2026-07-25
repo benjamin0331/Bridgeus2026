@@ -385,6 +385,11 @@ class PlatformFeedbackOutputSerializer(serializers.ModelSerializer):
 
 class PostDialogueResponseOutputSerializer(serializers.ModelSerializer):
     s_post = serializers.SerializerMethodField()
+    # Derived stance metrics (aliased from the stored *_value snapshot columns)
+    delta_s = serializers.FloatField(source="delta_s_value", read_only=True)
+    stance_centrism = serializers.FloatField(
+        source="stance_centrism_value", read_only=True
+    )
     pre_question_map = serializers.SerializerMethodField()
 
     def get_s_post(self, obj):
@@ -408,7 +413,8 @@ class PostDialogueResponseOutputSerializer(serializers.ModelSerializer):
             "opponent_judgment",
             "post_open_comprehension", "post_open_feedback",
             "discomfort_flag", "consent_confirmed",
-            "s_post", "pre_question_map",
+            "s_pre", "s_post", "delta_s", "stance_centrism",
+            "pre_question_map",
             "created_at",
         ]
         read_only_fields = fields

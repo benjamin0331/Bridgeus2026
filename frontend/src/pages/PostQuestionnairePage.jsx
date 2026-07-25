@@ -259,6 +259,114 @@ function StepE({ flag, detail, onFlagChange, onDetailChange }) {
   );
 }
 
+// --- Result card ----------------------------------------------------------
+
+// delta_s / stance_centrism are rounded to 4dp on the backend; treat anything
+// within this band as "essentially unchanged" for the plain-language label.
+const CHANGE_EPSILON = 0.1;
+
+function fmt(n) {
+  return typeof n === 'number' ? n.toFixed(2) : '—';
+}
+
+function describeDelta(delta) {
+  if (delta === null || delta === undefined) return null;
+  if (Math.abs(delta) < CHANGE_EPSILON) return { tone: 'flat', text: '立場幾乎沒有改變' };
+  const amount = Math.abs(delta).toFixed(2);
+  return delta > 0
+    ? { tone: 'up', text: `往「支持」方向移動了 ${amount} 分` }
+    : { tone: 'down', text: `往「反對」方向移動了 ${amount} 分` };
+}
+
+function describeCentrism(c) {
+  if (c === null || c === undefined) return null;
+  if (Math.abs(c) < CHANGE_EPSILON) return { tone: 'flat', text: '極化程度沒有明顯變化' };
+  return c < 0
+    ? { tone: 'good', text: '你變得更靠近中立 —— 出現去極化' }
+    : { tone: 'warn', text: '你變得更遠離中立 —— 立場更極化了' };
+}
+
+function ResultCard({ data, onContinue }) {
+  const sPre = data.s_pre;
+  const sPost = data.s_post;
+  const delta = data.delta_s;
+  const centrism = data.stance_centrism;
+  const hasPre = sPre !== null && sPre !== undefined;
+
+  const deltaInfo = describeDelta(delta);
+  const centrismInfo = describeCentrism(centrism);
+
+  return (
+    <div className="pq-page">
+      <div className="pq-container">
+        <div className="pq-header">
+          <h2>本次對話結果</h2>
+          <p className="pq-subtitle">
+            以下是根據你「對話前」與「對話後」立場問卷計算出的數值（分數 1–7，4 為中立）。
+          </p>
+        </div>
+
+        <div className="pq-body">
+          {!hasPre && (
+            <p className="pq-result-note">
+              找不到你這個議題的對話前立場基準，因此無法計算立場變化。以下僅顯示對話後的立場分數。
+            </p>
+          )}
+
+          <div className="pq-result-scores">
+            <div className="pq-score-box">
+              <span className="pq-score-label">對話前立場</span>
+              <span className="pq-score-value">{hasPre ? fmt(sPre) : '—'}</span>
+            </div>
+            <div className="pq-score-arrow">→</div>
+            <div className="pq-score-box">
+              <span className="pq-score-label">對話後立場</span>
+              <span className="pq-score-value">{fmt(sPost)}</span>
+            </div>
+          </div>
+
+          {hasPre && (
+            <div className="pq-result-metrics">
+              <div className={`pq-metric pq-metric-${deltaInfo?.tone || 'flat'}`}>
+                <div className="pq-metric-head">
+                  <span className="pq-metric-name">立場移動量</span>
+                  <span className="pq-metric-num">
+                    {delta > 0 ? '+' : ''}{fmt(delta)}
+                  </span>
+                </div>
+                <p className="pq-metric-desc">{deltaInfo?.text}</p>
+              </div>
+
+              <div className={`pq-metric pq-metric-${centrismInfo?.tone || 'flat'}`}>
+                <div className="pq-metric-head">
+                  <span className="pq-metric-name">去極化指標</span>
+                  <span className="pq-metric-num">
+                    {centrism > 0 ? '+' : ''}{fmt(centrism)}
+                  </span>
+                </div>
+                <p className="pq-metric-desc">{centrismInfo?.text}</p>
+              </div>
+            </div>
+          )}
+
+          <p className="pq-result-hint">
+            「立場移動量」是後測減前測分數；「去極化指標」為負代表你更靠近中立立場。
+            這些數值僅供你參考，沒有好壞之分。
+          </p>
+        </div>
+
+        <div className="pq-footer">
+          <div className="pq-nav-buttons">
+            <button className="pq-btn pq-btn-primary" onClick={onContinue}>
+              繼續
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // --- Main page ------------------------------------------------------------
 
 export default function PostQuestionnairePage() {
@@ -284,6 +392,7 @@ export default function PostQuestionnairePage() {
   const [discomfortDetail, setDiscomfortDetail] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
+  const [result, setResult] = useState(null);
 
   // H-H 組跳過 C-4，實際步驟比較少
   // Steps: 0=C1, 1=C2, 2=C3, 3=C4(ai only)/D(hh), 4=D(ai)/E(hh), 5=E(ai)
@@ -363,10 +472,8 @@ export default function PostQuestionnairePage() {
 
     try {
       const response = await api.post('/api/post-questionnaire/', payload);
-      navigate('/debriefing', {
-        state: { responseId: response.data.id },
-        replace: true,
-      });
+      // Show this dialogue's stance numbers before moving on to debriefing.
+      setResult(response.data);
     } catch (error) {
       const detail =
         error?.response?.data?.detail ||
@@ -381,6 +488,20 @@ export default function PostQuestionnairePage() {
   const isLastStep = step === actualSteps - 1;
   const eStep = isHH ? 4 : 5;
   const dStep = isHH ? 3 : 4;
+
+  if (result) {
+    return (
+      <ResultCard
+        data={result}
+        onContinue={() =>
+          navigate('/debriefing', {
+            state: { responseId: result.id },
+            replace: true,
+          })
+        }
+      />
+    );
+  }
 
   if (!topicId && !sessionId && !roomId) {
     return (
