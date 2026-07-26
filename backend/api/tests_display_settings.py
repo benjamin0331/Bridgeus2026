@@ -117,3 +117,127 @@ class UserIsResearcherHelperTests(TestCase):
         from api.permissions import user_is_researcher
 
         self.assertFalse(user_is_researcher(AnonymousUser()))
+
+
+class StanceThresholdOverlayTests(TestCase):
+    """議題 102 在 SURVEY_CONFIGS 的預設門檻是 support=4.5 / oppose=3.5。"""
+
+    def test_defaults_when_no_override_row(self):
+        from api.display_settings import get_stance_thresholds
+
+        self.assertEqual(get_stance_thresholds(topic_id=102), (4.5, 3.5))
+
+    def test_override_row_with_null_thresholds_keeps_defaults(self):
+        from api.display_settings import get_stance_thresholds
+
+        TopicDisplayOverride.objects.create(topic_id=102)
+
+        self.assertEqual(get_stance_thresholds(topic_id=102), (4.5, 3.5))
+
+    def test_full_override_wins(self):
+        from api.display_settings import get_stance_thresholds
+
+        TopicDisplayOverride.objects.create(
+            topic_id=102, support_threshold=5.0, oppose_threshold=3.0
+        )
+
+        self.assertEqual(get_stance_thresholds(topic_id=102), (5.0, 3.0))
+
+    def test_partial_override_keeps_other_side_default(self):
+        from api.display_settings import get_stance_thresholds
+
+        TopicDisplayOverride.objects.create(topic_id=102, support_threshold=5.5)
+
+        self.assertEqual(get_stance_thresholds(topic_id=102), (5.5, 3.5))
+
+    def test_default_thresholds_ignores_override(self):
+        from api.display_settings import default_stance_thresholds
+
+        TopicDisplayOverride.objects.create(
+            topic_id=102, support_threshold=6.0, oppose_threshold=2.0
+        )
+
+        self.assertEqual(default_stance_thresholds(topic_id=102), (4.5, 3.5))
+
+
+class TopicVisibilityTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from django.contrib.auth.models import Group
+
+        from api.permissions import RESEARCHER_GROUP_NAME
+
+        User = get_user_model()
+        group, _ = Group.objects.get_or_create(name=RESEARCHER_GROUP_NAME)
+        self.researcher = User.objects.create_user(
+            username="vis_researcher", password="pw-strong-12345"
+        )
+        self.researcher.groups.add(group)
+        self.participant = User.objects.create_user(
+            username="vis_participant", password="pw-strong-12345"
+        )
+
+    def test_all_topics_visible_without_overrides(self):
+        from api.dialogue_topics import TOPIC_CONFIGS
+        from api.display_settings import visible_topics
+
+        for is_researcher in (True, False):
+            ids = {topic["id"] for topic in visible_topics(is_researcher=is_researcher)}
+            self.assertEqual(ids, set(TOPIC_CONFIGS))
+
+    def test_hidden_from_participant_only(self):
+        from api.display_settings import is_topic_visible, visible_topics
+
+        TopicDisplayOverride.objects.create(
+            topic_id=102, visible_to_participant=False, visible_to_researcher=True
+        )
+
+        participant_ids = {t["id"] for t in visible_topics(is_researcher=False)}
+        researcher_ids = {t["id"] for t in visible_topics(is_researcher=True)}
+
+        self.assertNotIn(102, participant_ids)
+        self.assertIn(102, researcher_ids)
+        self.assertFalse(is_topic_visible(topic_id=102, is_researcher=False))
+        self.assertTrue(is_topic_visible(topic_id=102, is_researcher=True))
+
+    def test_unknown_topic_is_never_visible(self):
+        from api.display_settings import is_topic_visible
+
+        self.assertFalse(is_topic_visible(topic_id=999, is_researcher=True))
+
+    def test_visible_topics_preserves_display_order(self):
+        from api.dialogue_topics import get_dialogue_topics
+        from api.display_settings import visible_topics
+
+        expected = [topic["id"] for topic in get_dialogue_topics()]
+        actual = [topic["id"] for topic in visible_topics(is_researcher=True)]
+
+        self.assertEqual(actual, expected)
+
+
+class EntryModeAndTimeoutTests(TestCase):
+    def test_entry_mode_defaults_per_role(self):
+        from api.display_settings import get_entry_mode
+
+        self.assertEqual(get_entry_mode(is_researcher=False), "mixed")
+        self.assertEqual(get_entry_mode(is_researcher=True), "split")
+
+    def test_entry_mode_follows_setting(self):
+        from api.display_settings import get_entry_mode
+
+        setting = PlatformDisplaySetting.load()
+        setting.participant_entry_mode = PlatformDisplaySetting.EntryMode.SPLIT
+        setting.save()
+
+        self.assertEqual(get_entry_mode(is_researcher=False), "split")
+
+    def test_fallback_timeout_seconds(self):
+        from api.display_settings import get_match_fallback_timeout_seconds
+
+        self.assertEqual(get_match_fallback_timeout_seconds(), 300)
+
+        setting = PlatformDisplaySetting.load()
+        setting.match_fallback_timeout_minutes = 2
+        setting.save()
+
+        self.assertEqual(get_match_fallback_timeout_seconds(), 120)
