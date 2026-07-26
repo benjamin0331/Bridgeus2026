@@ -10,9 +10,15 @@ import './ViewpointReviewPage.css';
 const TABS = [
   { id: 'pending', label: '待審核' },
   { id: 'approved', label: '已通過' },
-  { id: 'rejected', label: '已退回' },
+  { id: 'rejected', label: '未通過' },
   { id: 'all', label: '全部' },
 ];
+
+const STATUS_LABELS = {
+  pending: '待審核',
+  approved: '已通過',
+  rejected: '未通過',
+};
 
 function formatTime(value) {
   if (!value) return '';
@@ -31,6 +37,8 @@ function truncate(text, maxLength = 60) {
 
 function ViewpointReviewPage() {
   const [status, setStatus] = useState('pending');
+  const [topics, setTopics] = useState([]);
+  const [selectedTopicId, setSelectedTopicId] = useState(null);
   const [items, setItems] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -43,11 +51,30 @@ function ViewpointReviewPage() {
   useEffect(() => {
     let cancelled = false;
 
+    api
+      .get('/api/dialogue/topics/')
+      .then((response) => {
+        if (!cancelled) setTopics(Array.isArray(response.data) ? response.data : []);
+      })
+      .catch(() => {
+        if (!cancelled) setTopics([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
     const loadList = async () => {
       setIsLoading(true);
       setError('');
       try {
-        const response = await api.get('/api/summary/viewpoints/', { params: { status } });
+        const params = { status };
+        if (selectedTopicId) params.topic_id = selectedTopicId;
+        const response = await api.get('/api/summary/viewpoints/', { params });
         if (cancelled) return;
         const nextItems = Array.isArray(response.data) ? response.data : [];
         setItems(nextItems);
@@ -73,7 +100,12 @@ function ViewpointReviewPage() {
     return () => {
       cancelled = true;
     };
-  }, [status]);
+  }, [status, selectedTopicId]);
+
+  const topicTitleById = topics.reduce((acc, topic) => {
+    acc[topic.id] = topic.title;
+    return acc;
+  }, {});
 
   // 選中的觀點換了就清空備註/錯誤訊息；照 React 官方建議在渲染時直接調整
   // state（比對 selectedId 是否變過），不要在 useEffect 裡同步呼叫 setState
@@ -105,9 +137,7 @@ function ViewpointReviewPage() {
     <div className="vr-page">
       <section className="vr-list-panel">
         <div className="vr-heading">
-          <span className="vr-kicker">M6 · Step 4</span>
           <h1>觀點知識庫人工終審</h1>
-          <p>審核 pipeline 篩選出的候選觀點，決定是否收錄進觀點知識庫。</p>
         </div>
 
         <div className="vr-tab-row" role="tablist" aria-label="審核狀態">
@@ -119,6 +149,26 @@ function ViewpointReviewPage() {
               onClick={() => setStatus(tab.id)}
             >
               {tab.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="vr-topic-row" role="tablist" aria-label="議題篩選">
+          <button
+            type="button"
+            className={`vr-topic-btn${selectedTopicId === null ? ' is-active' : ''}`}
+            onClick={() => setSelectedTopicId(null)}
+          >
+            全部議題
+          </button>
+          {topics.map((topic) => (
+            <button
+              key={topic.id}
+              type="button"
+              className={`vr-topic-btn${selectedTopicId === topic.id ? ' is-active' : ''}`}
+              onClick={() => setSelectedTopicId(topic.id)}
+            >
+              {topic.title}
             </button>
           ))}
         </div>
@@ -136,7 +186,9 @@ function ViewpointReviewPage() {
               className={`vr-card${selectedId === item.id ? ' is-active' : ''}`}
               onClick={() => setSelectedId(item.id)}
             >
-              <span className="vr-card-dimension">{item.dimension}</span>
+              <span className="vr-card-dimension">
+                {topicTitleById[item.topic_id] ?? `topic ${item.topic_id}`} · {item.dimension}
+              </span>
               <span className="vr-card-text">{truncate(item.user_input_text)}</span>
               <span className="vr-card-meta">
                 {`分數 ${item.composite_score?.toFixed(4) ?? '—'} · ${formatTime(item.created_at)}`}
@@ -151,7 +203,9 @@ function ViewpointReviewPage() {
         {selected && (
           <>
             <div className="vr-detail-header">
-              <span className="vr-detail-topic">{`topic ${selected.topic_id} · ${selected.dimension}`}</span>
+              <span className="vr-detail-topic">
+                {`${topicTitleById[selected.topic_id] ?? `topic ${selected.topic_id}`} · ${selected.dimension}`}
+              </span>
               <span className="vr-detail-dialogue">{`來源對話 ${selected.dialogue_id}`}</span>
             </div>
 
@@ -170,7 +224,7 @@ function ViewpointReviewPage() {
             <div className="vr-detail-score">
               <span>{`綜合分數：${selected.composite_score?.toFixed(4) ?? '—'}`}</span>
               <span>{`被引用次數：${selected.citation_count}`}</span>
-              <span>{`目前狀態：${selected.review_status}`}</span>
+              <span>{`目前狀態：${STATUS_LABELS[selected.review_status] ?? selected.review_status}`}</span>
             </div>
 
             <details className="vr-score-detail">
@@ -192,22 +246,35 @@ function ViewpointReviewPage() {
             {actionError && <div className="vr-action-error">{actionError}</div>}
 
             <div className="vr-action-row">
-              <button
-                type="button"
-                className="vr-approve-btn"
-                disabled={isSubmitting}
-                onClick={() => handleDecision('approve')}
-              >
-                通過
-              </button>
-              <button
-                type="button"
-                className="vr-reject-btn"
-                disabled={isSubmitting}
-                onClick={() => handleDecision('reject')}
-              >
-                退回
-              </button>
+              {selected.review_status === 'pending' ? (
+                <>
+                  <button
+                    type="button"
+                    className="vr-approve-btn"
+                    disabled={isSubmitting}
+                    onClick={() => handleDecision('approve')}
+                  >
+                    通過
+                  </button>
+                  <button
+                    type="button"
+                    className="vr-reject-btn"
+                    disabled={isSubmitting}
+                    onClick={() => handleDecision('reject')}
+                  >
+                    未通過
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="vr-reset-btn"
+                  disabled={isSubmitting}
+                  onClick={() => handleDecision('reset')}
+                >
+                  重新審查
+                </button>
+              )}
             </div>
           </>
         )}

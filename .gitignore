@@ -3,6 +3,7 @@
 **/.DS_Store
 .idea/
 .vscode/
+.claude/
 
 # Python cache / tooling
 **/__pycache__/

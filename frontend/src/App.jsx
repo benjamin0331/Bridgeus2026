@@ -8,6 +8,8 @@ import Sidebar from './components/Sidebar'
 import HomePage from './pages/HomePage'
 import TopicChat from './pages/TopicChat'
 import KnowledgeBase from './pages/KnowledgeBase'
+import KnowledgeBaseTopicPage from './pages/KnowledgeBaseTopicPage'
+import KnowledgeBaseConversationPage from './pages/KnowledgeBaseConversationPage'
 import HistoryPage from './pages/HistoryPage'
 import AchievementPage from './pages/AchievementPage'
 import LoginPage from './pages/LoginPage'
@@ -166,6 +168,11 @@ function App() {
             />
 
             <Route path="/kb" element={<KnowledgeBase />} />
+            <Route path="/kb/topics/:topicId" element={<KnowledgeBaseTopicPage />} />
+            <Route
+              path="/kb/conversations/:viewpointId"
+              element={<KnowledgeBaseConversationPage />}
+            />
             <Route path="/history" element={<HistoryPage />} />
             <Route path="/post-questionnaire" element={<PostQuestionnairePage />} />
             <Route path="/debriefing" element={<DebriefingPage />} />

@@ -174,6 +174,7 @@ def run_pipeline_for_match(match_id: int) -> int:
             {
                 "summary_id": summary_id,
                 "dimension": dimension,
+                "speaker_side": pair["speaker_side"],
                 "user_input_text": pair["user_input_text"],
                 "ai_response_text": pair["ai_response_text"],
                 "viewpoint_summary": "、".join(node["name"] for node in lit_nodes),

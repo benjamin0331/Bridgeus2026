@@ -151,6 +151,21 @@ class ViewpointReviewDecisionTests(APITestCase):
         self.viewpoint.refresh_from_db()
         self.assertEqual(self.viewpoint.review_status, ViewpointNode.ReviewStatus.REJECTED)
 
+    def test_reset_sends_decided_node_back_to_pending(self):
+        self.client.post(
+            f"/api/summary/viewpoints/{self.viewpoint.id}/review/", {"action": "approve"}
+        )
+
+        response = self.client.post(
+            f"/api/summary/viewpoints/{self.viewpoint.id}/review/",
+            {"action": "reset", "notes": "需要再確認一次"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.viewpoint.refresh_from_db()
+        self.assertEqual(self.viewpoint.review_status, ViewpointNode.ReviewStatus.PENDING)
+        self.assertEqual(self.viewpoint.review_notes, "需要再確認一次")
+
     def test_invalid_action_is_rejected(self):
         response = self.client.post(
             f"/api/summary/viewpoints/{self.viewpoint.id}/review/", {"action": "delete"}

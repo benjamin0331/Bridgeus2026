@@ -55,7 +55,7 @@ def write_dialogue_summary(data: dict) -> int:
 
 def write_viewpoint(data: dict) -> bool:
     """
-    data 包含：summary_id, dimension, stance_direction,
+    data 包含：summary_id, dimension, stance_direction, speaker_side,
                user_input_text, ai_response_text, viewpoint_summary,
                source_message_ids, composite_score, score_detail
 
@@ -80,6 +80,7 @@ def write_viewpoint(data: dict) -> bool:
         topic_id=topic_id,
         dimension=data["dimension"],
         stance_direction=data.get("stance_direction", ""),
+        speaker_side=data.get("speaker_side", ""),
         user_input_text=data["user_input_text"],
         ai_response_text=data.get("ai_response_text", ""),
         viewpoint_summary=data.get("viewpoint_summary", ""),

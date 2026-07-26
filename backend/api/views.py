@@ -9,9 +9,11 @@ from uuid import uuid4
 from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import FloatField, Q, Value
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework import generics, permissions, status
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTStatelessUserAuthentication
@@ -19,7 +21,8 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from apps.matching.services.semantic import build_q9_embedding
-from apps.summary.models import ViewpointNode
+from apps.matching.services.semantic_tree import get_topic_anchors
+from apps.summary.models import VideoRecommendation, ViewpointNode
 
 from .permissions import IsGodotServiceToken, IsResearcher
 
@@ -48,6 +51,7 @@ from .serializers import (
     DialogueReplySerializer,
     DialogueSurveySerializer,
     DialogueTopicSerializer,
+    DialogueTopicTrendingSerializer,
     DialogueSessionCreateSerializer,
     MatchMessageSerializer,
     MatchingJoinSerializer,
@@ -63,6 +67,9 @@ from .serializers import (
     PostDialogueResponseOutputSerializer,
     PostDialogueResponseSerializer,
     BridgeUsTokenObtainPairSerializer,
+    DialogueSummaryDetailSerializer,
+    VideoRecommendationSerializer,
+    ViewpointHighlightSerializer,
     ViewpointNodeReviewDecisionSerializer,
     ViewpointNodeReviewSerializer,
 )
@@ -835,6 +842,32 @@ class DialogueTopicListView(APIView):
         return Response(serializer.data)
 
 
+class DialogueTopicTrendingView(APIView):
+    """GET /api/dialogue/topics/trending/
+
+    「熱門度」= 該議題累計的 AI 對話數 + 真人配對數，由高到低排序。
+    給知識庫首頁的「近期熱門」區塊用，不是嚴謹的統計指標，只是活動量代理值。
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    authentication_classes = [JWTStatelessUserAuthentication]
+
+    def get(self, request):
+        rows = []
+        for topic in get_dialogue_topics():
+            topic_id = topic["id"]
+            hits = (
+                AIConversation.objects.filter(topic_id=topic_id).count()
+                + DialogueMatch.objects.filter(topic_id=topic_id).count()
+            )
+            rows.append({"id": topic_id, "title": topic["title"], "hits": hits})
+
+        rows.sort(key=lambda row: row["hits"], reverse=True)
+
+        serializer = DialogueTopicTrendingSerializer(rows, many=True)
+        return Response(serializer.data)
+
+
 class DialogueSurveyView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     authentication_classes = [JWTStatelessUserAuthentication]
@@ -1454,9 +1487,15 @@ class ViewpointReviewListView(generics.ListAPIView):
 
 
 class ViewpointReviewDecisionView(APIView):
-    """研究者專用：核准或退回單一 ViewpointNode。"""
+    """研究者專用：核准、標記未通過，或把已核准/未通過的節點重新送回待審核。"""
 
     permission_classes = [IsResearcher]
+
+    _STATUS_BY_ACTION = {
+        "approve": ViewpointNode.ReviewStatus.APPROVED,
+        "reject": ViewpointNode.ReviewStatus.REJECTED,
+        "reset": ViewpointNode.ReviewStatus.PENDING,
+    }
 
     def post(self, request, pk: int):
         try:
@@ -1467,11 +1506,7 @@ class ViewpointReviewDecisionView(APIView):
         decision = ViewpointNodeReviewDecisionSerializer(data=request.data)
         decision.is_valid(raise_exception=True)
 
-        node.review_status = (
-            ViewpointNode.ReviewStatus.APPROVED
-            if decision.validated_data["action"] == "approve"
-            else ViewpointNode.ReviewStatus.REJECTED
-        )
+        node.review_status = self._STATUS_BY_ACTION[decision.validated_data["action"]]
         node.reviewed_by = request.user
         node.reviewed_at = timezone.now()
         node.review_notes = decision.validated_data["notes"]
@@ -1480,6 +1515,181 @@ class ViewpointReviewDecisionView(APIView):
         )
 
         return Response(ViewpointNodeReviewSerializer(node).data)
+
+
+def _approved_viewpoints_queryset(topic_id: str | None):
+    qs = ViewpointNode.objects.filter(
+        review_status=ViewpointNode.ReviewStatus.APPROVED
+    ).select_related("summary")
+    if topic_id:
+        qs = qs.filter(topic_id=topic_id)
+
+    return qs.annotate(
+        _score=Coalesce("composite_score", Value(0.0), output_field=FloatField())
+    ).order_by("-citation_count", "-_score")
+
+
+def _serialize_viewpoint_rows(nodes) -> list[dict]:
+    """把 ViewpointNode queryset/list 轉成公開卡片用的 dict——只暴露
+    viewpoint_summary 等已篩選過的欄位，不帶 user_input_text 原始逐字稿。"""
+    anchor_names_by_topic: dict[int, dict[str, str]] = {}
+    rows = []
+    for node in nodes:
+        anchor_names = anchor_names_by_topic.setdefault(
+            node.topic_id,
+            {anchor["id"]: anchor["name"] for anchor in get_topic_anchors(node.topic_id)},
+        )
+        rows.append(
+            {
+                "id": node.id,
+                "topic_id": node.topic_id,
+                "topic_title": TOPIC_CONFIGS.get(node.topic_id, {}).get("title", ""),
+                "dimension": node.dimension,
+                "dimension_name": anchor_names.get(node.dimension, node.dimension),
+                "speaker_side": node.speaker_side,
+                "stance_direction": node.stance_direction,
+                "viewpoint_summary": node.viewpoint_summary,
+                "citation_count": node.citation_count,
+                "composite_score": node.composite_score,
+                "created_at": node.created_at,
+            }
+        )
+    return rows
+
+
+class KnowledgeBaseHighlightsView(APIView):
+    """GET /api/summary/viewpoints/highlights/?topic_id=<id>&limit=<n>
+
+    知識庫「熱門對話」區塊：所有登入使用者都能看，只回傳已通過人工審核
+    （review_status=approved）的 ViewpointNode，依 citation_count（被去重
+    比對命中的次數，等於這個觀點在多場對話中重複出現過幾次）排序，當作
+    「熱門度」的代理指標。預設 limit=5（首頁選定議題後顯示前五名用），
+    最多 20 筆——完整清單走 KnowledgeBaseViewpointBrowseView（有分頁）。
+    跟 ViewpointReviewListView 不同：那個是研究者專用、預設列 PENDING、
+    且會帶原始逐字稿欄位。
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    authentication_classes = [JWTStatelessUserAuthentication]
+
+    def get(self, request):
+        topic_id = request.query_params.get("topic_id")
+
+        try:
+            limit = int(request.query_params.get("limit", 5))
+        except (TypeError, ValueError):
+            limit = 5
+        limit = max(1, min(limit, 20))
+
+        qs = _approved_viewpoints_queryset(topic_id)[:limit]
+        rows = _serialize_viewpoint_rows(qs)
+
+        serializer = ViewpointHighlightSerializer(rows, many=True)
+        return Response(serializer.data)
+
+
+class KnowledgeBaseConversationDetailView(APIView):
+    """GET /api/summary/viewpoints/<pk>/conversation/
+
+    「熱門對話」卡片點進去看的對話紀錄。pk 是 ViewpointNode id，只接受已通過
+    審核的節點（跟 highlights/browse 同一道 gate）；回傳它所屬 DialogueSummary
+    已沉澱的摘要欄位（summary_text/雙方立場/品質分數/立場偏移量），以及同一場
+    對話底下其他已審核通過的觀點列表——不回傳 user_input_text/ai_response_text
+    原始逐字稿，理由同 KnowledgeBaseHighlightsView。
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    authentication_classes = [JWTStatelessUserAuthentication]
+
+    def get(self, request, pk: int):
+        try:
+            node = ViewpointNode.objects.select_related("summary").get(
+                pk=pk, review_status=ViewpointNode.ReviewStatus.APPROVED
+            )
+        except ViewpointNode.DoesNotExist:
+            return Response(
+                {"detail": "找不到這筆觀點，或尚未通過審核。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        summary = node.summary
+        sibling_nodes = ViewpointNode.objects.filter(
+            summary_id=summary.id,
+            review_status=ViewpointNode.ReviewStatus.APPROVED,
+        ).annotate(
+            _score=Coalesce("composite_score", Value(0.0), output_field=FloatField())
+        ).order_by("-citation_count", "-_score")
+
+        data = {
+            "dialogue_summary_id": summary.id,
+            "topic_id": summary.topic_id,
+            "topic_title": TOPIC_CONFIGS.get(summary.topic_id, {}).get("title", ""),
+            "summary_text": summary.summary_text,
+            "side_a_stance": summary.side_a_stance,
+            "side_b_stance": summary.side_b_stance,
+            "quality_score": summary.quality_score,
+            "stance_shift_magnitude": summary.stance_shift_magnitude,
+            "created_at": summary.created_at,
+            "viewpoints": _serialize_viewpoint_rows(sibling_nodes),
+        }
+        serializer = DialogueSummaryDetailSerializer(data)
+        return Response(serializer.data)
+
+
+class ViewpointBrowsePagination(PageNumberPagination):
+    page_size = 12
+    page_size_query_param = "page_size"
+    max_page_size = 50
+
+
+class KnowledgeBaseViewpointBrowseView(APIView):
+    """GET /api/summary/viewpoints/browse/?topic_id=<id>&page=<n>
+
+    知識庫「觀看更多」頁面：列出某個議題底下所有已審核通過的觀點，依
+    citation_count 排序，分頁回傳（DRF 標準 count/next/previous/results 格式）。
+    topic_id 為必填——這裡設計上一定是使用者先在首頁選定一個議題後才會進來。
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    authentication_classes = [JWTStatelessUserAuthentication]
+    pagination_class = ViewpointBrowsePagination
+
+    def get(self, request):
+        topic_id = request.query_params.get("topic_id")
+        if not topic_id:
+            return Response(
+                {"detail": "topic_id 為必填。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        qs = _approved_viewpoints_queryset(topic_id)
+
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(qs, request, view=self)
+        rows = _serialize_viewpoint_rows(page)
+        serializer = ViewpointHighlightSerializer(rows, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+
+class VideoRecommendationListView(generics.ListAPIView):
+    """GET /api/summary/videos/?topic_id=<id>
+
+    知識庫首頁「影片推薦」區塊。內容由 Django admin 後台人工維護
+    （apps.summary.admin.VideoRecommendationAdmin），這裡只回傳
+    is_published=True 的項目；topic_id 沒帶就回傳所有已發布項目（含不限
+    議題的推薦）。
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    authentication_classes = [JWTStatelessUserAuthentication]
+    serializer_class = VideoRecommendationSerializer
+
+    def get_queryset(self):
+        qs = VideoRecommendation.objects.filter(is_published=True)
+        topic_id = self.request.query_params.get("topic_id")
+        if topic_id:
+            qs = qs.filter(topic_id=topic_id)
+        return qs
 
 
 class CCNDInsightsView(APIView):

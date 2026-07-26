@@ -229,7 +229,44 @@ def score_and_rank(pairs: list[dict], top_n: int = TOP_N) -> list[dict]:
         })
 
     scored.sort(key=lambda x: x["composite_score"], reverse=True)
-    return scored[:top_n]
+    return _select_balanced_by_side(scored, top_n)
+
+
+def _select_balanced_by_side(scored: list[dict], top_n: int) -> list[dict]:
+    """在保留分數排序優先權的前提下，確保 top_n 筆結果盡量涵蓋這場對話裡出現
+    過的每一種 speaker_side（例如支持方跟反對方）。
+
+    背景：BridgeUs 的核心價值是呈現異質觀點，如果單純依 composite_score 排序，
+    某一方發言的分數若系統性偏高（例如發言明顯較長、詞彙較豐富），另一方的
+    觀點可能整場對話都擠不進 TOP_N，知識庫裡就只看得到單一立場——這正是
+    我們想避免的同溫層效果。
+
+    做法：scored 已依分數由高到低排序，所以每個 side 第一次出現的位置就是
+    該 side 分數最高的配對；先各保留一筆，其餘名額再依分數高低補滿。
+    """
+    if top_n >= len(scored):
+        return scored
+
+    picked_indices: list[int] = []
+    seen_sides: set[str] = set()
+    for i, pair in enumerate(scored):
+        if pair["speaker_side"] not in seen_sides:
+            picked_indices.append(i)
+            seen_sides.add(pair["speaker_side"])
+        if len(picked_indices) >= top_n:
+            break
+
+    if len(picked_indices) < top_n:
+        picked_set = set(picked_indices)
+        for i in range(len(scored)):
+            if i in picked_set:
+                continue
+            picked_indices.append(i)
+            if len(picked_indices) >= top_n:
+                break
+
+    picked_indices.sort()  # scored 本身已依分數由高到低排序，索引升冪 = 分數降冪
+    return [scored[i] for i in picked_indices]
 
 
 # ──────────────────────────────────────────────

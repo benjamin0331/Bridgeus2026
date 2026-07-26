@@ -24,26 +24,11 @@
   flex-shrink: 0;
 }
 
-.vr-kicker {
-  color: #8d7058;
-  font-size: 9.6px;
-  font-weight: 900;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
 .vr-heading h1 {
   margin: 6px 0 8px;
   color: #2f2722;
   font-size: clamp(20px, 2.2vw, 28px);
   line-height: 1.15;
-}
-
-.vr-heading p {
-  margin: 0;
-  color: #7e7167;
-  font-size: 11.2px;
-  line-height: 1.6;
 }
 
 .vr-tab-row {
@@ -70,6 +55,31 @@
 
 .vr-tab-btn.is-active {
   background: #2f2722;
+  color: #fbf5ee;
+}
+
+.vr-topic-row {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 16px;
+}
+
+.vr-topic-btn {
+  border: 1px solid rgba(117, 96, 78, 0.25);
+  border-radius: 999px;
+  padding: 6px 14px;
+  background: transparent;
+  color: #725f50;
+  font-size: 10.4px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.vr-topic-btn.is-active {
+  border-color: #a4713c;
+  background: #a4713c;
   color: #fbf5ee;
 }
 
@@ -216,7 +226,8 @@
 }
 
 .vr-approve-btn,
-.vr-reject-btn {
+.vr-reject-btn,
+.vr-reset-btn {
   flex: 1;
   min-height: 42px;
   border: none;
@@ -232,9 +243,15 @@
 }
 
 .vr-approve-btn:disabled,
-.vr-reject-btn:disabled {
+.vr-reject-btn:disabled,
+.vr-reset-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.vr-reset-btn {
+  background: #8d7058;
+  color: #fbf5ee;
 }
 
 .vr-reject-btn {

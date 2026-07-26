@@ -1,48 +1,34 @@
-/* 知識庫主容器佈局 */
+/* 觀看更多頁面（KnowledgeBaseTopicPage）用的直向堆疊外層。
+   .content-area 本身 overflow:hidden（見 App.css），捲動一律由頁面自己的
+   最外層負責，所以這裡要自己開 overflow-y:auto。 */
+.kb-page {
+  display: flex;
+  flex-direction: column;
+  gap: 36px;
+  height: 100%;
+  overflow-y: auto;
+}
+
+/* 知識庫主容器佈局：左欄（議題選擇＋熱門對話＋影片推薦）＋ 右欄（近期熱門）。
+   同樣是頁面最外層，負責自己的捲動（理由同上）。 */
 .kb-container {
   display: flex;
   gap: 40px;
-  height: 100%;
   padding: 10px;
+  align-items: flex-start;
+  height: 100%;
+  overflow-y: auto;
 }
 
-/* 左側：搜尋與歷史紀錄區塊 */
+/* 左欄：議題選擇、熱門對話、影片推薦依序往下堆疊 */
 .kb-left-section {
   flex: 2;
   display: flex;
   flex-direction: column;
+  gap: 36px;
 }
 
-/* 搜尋欄位容器樣式 */
-.kb-search-bar {
-  background: #f0ece9;
-  border-radius: 50px;
-  padding: 12px 25px;
-  display: flex;
-  align-items: center;
-  gap: 15px;
-  margin-bottom: 30px;
-}
-
-/* 搜尋圖示尺寸設定：強制縮小並保持比例 */
-.search-icon-img {
-  width: 20px !important;  /* 強制指定寬度以修正原始圖檔過大的問題 */
-  height: 20px !important; /* 強制指定高度 */
-  object-fit: contain;     /* 確保圖片不因比例失真 */
-  flex-shrink: 0;          /* 防止圖示在彈性佈局中被擠壓 */
-}
-
-/* 搜尋輸入框原始樣式 */
-.kb-search-bar input {
-  background: transparent;
-  border: none;
-  outline: none;
-  font-size: 18px;
-  width: 100%;
-  color: #333;
-}
-
-/* 區塊標題（如：猜你想搜、最近記錄） */
+/* 區塊標題（如：選擇議題、熱門對話） */
 .kb-section-title {
   font-size: 16px;
   color: #666;
@@ -67,29 +53,17 @@
   cursor: pointer;
 }
 
-/* 分隔線樣式 */
-.kb-divider {
-  border: none;
-  border-top: 1.5px solid #e0d8cf;
-  margin-bottom: 25px;
+.kb-tag-active {
+  background: #3b587a;
+  border-color: #3b587a;
+  color: #fff;
 }
 
-/* 歷史記錄清單 */
-.kb-history-list {
-  display: flex;
-  flex-direction: column;
-  gap: 15px;
-}
-
-.kb-history-item {
-  color: #777;
-  font-size: 16px;
-  cursor: pointer;
-}
-
-/* 右側：熱門趨勢與統計卡片區塊 */
+/* 右欄：近期熱門，跨議題整體活動量統計 */
 .kb-right-section {
   flex: 1.2;
+  position: sticky;
+  top: 10px;
 }
 
 /* 藍色資訊卡片主體 */
@@ -97,7 +71,6 @@
   background-color: #d8e4f2;
   border-radius: 40px;
   padding: 35px;
-  height: 100%;
   display: flex;
   flex-direction: column;
 }
@@ -118,6 +91,225 @@
   display: flex;
   justify-content: space-between;
   font-weight: bold;
+  cursor: pointer;
+}
+
+/* 空狀態提示（無議題可搜／無搜尋紀錄／無活動資料） */
+.kb-empty-hint,
+.kb-history-empty {
+  color: #999;
+  font-size: 14px;
+  cursor: default;
+}
+
+/* ============================
+   熱門對話：已審核通過的觀點卡片
+   ============================ */
+.kb-highlights-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 20px;
+}
+
+.kb-highlight-card {
+  background: #fff;
+  border: 1.5px solid #e0d8cf;
+  border-radius: 24px;
+  padding: 20px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.kb-highlight-card:hover {
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
+  transform: translateY(-2px);
+}
+
+.kb-highlight-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.kb-highlight-topic,
+.kb-highlight-side,
+.kb-highlight-dimension,
+.kb-highlight-stance {
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 50px;
+  font-weight: bold;
+}
+
+.kb-highlight-topic {
+  background: #d8e4f2;
+  color: #3b587a;
+}
+
+/* A/B 方標示，跟其他 meta badge 用不同色系，一眼就能分辨是哪一方發言 */
+.kb-highlight-side {
+  background: #3b587a;
+  color: #fff;
+}
+
+.kb-highlight-dimension {
+  background: #f0ece9;
+  color: #6b6259;
+}
+
+.kb-highlight-stance {
+  background: #f2e2d8;
+  color: #8a5a3b;
+}
+
+.kb-highlight-summary {
+  color: #444;
+  font-size: 15px;
+  line-height: 1.5;
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.kb-highlight-footer {
+  color: #999;
+  font-size: 13px;
+}
+
+/* ============================
+   對話紀錄詳情頁（KnowledgeBaseConversationPage）
+   ============================ */
+.kb-conversation-card {
+  background: #fff;
+  border: 1.5px solid #e0d8cf;
+  border-radius: 24px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.kb-conversation-stances {
+  display: flex;
+  gap: 8px;
+}
+
+.kb-conversation-summary {
+  color: #333;
+  font-size: 16px;
+  line-height: 1.7;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.kb-conversation-metrics {
+  display: flex;
+  gap: 20px;
+  color: #999;
+  font-size: 13px;
+}
+
+.kb-view-more-btn {
+  display: block;
+  margin: 24px auto 0;
+  padding: 10px 32px;
+  border: 1.5px solid #3b587a;
+  border-radius: 50px;
+  background: transparent;
+  color: #3b587a;
+  font-size: 14px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.kb-view-more-btn:hover {
+  background: #3b587a;
+  color: #fff;
+}
+
+.kb-back-btn {
+  align-self: flex-start;
+  border: none;
+  background: transparent;
+  color: #3b587a;
+  font-size: 14px;
+  font-weight: bold;
+  cursor: pointer;
+  padding: 0;
+}
+
+.kb-browse-count {
+  color: #999;
+  font-weight: normal;
+  font-size: 14px;
+}
+
+.kb-pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 16px;
+  margin-top: 24px;
+  font-size: 14px;
+  color: #555;
+}
+
+.kb-pagination button {
+  padding: 8px 20px;
+  border: 1.5px solid #999;
+  border-radius: 50px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.kb-pagination button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ============================
+   影片推薦
+   ============================ */
+.kb-video-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 20px;
+}
+
+.kb-video-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.kb-video-thumb {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 20px;
+  background: #d8e4f2 center / cover no-repeat;
+}
+
+.kb-video-title {
+  font-weight: bold;
+  font-size: 15px;
+  color: #333;
+}
+
+.kb-video-description {
+  color: #777;
+  font-size: 13px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 /* 數據統計預留位置 */
@@ -144,24 +336,31 @@
    RWD：手機版 (≤ 768px)
    ============================ */
 @media (max-width: 768px) {
+  /* 手機版整頁本來就靠 .app-container 的自然文件流捲動（見 App.css），
+     這裡不需要也不應該自己再開一層 overflow-y:auto。 */
+  .kb-page,
+  .kb-container {
+    height: auto;
+    overflow-y: visible;
+  }
+
   .kb-container {
     flex-direction: column;
-    gap: 20px;
-    height: auto;
+    gap: 24px;
     padding: 0;
-    overflow: visible;
   }
 
   .kb-left-section {
     flex: none;
+    gap: 24px;
   }
 
   .kb-right-section {
     flex: none;
+    position: static;
   }
 
   .kb-blue-card {
-    height: auto;
     padding: 24px;
     border-radius: 28px;
   }
@@ -171,16 +370,16 @@
     margin-bottom: 16px;
   }
 
-  .kb-search-bar {
-    padding: 10px 18px;
-    margin-bottom: 20px;
-  }
-
-  .kb-search-bar input {
-    font-size: 15px;
-  }
-
   .kb-chart-placeholder {
     min-height: 120px;
+  }
+
+  .kb-page {
+    gap: 24px;
+  }
+
+  .kb-highlights-grid,
+  .kb-video-grid {
+    grid-template-columns: 1fr;
   }
 }
