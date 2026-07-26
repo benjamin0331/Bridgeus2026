@@ -703,3 +703,91 @@ class CCNDTimelineUnlock(models.Model):
             f"CCNDTimelineUnlock user={self.user_id} "
             f"{self.kind}={self.conversation_id}"
         )
+
+
+class PlatformDisplaySetting(models.Model):
+    """全站前端顯示設定。刻意只允許一列（pk=1），一律用 load() 取得。
+
+    入口模式分角色：受試者預設走混合入口（後端依立場分流），研究者預設
+    走分開入口（AI／配對兩張卡）方便測試。
+    """
+
+    class EntryMode(models.TextChoices):
+        MIXED = "mixed", "混合入口"
+        SPLIT = "split", "分開入口"
+
+    participant_entry_mode = models.CharField(
+        max_length=16,
+        choices=EntryMode.choices,
+        default=EntryMode.MIXED,
+        help_text="一般使用者看到的入口形式",
+    )
+    researcher_entry_mode = models.CharField(
+        max_length=16,
+        choices=EntryMode.choices,
+        default=EntryMode.SPLIT,
+        help_text="研究者看到的入口形式",
+    )
+    match_fallback_timeout_minutes = models.PositiveIntegerField(
+        default=5,
+        help_text="配對等待超過這個分鐘數後，詢問使用者要不要改跟 AI 對話",
+    )
+    # related_name="+"：不需要從 User 反查設定紀錄，這裡只是留個最後修改者。
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def save(self, *args, **kwargs):
+        # 單列表：任何 save 都寫在 pk=1，避免出現第二組互相打架的設定。
+        #
+        # ⚠️ 一定要先 load() 拿到現有那列再改欄位，不可以直接建構新實例存檔——
+        # 強制 pk=1 之後 Django 會用這個實例的「所有」欄位值下 UPDATE，
+        # 沒帶到的欄位會被靜默寫回類別預設值，把先前的設定蓋掉且不會報錯。
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def load(cls) -> "PlatformDisplaySetting":
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def __str__(self):
+        return (
+            f"participant={self.participant_entry_mode} "
+            f"researcher={self.researcher_entry_mode}"
+        )
+
+
+class TopicDisplayOverride(models.Model):
+    """單一議題的顯示覆寫。
+
+    沒有對應列＝該議題全部沿用程式碼預設（雙角色可見、門檻用
+    SURVEY_CONFIGS 的值）。門檻欄位為 null 代表「沒被改過」，不是 0。
+    """
+
+    topic_id = models.PositiveIntegerField(unique=True)
+    visible_to_participant = models.BooleanField(default=True)
+    visible_to_researcher = models.BooleanField(default=True)
+    support_threshold = models.FloatField(
+        null=True, blank=True, help_text="null＝沿用 SURVEY_CONFIGS 的預設門檻"
+    )
+    oppose_threshold = models.FloatField(
+        null=True, blank=True, help_text="null＝沿用 SURVEY_CONFIGS 的預設門檻"
+    )
+    # related_name="+"：不需要從 User 反查設定紀錄，這裡只是留個最後修改者。
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"topic={self.topic_id}"
