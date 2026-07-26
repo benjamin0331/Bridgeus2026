@@ -266,3 +266,55 @@ class EntryModeAndTimeoutTests(TestCase):
         setting.save()
 
         self.assertEqual(get_match_fallback_timeout_seconds(), 120)
+
+
+class ThresholdOverrideAffectsStanceCategoryTests(TestCase):
+    """覆寫門檻後，立場分類的分界點要跟著移動。
+
+    預設 support=4.5 / oppose=3.5：4.6 是 support、3.4 是 oppose、4.0 是 neutral。
+    覆寫成 support=5.5 / oppose=2.5 後：4.6 與 3.4 都應變成 neutral。
+    """
+
+    def test_default_boundaries(self):
+        from api.views import _resolve_stance_category
+
+        self.assertEqual(
+            _resolve_stance_category(topic_id=102, user_stance_score=4.6), "support"
+        )
+        self.assertEqual(
+            _resolve_stance_category(topic_id=102, user_stance_score=3.4), "oppose"
+        )
+
+    def test_override_moves_boundaries(self):
+        from api.views import _resolve_stance_category
+
+        TopicDisplayOverride.objects.create(
+            topic_id=102, support_threshold=5.5, oppose_threshold=2.5
+        )
+
+        self.assertEqual(
+            _resolve_stance_category(topic_id=102, user_stance_score=4.6), "neutral"
+        )
+        self.assertEqual(
+            _resolve_stance_category(topic_id=102, user_stance_score=3.4), "neutral"
+        )
+        self.assertEqual(
+            _resolve_stance_category(topic_id=102, user_stance_score=5.6), "support"
+        )
+        self.assertEqual(
+            _resolve_stance_category(topic_id=102, user_stance_score=2.4), "oppose"
+        )
+
+    def test_override_takes_effect_without_restart(self):
+        """_get_survey_scoring_config 不能加快取，否則改設定要重啟才生效。"""
+        from api.views import _resolve_stance_category
+
+        self.assertEqual(
+            _resolve_stance_category(topic_id=102, user_stance_score=4.6), "support"
+        )
+
+        TopicDisplayOverride.objects.create(topic_id=102, support_threshold=5.5)
+
+        self.assertEqual(
+            _resolve_stance_category(topic_id=102, user_stance_score=4.6), "neutral"
+        )

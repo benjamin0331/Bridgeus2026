@@ -42,6 +42,7 @@ from .dialogue_topics import (
     get_dialogue_survey,
     get_dialogue_topics,
 )
+from .display_settings import get_stance_thresholds
 from .timeline_access import LOCKED_DETAIL, timeline_unlock_state
 from .serializers import (
     AccountCreateSerializer,
@@ -293,6 +294,9 @@ def _get_survey_scoring_config(topic_id: int) -> dict:
     scale_config = survey_config.get("scale", {})
     stance_rules = survey_config.get("stance_rules", {})
     likert_questions = survey_config.get("questions", [])
+    # 門檻走覆寫層：Supervisor 在設定頁調過的值優先於 SURVEY_CONFIGS。
+    # 這裡刻意不加快取，否則改設定要重啟服務才生效。
+    support_threshold, oppose_threshold = get_stance_thresholds(topic_id=topic_id)
 
     return {
         "scale_min": int(scale_config.get("min", 1)),
@@ -301,8 +305,8 @@ def _get_survey_scoring_config(topic_id: int) -> dict:
             str(question_id)
             for question_id in stance_rules.get("reverse_question_ids", [])
         },
-        "support_threshold": float(stance_rules.get("support_threshold", 4.5)),
-        "oppose_threshold": float(stance_rules.get("oppose_threshold", 3.5)),
+        "support_threshold": support_threshold,
+        "oppose_threshold": oppose_threshold,
         "neutral_score": float(
             (
                 float(scale_config.get("min", 1))
