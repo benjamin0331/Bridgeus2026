@@ -77,3 +77,43 @@ class TopicDisplayOverrideModelTests(TestCase):
 
         with self.assertRaises(IntegrityError):
             TopicDisplayOverride.objects.create(topic_id=102)
+
+
+class UserIsResearcherHelperTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from django.contrib.auth.models import Group
+
+        from api.permissions import RESEARCHER_GROUP_NAME
+
+        User = get_user_model()
+        self.group, _ = Group.objects.get_or_create(name=RESEARCHER_GROUP_NAME)
+        self.researcher = User.objects.create_user(
+            username="ds_researcher", password="pw-strong-12345"
+        )
+        self.researcher.groups.add(self.group)
+        self.participant = User.objects.create_user(
+            username="ds_participant", password="pw-strong-12345"
+        )
+
+    def test_group_member_is_researcher(self):
+        from api.permissions import user_is_researcher
+
+        self.assertTrue(user_is_researcher(self.researcher))
+
+    def test_plain_user_is_not_researcher(self):
+        from api.permissions import user_is_researcher
+
+        self.assertFalse(user_is_researcher(self.participant))
+
+    def test_none_is_not_researcher(self):
+        from api.permissions import user_is_researcher
+
+        self.assertFalse(user_is_researcher(None))
+
+    def test_anonymous_user_is_not_researcher(self):
+        from django.contrib.auth.models import AnonymousUser
+
+        from api.permissions import user_is_researcher
+
+        self.assertFalse(user_is_researcher(AnonymousUser()))
