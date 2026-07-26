@@ -28,7 +28,12 @@ def default_stance_thresholds(*, topic_id: int) -> tuple[float, float]:
 
 
 def get_stance_thresholds(*, topic_id: int) -> tuple[float, float]:
-    """實際生效的門檻，回傳 (support, oppose)。"""
+    """實際生效的門檻，回傳 (support, oppose)。
+
+    未知的 topic_id 不會報錯，會拿到模組層的保底值——沿用
+    views._get_survey_scoring_config 原本的行為，跟 is_topic_visible
+    對未知議題回 False 的嚴格度刻意不同。
+    """
     support, oppose = default_stance_thresholds(topic_id=topic_id)
 
     override = TopicDisplayOverride.objects.filter(topic_id=topic_id).first()
@@ -42,6 +47,12 @@ def get_stance_thresholds(*, topic_id: int) -> tuple[float, float]:
 
 
 def is_topic_visible(*, topic_id: int, is_researcher: bool) -> bool:
+    """這個角色看不看得到這個議題。
+
+    不在 TOPIC_CONFIGS 裡的 topic_id 一律 False——沒有覆寫列時預設可見，
+    但「不存在的議題」跟「沒被關掉的議題」是兩回事，不能因為查不到覆寫
+    就當成可見。
+    """
     if topic_id not in TOPIC_CONFIGS:
         return False
 
@@ -78,6 +89,7 @@ def visible_topics(*, is_researcher: bool) -> list[dict]:
 
 
 def get_entry_mode(*, is_researcher: bool) -> str:
+    """這個角色的對話入口形式，回傳 "mixed" 或 "split"。"""
     setting = PlatformDisplaySetting.load()
     return (
         setting.researcher_entry_mode if is_researcher
@@ -86,4 +98,5 @@ def get_entry_mode(*, is_researcher: bool) -> str:
 
 
 def get_match_fallback_timeout_seconds() -> int:
+    """配對等多久之後要詢問使用者改跟 AI 對話。設定值以分鐘存，這裡換算成秒。"""
     return PlatformDisplaySetting.load().match_fallback_timeout_minutes * 60

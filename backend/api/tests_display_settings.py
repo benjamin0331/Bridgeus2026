@@ -200,6 +200,21 @@ class TopicVisibilityTests(TestCase):
         self.assertFalse(is_topic_visible(topic_id=102, is_researcher=False))
         self.assertTrue(is_topic_visible(topic_id=102, is_researcher=True))
 
+    def test_hidden_from_researcher_only(self):
+        from api.display_settings import is_topic_visible, visible_topics
+
+        TopicDisplayOverride.objects.create(
+            topic_id=102, visible_to_participant=True, visible_to_researcher=False
+        )
+
+        participant_ids = {t["id"] for t in visible_topics(is_researcher=False)}
+        researcher_ids = {t["id"] for t in visible_topics(is_researcher=True)}
+
+        self.assertIn(102, participant_ids)
+        self.assertNotIn(102, researcher_ids)
+        self.assertTrue(is_topic_visible(topic_id=102, is_researcher=False))
+        self.assertFalse(is_topic_visible(topic_id=102, is_researcher=True))
+
     def test_unknown_topic_is_never_visible(self):
         from api.display_settings import is_topic_visible
 
@@ -230,6 +245,16 @@ class EntryModeAndTimeoutTests(TestCase):
         setting.save()
 
         self.assertEqual(get_entry_mode(is_researcher=False), "split")
+
+    def test_researcher_entry_mode_follows_setting(self):
+        from api.display_settings import get_entry_mode
+
+        setting = PlatformDisplaySetting.load()
+        setting.researcher_entry_mode = PlatformDisplaySetting.EntryMode.MIXED
+        setting.save()
+
+        self.assertEqual(get_entry_mode(is_researcher=True), "mixed")
+        self.assertEqual(get_entry_mode(is_researcher=False), "mixed")
 
     def test_fallback_timeout_seconds(self):
         from api.display_settings import get_match_fallback_timeout_seconds
