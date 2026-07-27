@@ -6,6 +6,8 @@ TOPIC_CONFIGS / SURVEY_CONFIGS 仍是議題內容的真實來源，這裡的 mod
 """
 
 from django.test import TestCase
+from rest_framework import status
+from rest_framework.test import APITestCase
 
 from api.models import PlatformDisplaySetting, TopicDisplayOverride
 
@@ -318,3 +320,49 @@ class ThresholdOverrideAffectsStanceCategoryTests(TestCase):
         self.assertEqual(
             _resolve_stance_category(topic_id=102, user_stance_score=4.6), "neutral"
         )
+
+
+class DialogueTopicListVisibilityTests(APITestCase):
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from django.contrib.auth.models import Group
+
+        from api.permissions import RESEARCHER_GROUP_NAME
+
+        User = get_user_model()
+        group, _ = Group.objects.get_or_create(name=RESEARCHER_GROUP_NAME)
+        self.researcher = User.objects.create_user(
+            username="topics_researcher", password="pw-strong-12345"
+        )
+        self.researcher.groups.add(group)
+        self.participant = User.objects.create_user(
+            username="topics_participant", password="pw-strong-12345"
+        )
+
+    def _topic_ids(self, user):
+        self.client.force_authenticate(user=user)
+        response = self.client.get("/api/dialogue/topics/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return {row["id"] for row in response.data}
+
+    def test_both_roles_see_all_topics_by_default(self):
+        from api.dialogue_topics import TOPIC_CONFIGS
+
+        self.assertEqual(self._topic_ids(self.participant), set(TOPIC_CONFIGS))
+        self.assertEqual(self._topic_ids(self.researcher), set(TOPIC_CONFIGS))
+
+    def test_topic_hidden_from_participant_only(self):
+        TopicDisplayOverride.objects.create(
+            topic_id=102, visible_to_participant=False, visible_to_researcher=True
+        )
+
+        self.assertNotIn(102, self._topic_ids(self.participant))
+        self.assertIn(102, self._topic_ids(self.researcher))
+
+    def test_topic_hidden_from_everyone(self):
+        TopicDisplayOverride.objects.create(
+            topic_id=102, visible_to_participant=False, visible_to_researcher=False
+        )
+
+        self.assertNotIn(102, self._topic_ids(self.participant))
+        self.assertNotIn(102, self._topic_ids(self.researcher))

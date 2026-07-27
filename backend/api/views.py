@@ -21,7 +21,12 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from apps.matching.services.semantic import build_q9_embedding
 from apps.summary.models import ViewpointNode
 
-from .permissions import IsGodotServiceToken, IsResearcher, RESEARCHER_GROUP_NAME
+from .permissions import (
+    IsGodotServiceToken,
+    IsResearcher,
+    RESEARCHER_GROUP_NAME,
+    user_is_researcher,
+)
 
 from .models import (
     AIConversation,
@@ -42,7 +47,7 @@ from .dialogue_topics import (
     get_dialogue_survey,
     get_dialogue_topics,
 )
-from .display_settings import get_stance_thresholds
+from .display_settings import get_stance_thresholds, visible_topics
 from .timeline_access import LOCKED_DETAIL, timeline_unlock_state
 from .serializers import (
     AccountCreateSerializer,
@@ -880,11 +885,19 @@ class AIConversationDetail(generics.RetrieveUpdateDestroyAPIView):
 
 
 class DialogueTopicListView(APIView):
+    """議題清單，依請求者角色過濾。
+
+    刻意不使用 JWTStatelessUserAuthentication：它回傳的 TokenUser.groups 是
+    EmptyManager，user_is_researcher() 對它永遠是 False，研究者會被當成一般
+    使用者而看不到只對研究者開放的議題。這裡需要真正的 User，所以吃 settings
+    裡的預設 JWTAuthentication。
+    """
+
     permission_classes = [permissions.IsAuthenticated]
-    authentication_classes = [JWTStatelessUserAuthentication]
 
     def get(self, request):
-        serializer = DialogueTopicSerializer(get_dialogue_topics(), many=True)
+        topics = visible_topics(is_researcher=user_is_researcher(request.user))
+        serializer = DialogueTopicSerializer(topics, many=True)
         return Response(serializer.data)
 
 
