@@ -996,88 +996,122 @@ class DialogueStanceProfileView(APIView):
         )
 
 
+def _create_ai_dialogue_session(
+    *,
+    user,
+    topic_id: int,
+    survey_answers: dict,
+    survey_open_answers: dict,
+    topic_title: str | None = None,
+    topic_description: str | None = None,
+    user_initial_argument: str | None = None,
+) -> dict:
+    """建立一場 AI 對話 session，回傳 API 回應用的 payload。
+
+    分流端點、fallback 端點與 DialogueSessionCreateView 共用這一份。
+    topic_title / topic_description / user_initial_argument 沒給時一律由後端
+    從 TOPIC_CONFIGS 與問卷 Q9 補齊——混合入口不接受客戶端送這些欄位。
+    """
+    _, _, DialogueSession = _get_dialogue_runtime()
+
+    topic_meta = TOPIC_CONFIGS.get(topic_id, {})
+    resolved_open_answers = _resolve_open_answers(
+        topic_id=topic_id,
+        survey_open_answers=survey_open_answers,
+    )
+    if user_initial_argument is None:
+        user_initial_argument = resolved_open_answers.get("Q9", "")
+
+    topic_config = _build_topic_config(
+        topic_id=topic_id,
+        topic_title=topic_title or topic_meta.get("title", ""),
+        topic_description=(
+            topic_description
+            if topic_description is not None
+            else topic_meta.get("topic_description", "")
+        ),
+        survey_answers=survey_answers,
+        survey_open_answers=survey_open_answers,
+        user_initial_argument=user_initial_argument,
+    )
+
+    # 只有問卷真的填了才寫 profile，避免用空答案的中立預設值蓋掉真實立場。
+    if survey_answers:
+        _upsert_user_stance_profile(
+            user=user,
+            topic_id=topic_id,
+            survey_answers=survey_answers,
+            survey_open_answers=topic_config["survey_open_answers"],
+            user_stance_score=topic_config["user_stance_score"],
+            q9_embedding=topic_config["q9_embedding"],
+        )
+
+    session = DialogueSession(
+        topic=topic_config["topic"],
+        topic_description=topic_config["topic_description"],
+        agent_stance=topic_config["agent_stance"],
+        agent_stance_summary=topic_config["agent_stance_summary"],
+        user_stance_label=topic_config["user_stance_label"],
+        user_stance_score=topic_config["user_stance_score"],
+        user_initial_argument=topic_config["user_initial_argument"],
+        user_reasoning_mode=topic_config["user_reasoning_mode"],
+    )
+
+    session_id = uuid4().hex
+    session_record = {
+        "user_id": user.id,
+        "session_id": session_id,
+        "topic_id": topic_id,
+        "topic_title": topic_config["topic"],
+        "collection_name": topic_config["collection_name"],
+        "survey_context": {
+            "survey_answers": survey_answers,
+            "survey_open_answers": topic_config["survey_open_answers"],
+            "semantic_vector_interface": topic_config["semantic_vector_interface"],
+            "q9_embedding": topic_config["q9_embedding"],
+        },
+        "session": session.to_dict(),
+    }
+    _cache_dialogue_session_record(session_record)
+    _persist_dialogue_session_record(session_record)
+    _close_superseded_dialogue_sessions(
+        user_id=user.id,
+        topic_id=topic_id,
+        keep_session_id=session_id,
+    )
+
+    return {
+        "session_id": session_id,
+        "dialogue_phase": session.dialogue_phase.value,
+        "stance_score": session.user_stance_score,
+        "stance_category": _resolve_stance_category(
+            topic_id=topic_id,
+            user_stance_score=session.user_stance_score,
+        ),
+        "stance_label": session.user_stance_label,
+        "stance_drift": None,
+        "history": session.to_dict()["history"],
+    }
+
+
 class DialogueSessionCreateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        _, _, DialogueSession = _get_dialogue_runtime()
         serializer = DialogueSessionCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         validated = serializer.validated_data
 
-        topic_config = _build_topic_config(
+        payload = _create_ai_dialogue_session(
+            user=request.user,
             topic_id=validated["topic_id"],
-            topic_title=validated["topic_title"],
-            topic_description=validated.get("topic_description", ""),
             survey_answers=validated.get("survey_answers", {}),
             survey_open_answers=validated.get("survey_open_answers", {}),
+            topic_title=validated["topic_title"],
+            topic_description=validated.get("topic_description", ""),
             user_initial_argument=validated.get("user_initial_argument", ""),
         )
-
-        # Persist the pre-survey stance so a later "new dialogue" can reuse it.
-        # Only when the survey was actually filled, to avoid overwriting a real
-        # profile with the neutral default of an empty answer set.
-        if validated.get("survey_answers"):
-            _upsert_user_stance_profile(
-                user=request.user,
-                topic_id=validated["topic_id"],
-                survey_answers=validated["survey_answers"],
-                survey_open_answers=topic_config["survey_open_answers"],
-                user_stance_score=topic_config["user_stance_score"],
-                q9_embedding=topic_config["q9_embedding"],
-            )
-
-        session = DialogueSession(
-            topic=topic_config["topic"],
-            topic_description=topic_config["topic_description"],
-            agent_stance=topic_config["agent_stance"],
-            agent_stance_summary=topic_config["agent_stance_summary"],
-            user_stance_label=topic_config["user_stance_label"],
-            user_stance_score=topic_config["user_stance_score"],
-            user_initial_argument=topic_config["user_initial_argument"],
-            user_reasoning_mode=topic_config["user_reasoning_mode"],
-        )
-
-        session_id = uuid4().hex
-        session_record = {
-            "user_id": request.user.id,
-            "session_id": session_id,
-            "topic_id": validated["topic_id"],
-            "topic_title": topic_config["topic"],
-            "collection_name": topic_config["collection_name"],
-            "survey_context": {
-                "survey_answers": validated.get("survey_answers", {}),
-                "survey_open_answers": topic_config["survey_open_answers"],
-                "semantic_vector_interface": topic_config[
-                    "semantic_vector_interface"
-                ],
-                "q9_embedding": topic_config["q9_embedding"],
-            },
-            "session": session.to_dict(),
-        }
-        _cache_dialogue_session_record(session_record)
-        _persist_dialogue_session_record(session_record)
-        _close_superseded_dialogue_sessions(
-            user_id=request.user.id,
-            topic_id=validated["topic_id"],
-            keep_session_id=session_id,
-        )
-
-        return Response(
-            {
-                "session_id": session_id,
-                "dialogue_phase": session.dialogue_phase.value,
-                "stance_score": session.user_stance_score,
-                "stance_category": _resolve_stance_category(
-                    topic_id=validated["topic_id"],
-                    user_stance_score=session.user_stance_score,
-                ),
-                "stance_label": session.user_stance_label,
-                "stance_drift": None,
-                "history": session.to_dict()["history"],
-            },
-            status=status.HTTP_201_CREATED,
-        )
+        return Response(payload, status=status.HTTP_201_CREATED)
 
 
 class DialogueSessionLatestView(APIView):

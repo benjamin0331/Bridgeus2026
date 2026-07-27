@@ -105,3 +105,51 @@ class CanEnterHumanMatchingTests(TestCase):
                 can_enter_human_matching(category),
                 _can_enter_human_matching(category),
             )
+
+
+class CreateAiDialogueSessionHelperTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="ai_session_owner", password="pw-strong-12345"
+        )
+
+    def test_creates_session_and_profile(self):
+        from api.models import DialogueSessionRecord, UserStanceProfile
+        from api.views import _create_ai_dialogue_session
+
+        payload = _create_ai_dialogue_session(
+            user=self.user,
+            topic_id=102,
+            survey_answers={str(i): 4 for i in range(1, 9)},
+            survey_open_answers={"Q9": "我覺得需要更多討論。", "Q10": "對方會說安全。"},
+        )
+
+        self.assertIn("session_id", payload)
+        self.assertEqual(payload["stance_category"], "neutral")
+        self.assertTrue(
+            DialogueSessionRecord.objects.filter(
+                user=self.user, session_id=payload["session_id"]
+            ).exists()
+        )
+        self.assertTrue(
+            UserStanceProfile.objects.filter(user=self.user, topic_id=102).exists()
+        )
+
+    def test_topic_metadata_defaults_come_from_topic_configs(self):
+        """混合入口不送 topic_title/description，後端要自己從 TOPIC_CONFIGS 補。"""
+        from api.dialogue_topics import TOPIC_CONFIGS
+        from api.models import DialogueSessionRecord
+        from api.views import _create_ai_dialogue_session
+
+        payload = _create_ai_dialogue_session(
+            user=self.user,
+            topic_id=102,
+            survey_answers={str(i): 4 for i in range(1, 9)},
+            survey_open_answers={"Q9": "我覺得需要更多討論。"},
+        )
+
+        record = DialogueSessionRecord.objects.get(session_id=payload["session_id"])
+        self.assertEqual(record.topic_id, 102)
+        self.assertEqual(record.user_id, self.user.id)
+        self.assertEqual(payload["session_id"], record.session_id)
+        self.assertIn("核能", TOPIC_CONFIGS[102]["title"])
