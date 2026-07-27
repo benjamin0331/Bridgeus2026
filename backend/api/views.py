@@ -244,18 +244,17 @@ def _dialogue_session_response_payload(
     *,
     session_record: dict,
     restored_from: str,
+    user_id: int | None = None,
 ) -> dict:
     session_state = session_record.get("session") or {}
     history = session_state.get("history") or []
     stance_drift = session_state.get("stance_drift")
     stance_score = session_state.get("user_stance_score")
-    try:
-        stance_category = _resolve_stance_category(
-            topic_id=int(session_record.get("topic_id")),
-            user_stance_score=float(stance_score),
-        )
-    except (TypeError, ValueError):
-        stance_category = None
+    stance_category = _display_stance_category(
+        user_id=user_id,
+        topic_id=session_record.get("topic_id"),
+        stance_score=stance_score,
+    )
 
     return {
         "session_id": session_record["session_id"],
@@ -386,6 +385,40 @@ def _resolve_stance_category(*, topic_id: int, user_stance_score: float) -> str:
     if user_stance_score < scoring_config["oppose_threshold"]:
         return "oppose"
     return "neutral"
+
+
+def _display_stance_category(
+    *, user_id: int | None, topic_id, stance_score
+) -> str | None:
+    """顯示用的立場分類：優先取已儲存的值，取不到才即時重算。
+
+    門檻是 Supervisor 可調的。若顯示時一律用當下門檻重算，改一次門檻就會
+    回頭改變所有舊對話畫面上的立場分類——那不是「調設定」，那是改寫既有
+    實驗資料的呈現。已存的分類才是這場對話當初實際被分到的組別。
+
+    註：階段二會在這裡優先讀 DialogueEntryAssignment.stance_category
+    （那是分流當下的權威紀錄），UserStanceProfile 退為第二順位。
+    """
+    try:
+        topic_id = int(topic_id)
+    except (TypeError, ValueError):
+        return None
+
+    if user_id is not None:
+        stored = (
+            UserStanceProfile.objects.filter(user_id=user_id, topic_id=topic_id)
+            .values_list("stance_category", flat=True)
+            .first()
+        )
+        if stored:
+            return stored
+
+    try:
+        return _resolve_stance_category(
+            topic_id=topic_id, user_stance_score=float(stance_score)
+        )
+    except (TypeError, ValueError):
+        return None
 
 
 def _resolve_stances(
@@ -1080,6 +1113,7 @@ class DialogueSessionLatestView(APIView):
             _dialogue_session_response_payload(
                 session_record=session_record,
                 restored_from=restored_from,
+                user_id=request.user.id,
             )
         )
 
@@ -1101,6 +1135,7 @@ class DialogueSessionDetailView(APIView):
             _dialogue_session_response_payload(
                 session_record=session_record,
                 restored_from=restored_from,
+                user_id=request.user.id,
             )
         )
 
@@ -1189,9 +1224,10 @@ class DialogueSessionReplyView(APIView):
                 "chunks": chunks,
                 "dialogue_phase": session.dialogue_phase.value,
                 "stance_score": session.user_stance_score,
-                "stance_category": _resolve_stance_category(
+                "stance_category": _display_stance_category(
+                    user_id=request.user.id,
                     topic_id=session_record.get("topic_id"),
-                    user_stance_score=session.user_stance_score,
+                    stance_score=session.user_stance_score,
                 ),
                 "stance_label": session.user_stance_label,
                 "stance_drift": stance_drift,

@@ -389,3 +389,92 @@ class DialogueTopicListVisibilityTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn(102, {row["id"] for row in response.data})
+
+
+class StoredStanceCategoryTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+
+        from api.models import UserStanceProfile
+
+        User = get_user_model()
+        self.user = User.objects.create_user(
+            username="stance_owner", password="pw-strong-12345"
+        )
+        # 4.6 在預設門檻下是 support，且已經被存起來
+        UserStanceProfile.objects.create(
+            user=self.user,
+            topic_id=102,
+            stance_score="4.60",
+            stance_category="support",
+            survey_answers={},
+            survey_open_answers={},
+        )
+
+    def test_prefers_stored_category_over_recompute(self):
+        from api.views import _display_stance_category
+
+        # 門檻改成 5.5：即時重算會變 neutral，但已存的是 support
+        TopicDisplayOverride.objects.create(topic_id=102, support_threshold=5.5)
+
+        self.assertEqual(
+            _display_stance_category(
+                user_id=self.user.id, topic_id=102, stance_score=4.6
+            ),
+            "support",
+        )
+
+    def test_falls_back_to_recompute_without_profile(self):
+        from api.views import _display_stance_category
+
+        self.assertEqual(
+            _display_stance_category(user_id=self.user.id, topic_id=103, stance_score=4.6),
+            "support",
+        )
+
+    def test_returns_none_for_unusable_score(self):
+        from api.views import _display_stance_category
+
+        self.assertIsNone(
+            _display_stance_category(user_id=self.user.id, topic_id=103, stance_score=None)
+        )
+
+
+class ThresholdChangeDoesNotRewriteHistoryTests(TestCase):
+    def test_existing_profile_category_survives_threshold_change(self):
+        from django.contrib.auth import get_user_model
+
+        from api.models import UserStanceProfile
+
+        User = get_user_model()
+        user = User.objects.create_user(
+            username="history_owner", password="pw-strong-12345"
+        )
+        UserStanceProfile.objects.create(
+            user=user,
+            topic_id=102,
+            stance_score="4.60",
+            stance_category="support",
+            survey_answers={},
+            survey_open_answers={},
+        )
+
+        TopicDisplayOverride.objects.create(
+            topic_id=102, support_threshold=5.5, oppose_threshold=2.5
+        )
+
+        profile = UserStanceProfile.objects.get(user=user, topic_id=102)
+        self.assertEqual(profile.stance_category, "support")
+
+        from api.views import _dialogue_session_response_payload
+
+        payload = _dialogue_session_response_payload(
+            session_record={
+                "session_id": "abc123",
+                "topic_id": 102,
+                "session": {"user_stance_score": 4.6, "history": []},
+            },
+            restored_from="cache",
+            user_id=user.id,
+        )
+        self.assertEqual(payload["stance_category"], "support")
