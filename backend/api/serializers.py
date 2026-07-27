@@ -548,6 +548,7 @@ class PasswordResetSerializer(serializers.Serializer):
             dj_validate_password(value)
         except DjangoValidationError as exc:
             raise serializers.ValidationError(list(exc.messages))
+        return value
 
 
 class PlatformDisplaySettingSerializer(serializers.ModelSerializer):
@@ -610,4 +611,3 @@ class TopicDisplayOverrideSerializer(serializers.Serializer):
             raise serializers.ValidationError("反對門檻必須小於支持門檻。")
 
         return attrs
-        return value
