@@ -546,3 +546,221 @@ class FallbackAcceptTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         assignment.refresh_from_db()
         self.assertIsNotNone(assignment.fallback_offered_at)
+
+
+class EntryGateTests(APITestCase):
+    def setUp(self):
+        self.participant = User.objects.create_user(
+            username="gated_participant", password="pw-strong-12345"
+        )
+        self.researcher = make_researcher("gated_researcher")
+
+    def _join_payload(self):
+        return {
+            "topic_id": 102,
+            "survey_answers": SUPPORT_ANSWERS,
+            "survey_open_answers": OPEN_ANSWERS,
+        }
+
+    def _session_payload(self):
+        return {
+            "topic_id": 102,
+            "topic_title": "台灣核能議題討論",
+            "survey_answers": NEUTRAL_ANSWERS,
+            "survey_open_answers": OPEN_ANSWERS,
+        }
+
+    def test_mixed_mode_blocks_direct_join_without_assignment(self):
+        self.client.force_authenticate(user=self.participant)
+
+        response = self.client.post(
+            "/api/matching/join/", self._join_payload(), format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.data["detail"], "請從議題頁面開始對話。")
+
+    def test_mixed_mode_blocks_direct_session_without_assignment(self):
+        self.client.force_authenticate(user=self.participant)
+
+        response = self.client.post(
+            "/api/dialogue/sessions/", self._session_payload(), format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_mixed_mode_blocks_match_routed_user_from_ai_session(self):
+        self.client.force_authenticate(user=self.participant)
+        self.client.post(
+            "/api/dialogue/entry/", self._join_payload(), format="json"
+        )
+
+        response = self.client.post(
+            "/api/dialogue/sessions/", self._session_payload(), format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_ai_routed_user_may_create_session(self):
+        self.client.force_authenticate(user=self.participant)
+        self.client.post(
+            "/api/dialogue/entry/",
+            {
+                "topic_id": 102,
+                "survey_answers": NEUTRAL_ANSWERS,
+                "survey_open_answers": OPEN_ANSWERS,
+            },
+            format="json",
+        )
+
+        response = self.client.post(
+            "/api/dialogue/sessions/", self._session_payload(), format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_match_routed_user_may_create_session_after_fallback(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from api.models import MatchQueueEntry
+
+        self.client.force_authenticate(user=self.participant)
+        self.client.post(
+            "/api/dialogue/entry/", self._join_payload(), format="json"
+        )
+        MatchQueueEntry.objects.filter(
+            user=self.participant, topic_id=102
+        ).update(waiting_started_at=timezone.now() - timedelta(seconds=400))
+        self.client.post(
+            "/api/dialogue/entry/fallback/", {"topic_id": 102}, format="json"
+        )
+
+        response = self.client.post(
+            "/api/dialogue/sessions/", self._session_payload(), format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_match_routed_user_may_call_join(self):
+        self.client.force_authenticate(user=self.participant)
+        self.client.post(
+            "/api/dialogue/entry/", self._join_payload(), format="json"
+        )
+
+        response = self.client.post(
+            "/api/matching/join/", self._join_payload(), format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_researcher_in_split_mode_is_not_gated(self):
+        self.client.force_authenticate(user=self.researcher)
+
+        join_response = self.client.post(
+            "/api/matching/join/", self._join_payload(), format="json"
+        )
+        session_response = self.client.post(
+            "/api/dialogue/sessions/", self._session_payload(), format="json"
+        )
+
+        self.assertEqual(join_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(session_response.status_code, status.HTTP_201_CREATED)
+
+    def test_participant_in_split_mode_is_not_gated(self):
+        from api.models import PlatformDisplaySetting
+
+        setting = PlatformDisplaySetting.load()
+        setting.participant_entry_mode = PlatformDisplaySetting.EntryMode.SPLIT
+        setting.save()
+
+        self.client.force_authenticate(user=self.participant)
+        response = self.client.post(
+            "/api/dialogue/sessions/", self._session_payload(), format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_gate_message_does_not_reveal_the_routing_rule(self):
+        """訊息不能透露分流規則——受試者若知道自己被分到哪組會影響作答。"""
+        self.client.force_authenticate(user=self.participant)
+
+        response = self.client.post(
+            "/api/matching/join/", self._join_payload(), format="json"
+        )
+
+        detail = response.data["detail"]
+        for leak in ("中立", "極端", "立場", "分流", "support", "oppose", "neutral"):
+            self.assertNotIn(leak, detail)
+
+
+class MeEndpointTests(APITestCase):
+    def test_participant_sees_mixed_entry_mode(self):
+        participant = User.objects.create_user(
+            username="me_participant", password="pw-strong-12345"
+        )
+        self.client.force_authenticate(user=participant)
+
+        response = self.client.get("/api/me/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["id"], participant.id)
+        self.assertEqual(response.data["username"], "me_participant")
+        self.assertFalse(response.data["is_researcher"])
+        self.assertEqual(response.data["entry_mode"], "mixed")
+
+    def test_researcher_sees_split_entry_mode(self):
+        researcher = make_researcher("me_researcher")
+        self.client.force_authenticate(user=researcher)
+
+        response = self.client.get("/api/me/")
+
+        self.assertTrue(response.data["is_researcher"])
+        self.assertEqual(response.data["entry_mode"], "split")
+
+    def test_entry_mode_follows_current_setting_not_token(self):
+        from api.models import PlatformDisplaySetting
+
+        participant = User.objects.create_user(
+            username="me_switcher", password="pw-strong-12345"
+        )
+        setting = PlatformDisplaySetting.load()
+        setting.participant_entry_mode = PlatformDisplaySetting.EntryMode.SPLIT
+        setting.save()
+
+        self.client.force_authenticate(user=participant)
+        response = self.client.get("/api/me/")
+
+        self.assertEqual(response.data["entry_mode"], "split")
+
+    def test_requires_authentication(self):
+        response = self.client.get("/api/me/")
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_role_is_read_from_db_not_from_token_claim(self):
+        """用真的 JWT 打，並在簽出 token 之後才把使用者降級。
+
+        force_authenticate 會跳過 authentication_classes，測不到 token 相關
+        行為。這裡先給研究者簽一個 is_researcher=true 的 token，然後把他移出
+        研究者 Group——/api/me/ 必須回報降級後的真實狀態，而不是 token 裡的快照。
+        """
+        from rest_framework_simplejwt.tokens import AccessToken
+
+        from api.permissions import RESEARCHER_GROUP_NAME
+        from api.serializers import BridgeUsTokenObtainPairSerializer
+
+        researcher = make_researcher("me_demoted")
+        token = str(BridgeUsTokenObtainPairSerializer.get_token(researcher).access_token)
+
+        from django.contrib.auth.models import Group
+
+        researcher.groups.remove(Group.objects.get(name=RESEARCHER_GROUP_NAME))
+
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = self.client.get("/api/me/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["is_researcher"])
+        self.assertEqual(response.data["entry_mode"], "mixed")

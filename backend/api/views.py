@@ -1158,6 +1158,12 @@ class DialogueSessionCreateView(APIView):
         serializer.is_valid(raise_exception=True)
         validated = serializer.validated_data
 
+        gate = _entry_gate_response(
+            user=request.user, topic_id=validated["topic_id"], target="ai"
+        )
+        if gate is not None:
+            return gate
+
         payload = _create_ai_dialogue_session(
             user=request.user,
             topic_id=validated["topic_id"],
@@ -1365,6 +1371,65 @@ class DialogueEntryFallbackView(APIView):
             survey_open_answers=profile.survey_open_answers or {},
         )
         return Response({"route": "ai", **payload}, status=status.HTTP_201_CREATED)
+
+
+ENTRY_GATE_DETAIL = "請從議題頁面開始對話。"
+
+
+def _entry_gate_response(*, user, topic_id: int, target: str):
+    """混合入口下擋掉繞過分流的直接呼叫；回傳 Response 代表擋下，None 代表放行。
+
+    ?mode= 只是 query string，不在後端擋的話受試者改個網址就能自己換組，
+    實驗分組就不可信了。訊息刻意不說明分流規則——講了等於告訴受試者
+    自己被分到哪一組，會影響後續作答。
+
+    target: "match" 或 "ai"
+    """
+    if get_entry_mode(is_researcher=user_is_researcher(user)) != (
+        PlatformDisplaySetting.EntryMode.MIXED
+    ):
+        return None
+
+    assignment = DialogueEntryAssignment.objects.filter(
+        user=user, topic_id=topic_id
+    ).first()
+    if assignment is None:
+        return Response(
+            {"detail": ENTRY_GATE_DETAIL}, status=status.HTTP_403_FORBIDDEN
+        )
+
+    if target == "match":
+        allowed = assignment.route == DialogueEntryAssignment.Route.MATCH
+    else:
+        allowed = (
+            assignment.route == DialogueEntryAssignment.Route.AI
+            or assignment.fallback_accepted_at is not None
+        )
+
+    if allowed:
+        return None
+    return Response({"detail": ENTRY_GATE_DETAIL}, status=status.HTTP_403_FORBIDDEN)
+
+
+class MeView(APIView):
+    """目前登入者的即時身分與入口模式。
+
+    前端不從 JWT 的 is_researcher claim 讀這些：那個 claim 是簽發當下的快照，
+    使用者被降級後仍會隨著 refresh token 存活最長 7 天。這裡每次都查 DB。
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        is_researcher = user_is_researcher(request.user)
+        return Response(
+            {
+                "id": request.user.id,
+                "username": request.user.username,
+                "is_researcher": is_researcher,
+                "entry_mode": get_entry_mode(is_researcher=is_researcher),
+            }
+        )
 
 
 class DialogueSessionLatestView(APIView):
@@ -2293,6 +2358,12 @@ class MatchingJoinView(APIView):
         serializer = MatchingJoinSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         validated = serializer.validated_data
+
+        gate = _entry_gate_response(
+            user=request.user, topic_id=validated["topic_id"], target="match"
+        )
+        if gate is not None:
+            return gate
 
         stance_score = _compute_user_stance_score(
             topic_id=validated["topic_id"],

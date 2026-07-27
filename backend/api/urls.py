@@ -113,6 +113,7 @@ urlpatterns = [
     ),
     path('guest/', views.GuestLoginView.as_view()),
     path('issues/', views.IssueListCreateView.as_view()),
+    path('me/', views.MeView.as_view()),
     path('titles/me/', views.TitleMeView.as_view()),
     path(
         'issues/<int:issue_id>/reactions/',
