@@ -838,6 +838,12 @@ class DialogueEntryAssignment(models.Model):
                 fields=["user", "topic_id"],
                 name="uniq_entry_assignment_user_topic",
             ),
+            # 跟 UserStanceProfile／MatchQueueEntry 一致。這筆是「為什麼這個人
+            # 被分到這一組」的稽核紀錄，範圍外的分數比在那兩張表更沒有意義。
+            models.CheckConstraint(
+                condition=Q(stance_score__gte=1) & Q(stance_score__lte=7),
+                name="entry_assignment_stance_score_between_1_and_7",
+            ),
         ]
 
     def __str__(self):

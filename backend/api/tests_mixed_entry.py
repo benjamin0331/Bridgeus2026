@@ -64,6 +64,23 @@ class DialogueEntryAssignmentModelTests(TestCase):
             DialogueEntryAssignment.objects.filter(user=self.user).count(), 2
         )
 
+    def test_stance_score_must_be_within_scale(self):
+        """跟 UserStanceProfile／MatchQueueEntry 一樣有 [1,7] 的 DB 約束。
+
+        這筆是「為什麼這個人被分到這一組」的稽核紀錄，範圍外的分數代表
+        分流依據本身壞了，不能默默存進去。
+        """
+        from django.db import IntegrityError, transaction
+
+        # 每次嘗試各自包一層 atomic：IntegrityError 會讓當前交易進入不可用
+        # 狀態，不隔離的話第二次拋的是 TransactionManagementError，assertRaises
+        # 接不到，測試會假性失敗。
+        for bad_score in ("0.99", "7.01"):
+            with self.subTest(stance_score=bad_score):
+                with self.assertRaises(IntegrityError):
+                    with transaction.atomic():
+                        self._create(topic_id=104, stance_score=bad_score)
+
 
 class CanEnterHumanMatchingTests(TestCase):
     def test_neutral_cannot_enter_matching(self):
