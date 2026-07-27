@@ -599,6 +599,23 @@ class DisplaySettingsApiTests(APITestCase):
         self.assertTrue(response.data["is_threshold_overridden"])
         self.assertIn("既有資料不會重算", response.data["warning"])
 
+    def test_form_encoded_patch_leaves_the_other_flag_alone(self):
+        """只改研究者可見性時，一般使用者可見性必須維持 True。
+
+        DRF 的 BooleanField.get_value() 在 form 編碼的請求裡，會把沒送到的欄位
+        補成 False（HTML 表單的未勾選 checkbox 不會出現在 payload）。所以這個
+        測試刻意不加 format="json"——它守的就是那個坑：view 必須用 request.data
+        判斷呼叫端到底提了哪些欄位，不能用 validated_data。
+        """
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.patch(
+            "/api/settings/display/topics/102/", {"visible_to_researcher": False}
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["visible_to_participant"])
+        self.assertFalse(response.data["visible_to_researcher"])
+
     def test_visibility_only_patch_has_no_warning(self):
         self.client.force_authenticate(user=self.researcher)
         response = self.client.patch(

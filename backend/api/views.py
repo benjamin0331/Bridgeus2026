@@ -1791,6 +1791,11 @@ class DisplaySettingsTopicView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
+        # 「呼叫端有沒有提到這個欄位」一律看 request.data，不看 validated_data。
+        # DRF 的 BooleanField.get_value() 在 form 編碼的請求裡，會把沒送到的欄位
+        # 補成 False（因為 HTML 表單的未勾選 checkbox 不會出現在 payload）。若用
+        # validated_data 判斷，一個只想改 visible_to_participant 的 form 請求會
+        # 順手把 visible_to_researcher 靜默關掉。
         override, _ = TopicDisplayOverride.objects.get_or_create(topic_id=topic_id)
         for field in (
             "visible_to_participant",
@@ -1798,13 +1803,13 @@ class DisplaySettingsTopicView(APIView):
             "support_threshold",
             "oppose_threshold",
         ):
-            if field in data:
+            if field in request.data and field in data:
                 setattr(override, field, data[field])
         override.updated_by = request.user
         override.save()
 
         payload = _topic_display_row(topic_id, override=override)
-        if "support_threshold" in data or "oppose_threshold" in data:
+        if "support_threshold" in request.data or "oppose_threshold" in request.data:
             payload["warning"] = self.THRESHOLD_WARNING
         return Response(payload)
 
