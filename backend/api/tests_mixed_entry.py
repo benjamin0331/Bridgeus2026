@@ -7,6 +7,8 @@
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.test import TestCase
+from rest_framework import status
+from rest_framework.test import APITestCase
 
 from api.models import DialogueEntryAssignment
 from api.permissions import RESEARCHER_GROUP_NAME
@@ -178,4 +180,158 @@ class CreateAiDialogueSessionHelperTests(TestCase):
         )
 
         record = DialogueSessionRecord.objects.get(session_id=payload["session_id"])
+        self.assertEqual(record.topic_title, TOPIC_CONFIGS[102]["title"])
+
+
+# 議題 102 的反向題是 Q2/Q4/Q5/Q6（SURVEY_CONFIGS 的 reverse_question_ids）。
+# 全部答 4 → 反轉後仍是 4 → 平均 4.0 → neutral。
+NEUTRAL_ANSWERS = {str(i): 4 for i in range(1, 9)}
+# 正向題答 7、反向題答 1 → 反轉後也是 7 → 平均 7.0 → support。
+SUPPORT_ANSWERS = {"1": 7, "2": 1, "3": 7, "4": 1, "5": 1, "6": 1, "7": 7, "8": 7}
+OPEN_ANSWERS = {"Q9": "我認為需要更多公共討論才能決定。", "Q10": "對方會強調供電穩定。"}
+
+
+class DialogueEntryRoutingTests(APITestCase):
+    def setUp(self):
+        self.participant = User.objects.create_user(
+            username="entry_participant", password="pw-strong-12345"
+        )
+        self.client.force_authenticate(user=self.participant)
+
+    def _enter(self, answers, topic_id=102):
+        return self.client.post(
+            "/api/dialogue/entry/",
+            {
+                "topic_id": topic_id,
+                "survey_answers": answers,
+                "survey_open_answers": OPEN_ANSWERS,
+            },
+            format="json",
+        )
+
+    def test_neutral_stance_routes_to_ai(self):
+        response = self._enter(NEUTRAL_ANSWERS)
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["route"], "ai")
+        self.assertIn("session_id", response.data)
+
+        assignment = DialogueEntryAssignment.objects.get(
+            user=self.participant, topic_id=102
+        )
+        self.assertEqual(assignment.route, DialogueEntryAssignment.Route.AI)
+        self.assertEqual(assignment.stance_category, "neutral")
+        self.assertEqual(assignment.entry_mode_at_assignment, "mixed")
+
+    def test_extreme_stance_routes_to_match(self):
+        response = self._enter(SUPPORT_ANSWERS)
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["route"], "match")
+        self.assertEqual(response.data["status"], "matching")
+
+        assignment = DialogueEntryAssignment.objects.get(
+            user=self.participant, topic_id=102
+        )
+        self.assertEqual(assignment.route, DialogueEntryAssignment.Route.MATCH)
+        self.assertEqual(assignment.stance_category, "support")
+
+    def test_assignment_records_thresholds_in_force(self):
+        from api.models import TopicDisplayOverride
+
+        TopicDisplayOverride.objects.create(
+            topic_id=102, support_threshold=5.5, oppose_threshold=2.5
+        )
+
+        self._enter(NEUTRAL_ANSWERS)
+
+        assignment = DialogueEntryAssignment.objects.get(
+            user=self.participant, topic_id=102
+        )
+        self.assertEqual(assignment.support_threshold, 5.5)
+        self.assertEqual(assignment.oppose_threshold, 2.5)
+
+    def test_threshold_override_changes_routing(self):
+        """預設門檻下 SUPPORT_ANSWERS 走配對；把 support 門檻拉到 7.5 後走 AI。"""
+        from api.models import TopicDisplayOverride
+
+        TopicDisplayOverride.objects.create(topic_id=102, support_threshold=7.5)
+
+        response = self._enter(SUPPORT_ANSWERS)
+
+        self.assertEqual(response.data["route"], "ai")
+
+    def test_hidden_topic_returns_404(self):
+        from api.models import TopicDisplayOverride
+
+        TopicDisplayOverride.objects.create(
+            topic_id=102, visible_to_participant=False
+        )
+
+        response = self._enter(NEUTRAL_ANSWERS)
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertFalse(
+            DialogueEntryAssignment.objects.filter(user=self.participant).exists()
+        )
+
+    def test_researcher_still_sees_topic_hidden_from_participants(self):
+        """可見性是分角色的：對受試者關閉不影響研究者自己測試。"""
+        from api.models import TopicDisplayOverride
+
+        TopicDisplayOverride.objects.create(
+            topic_id=102, visible_to_participant=False, visible_to_researcher=True
+        )
+        researcher = make_researcher("entry_researcher")
+        self.client.force_authenticate(user=researcher)
+
+        response = self._enter(NEUTRAL_ANSWERS)
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_resubmitting_survey_overwrites_assignment_and_clears_fallback(self):
+        from django.utils import timezone
+
+        self._enter(SUPPORT_ANSWERS)
+        DialogueEntryAssignment.objects.filter(
+            user=self.participant, topic_id=102
+        ).update(fallback_offered_at=timezone.now())
+
+        self._enter(NEUTRAL_ANSWERS)
+
+        assignment = DialogueEntryAssignment.objects.get(
+            user=self.participant, topic_id=102
+        )
+        self.assertEqual(assignment.route, DialogueEntryAssignment.Route.AI)
+        self.assertIsNone(assignment.fallback_offered_at)
+        self.assertEqual(
+            DialogueEntryAssignment.objects.filter(user=self.participant).count(), 1
+        )
+
+    def test_unknown_topic_returns_404(self):
+        response = self._enter(NEUTRAL_ANSWERS, topic_id=999)
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_client_cannot_smuggle_topic_metadata(self):
+        """序列化器不收 topic_title 等欄位，多送了也不該影響結果。"""
+        response = self.client.post(
+            "/api/dialogue/entry/",
+            {
+                "topic_id": 102,
+                "survey_answers": NEUTRAL_ANSWERS,
+                "survey_open_answers": OPEN_ANSWERS,
+                "topic_title": "偽造標題",
+                "user_initial_argument": "偽造論述",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        from api.dialogue_topics import TOPIC_CONFIGS
+        from api.models import DialogueSessionRecord
+
+        record = DialogueSessionRecord.objects.get(
+            session_id=response.data["session_id"]
+        )
         self.assertEqual(record.topic_title, TOPIC_CONFIGS[102]["title"])

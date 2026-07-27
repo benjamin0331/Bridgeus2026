@@ -53,6 +53,7 @@ urlpatterns = [
         'dialogue/topics/<int:topic_id>/stance-profile/',
         views.DialogueStanceProfileView.as_view(),
     ),
+    path('dialogue/entry/', views.DialogueEntryView.as_view()),
     path('dialogue/sessions/', views.DialogueSessionCreateView.as_view()),
     path(
         'dialogue/sessions/latest/',

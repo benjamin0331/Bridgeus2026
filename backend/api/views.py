@@ -30,6 +30,7 @@ from .permissions import (
 
 from .models import (
     AIConversation,
+    DialogueEntryAssignment,
     DialogueMatch,
     DialogueSessionRecord,
     DiscomfortReport,
@@ -50,7 +51,9 @@ from .dialogue_topics import (
 )
 from .display_settings import (
     default_stance_thresholds,
+    get_entry_mode,
     get_stance_thresholds,
+    is_topic_visible,
     visible_topics,
 )
 from .timeline_access import LOCKED_DETAIL, timeline_unlock_state
@@ -60,6 +63,7 @@ from .serializers import (
     AccountUpdateSerializer,
     PasswordResetSerializer,
     AIConversationSerializer,
+    DialogueEntrySerializer,
     DialogueReplySerializer,
     DialogueSurveySerializer,
     DialogueTopicSerializer,
@@ -1115,6 +1119,103 @@ class DialogueSessionCreateView(APIView):
             user_initial_argument=validated.get("user_initial_argument", ""),
         )
         return Response(payload, status=status.HTTP_201_CREATED)
+
+
+class DialogueEntryView(APIView):
+    """一般使用者的唯一對話入口：填完問卷後由後端依立場分流。
+
+    中立 → AI 對話；極端（support／oppose）→ 真人配對。分流規則直接用
+    matcher.can_enter_human_matching()，與佇列內部同一份定義——兩邊分歧
+    會造成「入口說你該配對、佇列說你不能配對」的死路。
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from apps.matching.services.matcher import (
+            can_enter_human_matching,
+            enqueue_for_matching,
+        )
+
+        serializer = DialogueEntrySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        validated = serializer.validated_data
+        topic_id = validated["topic_id"]
+
+        is_researcher = user_is_researcher(request.user)
+        if not is_topic_visible(topic_id=topic_id, is_researcher=is_researcher):
+            return Response(
+                {"detail": "找不到這個議題。"}, status=status.HTTP_404_NOT_FOUND
+            )
+
+        survey_answers = validated["survey_answers"]
+        survey_open_answers = validated.get("survey_open_answers", {})
+
+        stance_score = _compute_user_stance_score(
+            topic_id=topic_id, survey_answers=survey_answers
+        )
+        stance_category = _resolve_stance_category(
+            topic_id=topic_id, user_stance_score=stance_score
+        )
+        support_threshold, oppose_threshold = get_stance_thresholds(topic_id=topic_id)
+
+        route = (
+            DialogueEntryAssignment.Route.MATCH
+            if can_enter_human_matching(stance_category)
+            else DialogueEntryAssignment.Route.AI
+        )
+
+        DialogueEntryAssignment.objects.update_or_create(
+            user=request.user,
+            topic_id=topic_id,
+            defaults={
+                "route": route,
+                "stance_score": Decimal(str(stance_score)),
+                "stance_category": stance_category,
+                "support_threshold": support_threshold,
+                "oppose_threshold": oppose_threshold,
+                "entry_mode_at_assignment": get_entry_mode(
+                    is_researcher=is_researcher
+                ),
+                # 重填問卷＝重新分流，之前的逾時提示紀錄不再適用。
+                "fallback_offered_at": None,
+                "fallback_accepted_at": None,
+            },
+        )
+
+        if route == DialogueEntryAssignment.Route.AI:
+            payload = _create_ai_dialogue_session(
+                user=request.user,
+                topic_id=topic_id,
+                survey_answers=survey_answers,
+                survey_open_answers=survey_open_answers,
+            )
+            return Response(
+                {"route": "ai", **payload}, status=status.HTTP_201_CREATED
+            )
+
+        state = enqueue_for_matching(
+            user=request.user,
+            topic_id=topic_id,
+            stance_score=stance_score,
+            stance_category=stance_category,
+            survey_answers=survey_answers,
+            survey_open_answers=_resolve_open_answers(
+                topic_id=topic_id,
+                survey_open_answers=survey_open_answers,
+            ),
+        )
+        return Response(
+            {
+                "route": "match",
+                **_build_matching_state_payload(
+                    topic_id=topic_id,
+                    state=state,
+                    user_id=request.user.id,
+                ),
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class DialogueSessionLatestView(APIView):

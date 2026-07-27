@@ -611,3 +611,25 @@ class TopicDisplayOverrideSerializer(serializers.Serializer):
             raise serializers.ValidationError("反對門檻必須小於支持門檻。")
 
         return attrs
+
+
+class DialogueEntrySerializer(serializers.Serializer):
+    """混合入口的輸入。
+
+    刻意不收 topic_title / topic_description / user_initial_argument——
+    那些一律由後端從 TOPIC_CONFIGS 與問卷 Q9 補齊，少一組可被客戶端
+    竄改的輸入。
+    """
+
+    topic_id = serializers.IntegerField()
+    survey_answers = serializers.DictField(
+        child=serializers.IntegerField(min_value=1, max_value=7),
+    )
+    survey_open_answers = serializers.DictField(
+        child=serializers.CharField(
+            allow_blank=True,
+            trim_whitespace=False,
+            max_length=2000,
+        ),
+        required=False,
+    )
