@@ -69,6 +69,7 @@ function App() {
     setUser(null);
     setIssues([]);
     setIssuesLoaded(false);
+    setEntryMode('split');
     navigate('/', { replace: true });
   }, [navigate]);
 
@@ -123,8 +124,9 @@ function App() {
   }, [user]);
 
   useEffect(() => {
+    // 登出時的重設交給 handleLogout，不在 effect 內同步 setState
+    // （react-hooks/set-state-in-effect），跟 issues/issuesLoaded 同一個模式。
     if (!user) {
-      setEntryMode('split');
       return undefined;
     }
 
