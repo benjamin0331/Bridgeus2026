@@ -1267,6 +1267,106 @@ class DialogueEntryView(APIView):
         )
 
 
+class DialogueEntryFallbackView(APIView):
+    """配對等太久，使用者同意改跟 AI 對話。
+
+    授權條件當場從 MatchQueueEntry.waiting_started_at 重算，不看
+    fallback_offered_at——後者會讓這個端點依賴前端「必須先輪詢過 status」，
+    多一個沒必要的隱性順序耦合。
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from apps.matching.services.matcher import (
+            MatchingAlreadyMatchedError,
+            MatchingNotFoundError,
+            cancel_matching,
+        )
+
+        try:
+            topic_id = int(request.data.get("topic_id"))
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "topic_id 必須是有效的議題編號。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        assignment = DialogueEntryAssignment.objects.filter(
+            user=request.user, topic_id=topic_id
+        ).first()
+        if (
+            assignment is None
+            or assignment.route != DialogueEntryAssignment.Route.MATCH
+        ):
+            return Response(
+                {"detail": "目前沒有等待中的配對。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        queue_entry = (
+            MatchQueueEntry.objects.filter(
+                user=request.user,
+                topic_id=topic_id,
+                status=MatchQueueEntry.Status.MATCHING,
+            )
+            .order_by("-waiting_started_at", "-id")
+            .first()
+        )
+        if queue_entry is None:
+            return Response(
+                {"detail": "目前沒有等待中的配對。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        waited_seconds = (
+            timezone.now() - queue_entry.waiting_started_at
+        ).total_seconds()
+        if waited_seconds < get_match_fallback_timeout_seconds():
+            return Response(
+                {"detail": "尚未達到等待時間。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        profile = UserStanceProfile.objects.filter(
+            user=request.user, topic_id=topic_id
+        ).first()
+        if profile is None:
+            return Response(
+                {"detail": "找不到立場問卷紀錄，請重新填寫。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            cancel_matching(user=request.user, topic_id=topic_id)
+        except MatchingAlreadyMatchedError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except MatchingNotFoundError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        now = timezone.now()
+        assignment.fallback_accepted_at = now
+        if assignment.fallback_offered_at is None:
+            assignment.fallback_offered_at = now
+        assignment.save(
+            update_fields=["fallback_offered_at", "fallback_accepted_at"]
+        )
+
+        payload = _create_ai_dialogue_session(
+            user=request.user,
+            topic_id=topic_id,
+            survey_answers=profile.survey_answers or {},
+            survey_open_answers=profile.survey_open_answers or {},
+        )
+        return Response({"route": "ai", **payload}, status=status.HTTP_201_CREATED)
+
+
 class DialogueSessionLatestView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 

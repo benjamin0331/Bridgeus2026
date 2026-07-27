@@ -409,3 +409,140 @@ class FallbackOfferTests(APITestCase):
 
         self.assertIsNone(response.data["fallback_offer"])
 
+
+class FallbackAcceptTests(APITestCase):
+    def setUp(self):
+        self.participant = User.objects.create_user(
+            username="fallback_accepter", password="pw-strong-12345"
+        )
+        self.client.force_authenticate(user=self.participant)
+        self.client.post(
+            "/api/dialogue/entry/",
+            {
+                "topic_id": 102,
+                "survey_answers": SUPPORT_ANSWERS,
+                "survey_open_answers": OPEN_ANSWERS,
+            },
+            format="json",
+        )
+
+    def _age_queue_entry(self, seconds):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from api.models import MatchQueueEntry
+
+        MatchQueueEntry.objects.filter(
+            user=self.participant, topic_id=102
+        ).update(waiting_started_at=timezone.now() - timedelta(seconds=seconds))
+
+    def test_accept_creates_ai_session_and_cancels_queue(self):
+        from api.models import MatchQueueEntry
+
+        self._age_queue_entry(400)
+
+        response = self.client.post(
+            "/api/dialogue/entry/fallback/", {"topic_id": 102}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["route"], "ai")
+        self.assertIn("session_id", response.data)
+
+        assignment = DialogueEntryAssignment.objects.get(
+            user=self.participant, topic_id=102
+        )
+        self.assertIsNotNone(assignment.fallback_accepted_at)
+        self.assertEqual(assignment.route, DialogueEntryAssignment.Route.MATCH)
+
+        self.assertFalse(
+            MatchQueueEntry.objects.filter(
+                user=self.participant,
+                topic_id=102,
+                status=MatchQueueEntry.Status.MATCHING,
+            ).exists()
+        )
+
+    def test_accept_reuses_stored_survey_answers(self):
+        """不能要求受試者為了 fallback 重填一次問卷。"""
+        from api.models import DialogueSessionRecord, UserStanceProfile
+
+        self._age_queue_entry(400)
+        profile = UserStanceProfile.objects.get(user=self.participant, topic_id=102)
+
+        response = self.client.post(
+            "/api/dialogue/entry/fallback/", {"topic_id": 102}, format="json"
+        )
+
+        record = DialogueSessionRecord.objects.get(
+            session_id=response.data["session_id"]
+        )
+        self.assertEqual(record.user_id, self.participant.id)
+        self.assertEqual(
+            record.survey_context["survey_answers"], profile.survey_answers
+        )
+
+    def test_reject_before_timeout(self):
+        response = self.client.post(
+            "/api/dialogue/entry/fallback/", {"topic_id": 102}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("尚未達到等待時間", response.data["detail"])
+
+    def test_reject_without_assignment(self):
+        other = User.objects.create_user(
+            username="no_assignment", password="pw-strong-12345"
+        )
+        self.client.force_authenticate(user=other)
+
+        response = self.client.post(
+            "/api/dialogue/entry/fallback/", {"topic_id": 102}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_reject_when_route_is_ai(self):
+        other = User.objects.create_user(
+            username="ai_routed", password="pw-strong-12345"
+        )
+        self.client.force_authenticate(user=other)
+        self.client.post(
+            "/api/dialogue/entry/",
+            {
+                "topic_id": 102,
+                "survey_answers": NEUTRAL_ANSWERS,
+                "survey_open_answers": OPEN_ANSWERS,
+            },
+            format="json",
+        )
+
+        response = self.client.post(
+            "/api/dialogue/entry/fallback/", {"topic_id": 102}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_invalid_topic_id(self):
+        response = self.client.post(
+            "/api/dialogue/entry/fallback/", {"topic_id": "abc"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_fallback_does_not_require_prior_status_poll(self):
+        """授權條件當場重算，不依賴前端先輪詢過 /matching/status/。"""
+        self._age_queue_entry(400)
+        assignment = DialogueEntryAssignment.objects.get(
+            user=self.participant, topic_id=102
+        )
+        self.assertIsNone(assignment.fallback_offered_at)
+
+        response = self.client.post(
+            "/api/dialogue/entry/fallback/", {"topic_id": 102}, format="json"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        assignment.refresh_from_db()
+        self.assertIsNotNone(assignment.fallback_offered_at)

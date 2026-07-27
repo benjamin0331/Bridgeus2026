@@ -54,6 +54,7 @@ urlpatterns = [
         views.DialogueStanceProfileView.as_view(),
     ),
     path('dialogue/entry/', views.DialogueEntryView.as_view()),
+    path('dialogue/entry/fallback/', views.DialogueEntryFallbackView.as_view()),
     path('dialogue/sessions/', views.DialogueSessionCreateView.as_view()),
     path(
         'dialogue/sessions/latest/',
