@@ -220,6 +220,10 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const isMixedEntry = mode === 'mixed';
   const [resolvedMode, setResolvedMode] = useState(isMixedEntry ? null : mode);
   const isMatchingMode = (resolvedMode ?? mode) === 'match';
+  // 只看網址、不看 resolvedMode。底下那個「換頁大重設」effect 必須只在換議題
+  // 或換網址時才跑；若讓它跟著 isMatchingMode 走，混合入口在頁面內完成分流
+  // （或 fallback 從配對轉 AI）時也會觸發整套重設，把剛建立的 session 清掉。
+  const urlIsMatchingMode = mode === 'match';
   const modeLabel = isMatchingMode ? '配對模式' : 'AI 模式';
 
   const [showSurvey, setShowSurvey] = useState(!isMatchingMode);
@@ -622,7 +626,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setSurveyError('');
     setSavedStanceProfile(null);
     setStanceRedoConfirmed(false);
-    setShowSurvey(!isMatchingMode);
+    setShowSurvey(!urlIsMatchingMode);
     setSessionId(null);
     setInputValue('');
     setMessages([]);
@@ -639,7 +643,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     wsSessionIdRef.current = null;
     closeMatchWebSocket();
     setMatchingState(null);
-    setIsMatchingStateLoading(isMatchingMode);
+    setIsMatchingStateLoading(urlIsMatchingMode);
     setIsMatchingActionLoading(false);
     setMatchingError('');
     setMatchMessages([]);
@@ -661,7 +665,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     cancelQueueRequestSentRef.current = false;
     shouldAutoScrollMatchRef.current = true;
     setShowScrollToBottomButton(false);
-  }, [closeMatchWebSocket, id, isMatchingMode]);
+  }, [closeMatchWebSocket, id, urlIsMatchingMode]);
 
   useEffect(() => {
     if (!currentIssue) {
@@ -779,7 +783,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
   }, [currentIssue, id, isMatchingMode]);
 
   useEffect(() => {
-    if (isMatchingMode || !currentIssue) {
+    // 已經有 session 就不要還原：混合入口的分流端點與 fallback 端點都會當場
+    // 建好 session 並把 id 交給前端，這時再去拉 sessions/latest/ 會把那場剛
+    // 建立的對話當成「上次的對話」，跳出「要繼續上次嗎」問使用者。
+    // 純 ?mode=ai 進來時 sessionId 仍是 null，重新整理後的續用行為不受影響。
+    if (isMatchingMode || !currentIssue || sessionId) {
       return undefined;
     }
 
@@ -837,7 +845,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     return () => {
       cancelled = true;
     };
-  }, [currentIssue, displayUserName, id, isMatchingMode]);
+  }, [currentIssue, displayUserName, id, isMatchingMode, sessionId]);
 
   useEffect(() => {
     if (!isMatchChatReady || !matchingState?.room_id) {
@@ -1438,6 +1446,10 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
     if (isMixedEntry) {
       setMatchingError('');
+      // 使用者才剛送出問卷，「要不要沿用先前立場」已經沒有意義。上面的
+      // setSavedStanceProfile 會把 exists 設成 true，若不在 await 之前先
+      // 關掉，等待分流回應的那段時間會閃出重填問卷的對話框。
+      setStanceRedoConfirmed(true);
       setIsMatchingActionLoading(true);
       try {
         const response = await api.post('/api/dialogue/entry/', {
