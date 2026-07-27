@@ -68,6 +68,16 @@ def _can_enter_human_matching(stance_category: str) -> bool:
     return bool(candidate_categories_for(stance_category))
 
 
+def can_enter_human_matching(stance_category: str) -> bool:
+    """公開版本，給混合入口決定分流方向用。
+
+    刻意包一層而不是直接把 _can_enter_human_matching 改名：佇列內部已有
+    多處呼叫，而分流規則必須只有一份定義——兩邊分歧的話，會出現「入口說
+    你該配對、佇列說你不能配對」的死路。
+    """
+    return _can_enter_human_matching(stance_category)
+
+
 def _active_match_queryset(*, user_id: int, topic_id: int):
     return DialogueMatch.objects.select_related("user_a", "user_b").filter(
         topic_id=topic_id,
