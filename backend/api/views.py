@@ -1022,6 +1022,9 @@ def _create_ai_dialogue_session(
     if user_initial_argument is None:
         user_initial_argument = resolved_open_answers.get("Q9", "")
 
+    # title 與 description 的 fallback 條件刻意不同：沒有標題的對話沒有意義，
+    # 所以空字串也要補；但「這個議題沒有補充說明」是合法狀態，明確傳空字串
+    # 就該保持空的，不能被 TOPIC_CONFIGS 蓋回去。
     topic_config = _build_topic_config(
         topic_id=topic_id,
         topic_title=topic_title or topic_meta.get("title", ""),

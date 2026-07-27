@@ -151,5 +151,31 @@ class CreateAiDialogueSessionHelperTests(TestCase):
         record = DialogueSessionRecord.objects.get(session_id=payload["session_id"])
         self.assertEqual(record.topic_id, 102)
         self.assertEqual(record.user_id, self.user.id)
-        self.assertEqual(payload["session_id"], record.session_id)
-        self.assertIn("核能", TOPIC_CONFIGS[102]["title"])
+        # 關鍵斷言：沒帶 topic_title 時，存下來的必須是 TOPIC_CONFIGS 的標題。
+        # 只斷言 TOPIC_CONFIGS 自己的內容是空的——那跟 helper 有沒有跑無關。
+        self.assertEqual(record.topic_title, TOPIC_CONFIGS[102]["title"])
+        self.assertEqual(
+            record.collection_name, TOPIC_CONFIGS[102]["collection_name"]
+        )
+
+    def test_client_supplied_topic_title_never_wins_for_known_topics(self):
+        """已知議題的標題一律以 TOPIC_CONFIGS 為準，客戶端送什麼都不算數。
+
+        _build_topic_config 回傳的是 topic_meta.get("title", topic_title)，
+        所以呼叫端的 topic_title 只是「議題不存在時」的後備值。這對混合入口
+        很重要：受試者就算自己偽造 topic_title 也改不了對話紀錄上的議題名稱。
+        """
+        from api.dialogue_topics import TOPIC_CONFIGS
+        from api.models import DialogueSessionRecord
+        from api.views import _create_ai_dialogue_session
+
+        payload = _create_ai_dialogue_session(
+            user=self.user,
+            topic_id=102,
+            survey_answers={str(i): 4 for i in range(1, 9)},
+            survey_open_answers={"Q9": "我覺得需要更多討論。"},
+            topic_title="偽造的標題",
+        )
+
+        record = DialogueSessionRecord.objects.get(session_id=payload["session_id"])
+        self.assertEqual(record.topic_title, TOPIC_CONFIGS[102]["title"])
