@@ -36,6 +36,7 @@ from .models import (
     DiscomfortReport,
     Issue,
     IssueReaction,
+    MatchQueueEntry,
     MatchStanceDrift,
     PlatformDisplaySetting,
     PlatformFeedback,
@@ -52,6 +53,7 @@ from .dialogue_topics import (
 from .display_settings import (
     default_stance_thresholds,
     get_entry_mode,
+    get_match_fallback_timeout_seconds,
     get_stance_thresholds,
     is_topic_visible,
     visible_topics,
@@ -603,6 +605,52 @@ def _match_presence_fields(match: DialogueMatch | None, *, user_id: int) -> dict
     }
 
 
+def _fallback_offer_fields(*, topic_id: int, state, user_id: int) -> dict:
+    """配對等太久要不要提示改跟 AI 對話。
+
+    只有混合入口需要這個提示——分開入口的使用者本來就是自己選的模式，
+    回傳 None 讓前端不要顯示對話框。
+    """
+    queue_entry = state.queue_entry
+    if (
+        queue_entry is None
+        or queue_entry.status != MatchQueueEntry.Status.MATCHING
+        or queue_entry.waiting_started_at is None
+    ):
+        return {"fallback_offer": None}
+
+    user = User.objects.filter(pk=user_id).first()
+    if user is None:
+        return {"fallback_offer": None}
+
+    entry_mode = get_entry_mode(is_researcher=user_is_researcher(user))
+    if entry_mode != PlatformDisplaySetting.EntryMode.MIXED:
+        return {"fallback_offer": None}
+
+    timeout_seconds = get_match_fallback_timeout_seconds()
+    waited_seconds = int(
+        (timezone.now() - queue_entry.waiting_started_at).total_seconds()
+    )
+    available = waited_seconds >= timeout_seconds
+
+    if available:
+        # 記錄第一次被提示的時間（研究資料）。實際的 fallback 授權是在
+        # fallback 端點當場重算等待時間，不依賴這個欄位。
+        DialogueEntryAssignment.objects.filter(
+            user_id=user_id,
+            topic_id=topic_id,
+            fallback_offered_at__isnull=True,
+        ).update(fallback_offered_at=timezone.now())
+
+    return {
+        "fallback_offer": {
+            "available": available,
+            "waited_seconds": waited_seconds,
+            "timeout_seconds": timeout_seconds,
+        }
+    }
+
+
 def _build_matching_state_payload(*, topic_id: int, state, user_id: int) -> dict:
     queue_entry = state.queue_entry
     match = state.match
@@ -634,6 +682,7 @@ def _build_matching_state_payload(*, topic_id: int, state, user_id: int) -> dict
         "other_user_id": other_user_id,
         "other_user_name": other_user_name,
         **_match_presence_fields(match, user_id=user_id),
+        **_fallback_offer_fields(topic_id=topic_id, state=state, user_id=user_id),
     }
     return MatchingStateSerializer(payload).data
 

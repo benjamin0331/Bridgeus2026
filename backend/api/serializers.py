@@ -229,6 +229,7 @@ class MatchingStateSerializer(serializers.Serializer):
     other_user_name = serializers.CharField(max_length=150, required=False, allow_null=True)
     presence = serializers.JSONField(required=False, allow_null=True)
     absence_deadline = serializers.DateTimeField(required=False, allow_null=True)
+    fallback_offer = serializers.JSONField(required=False, allow_null=True)
 
 
 class MatchMessageSerializer(serializers.ModelSerializer):

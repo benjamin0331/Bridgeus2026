@@ -335,3 +335,77 @@ class DialogueEntryRoutingTests(APITestCase):
             session_id=response.data["session_id"]
         )
         self.assertEqual(record.topic_title, TOPIC_CONFIGS[102]["title"])
+
+
+class FallbackOfferTests(APITestCase):
+    def setUp(self):
+        self.participant = User.objects.create_user(
+            username="fallback_participant", password="pw-strong-12345"
+        )
+        self.client.force_authenticate(user=self.participant)
+        self.client.post(
+            "/api/dialogue/entry/",
+            {
+                "topic_id": 102,
+                "survey_answers": SUPPORT_ANSWERS,
+                "survey_open_answers": OPEN_ANSWERS,
+            },
+            format="json",
+        )
+
+    def _age_queue_entry(self, seconds):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from api.models import MatchQueueEntry
+
+        MatchQueueEntry.objects.filter(
+            user=self.participant, topic_id=102
+        ).update(waiting_started_at=timezone.now() - timedelta(seconds=seconds))
+
+    def test_offer_unavailable_before_timeout(self):
+        response = self.client.get("/api/matching/status/?topic_id=102")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["fallback_offer"]["available"])
+        self.assertEqual(response.data["fallback_offer"]["timeout_seconds"], 300)
+
+    def test_offer_available_after_timeout_and_records_time(self):
+        self._age_queue_entry(400)
+
+        response = self.client.get("/api/matching/status/?topic_id=102")
+
+        self.assertTrue(response.data["fallback_offer"]["available"])
+        self.assertGreaterEqual(response.data["fallback_offer"]["waited_seconds"], 400)
+
+        assignment = DialogueEntryAssignment.objects.get(
+            user=self.participant, topic_id=102
+        )
+        self.assertIsNotNone(assignment.fallback_offered_at)
+
+    def test_offer_respects_configured_timeout(self):
+        from api.models import PlatformDisplaySetting
+
+        setting = PlatformDisplaySetting.load()
+        setting.match_fallback_timeout_minutes = 1
+        setting.save()
+
+        self._age_queue_entry(90)
+        response = self.client.get("/api/matching/status/?topic_id=102")
+
+        self.assertTrue(response.data["fallback_offer"]["available"])
+        self.assertEqual(response.data["fallback_offer"]["timeout_seconds"], 60)
+
+    def test_split_mode_gets_no_offer(self):
+        from api.models import PlatformDisplaySetting
+
+        setting = PlatformDisplaySetting.load()
+        setting.participant_entry_mode = PlatformDisplaySetting.EntryMode.SPLIT
+        setting.save()
+
+        self._age_queue_entry(400)
+        response = self.client.get("/api/matching/status/?topic_id=102")
+
+        self.assertIsNone(response.data["fallback_offer"])
+
