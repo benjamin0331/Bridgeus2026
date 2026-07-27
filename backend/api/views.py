@@ -45,7 +45,6 @@ from .models import (
 from .dialogue_topics import (
     TOPIC_CONFIGS,
     get_dialogue_survey,
-    get_dialogue_topics,
 )
 from .display_settings import get_stance_thresholds, visible_topics
 from .timeline_access import LOCKED_DETAIL, timeline_unlock_state
