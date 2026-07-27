@@ -410,8 +410,9 @@ def _display_stance_category(
     回頭改變所有舊對話畫面上的立場分類——那不是「調設定」，那是改寫既有
     實驗資料的呈現。已存的分類才是這場對話當初實際被分到的組別。
 
-    註：階段二會在這裡優先讀 DialogueEntryAssignment.stance_category
-    （那是分流當下的權威紀錄），UserStanceProfile 退為第二順位。
+    優先序：分流指派 > 立場問卷 > 即時重算。DialogueEntryAssignment 是分流
+    當下的權威紀錄，還一併存了當時生效的門檻；UserStanceProfile 會在受試者
+    為了新對話重填問卷時被覆寫，所以退為第二順位。
     """
     try:
         topic_id = int(topic_id)
@@ -419,6 +420,16 @@ def _display_stance_category(
         return None
 
     if user_id is not None:
+        stored = (
+            DialogueEntryAssignment.objects.filter(
+                user_id=user_id, topic_id=topic_id
+            )
+            .values_list("stance_category", flat=True)
+            .first()
+        )
+        if stored:
+            return stored
+
         stored = (
             UserStanceProfile.objects.filter(user_id=user_id, topic_id=topic_id)
             .values_list("stance_category", flat=True)

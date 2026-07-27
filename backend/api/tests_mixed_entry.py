@@ -764,3 +764,66 @@ class MeEndpointTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertFalse(response.data["is_researcher"])
         self.assertEqual(response.data["entry_mode"], "mixed")
+
+
+class DisplayStanceCategoryPriorityTests(TestCase):
+    """顯示用的立場分類優先序：分流指派 > 立場問卷 > 即時重算。"""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="priority_owner", password="pw-strong-12345"
+        )
+
+    def _make_profile(self, category):
+        from api.models import UserStanceProfile
+
+        return UserStanceProfile.objects.create(
+            user=self.user,
+            topic_id=102,
+            stance_score="6.00",
+            stance_category=category,
+            survey_answers={},
+            survey_open_answers={},
+        )
+
+    def _make_assignment(self, category):
+        return DialogueEntryAssignment.objects.create(
+            user=self.user,
+            topic_id=102,
+            route=DialogueEntryAssignment.Route.MATCH,
+            stance_score="6.00",
+            stance_category=category,
+            support_threshold=4.5,
+            oppose_threshold=3.5,
+            entry_mode_at_assignment="mixed",
+        )
+
+    def test_assignment_wins_over_profile(self):
+        """兩者都在且不同時，分流指派要贏——它才是這場對話的分組依據。"""
+        from api.views import _display_stance_category
+
+        self._make_profile("neutral")
+        self._make_assignment("support")
+
+        self.assertEqual(
+            _display_stance_category(user_id=self.user.id, topic_id=102, stance_score=6.0),
+            "support",
+        )
+
+    def test_falls_back_to_profile_without_assignment(self):
+        from api.views import _display_stance_category
+
+        self._make_profile("support")
+
+        self.assertEqual(
+            _display_stance_category(user_id=self.user.id, topic_id=102, stance_score=6.0),
+            "support",
+        )
+
+    def test_falls_back_to_recompute_without_either(self):
+        from api.views import _display_stance_category
+
+        self.assertEqual(
+            _display_stance_category(user_id=self.user.id, topic_id=103, stance_score=6.0),
+            "support",
+        )
