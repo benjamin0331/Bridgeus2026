@@ -2,7 +2,7 @@ import IssueCard from '../components/IssueCard';
 import ActionCard from '../components/ActionCard';
 import './HomePage.css';
 
-function HomePage({ navigate, userName, issues, issuesLoaded }) {
+function HomePage({ navigate, userName, issues, issuesLoaded, entryMode }) {
     return (
         <div className="content-area">
             {/* 使用者歡迎詞區域 */}
@@ -12,7 +12,7 @@ function HomePage({ navigate, userName, issues, issuesLoaded }) {
             {/* 主要儀表板佈局網格 */}
             <div className="dashboard-grid">
                 {/* 議題列表元件：傳遞導航方法與議題資料 */}
-                <IssueCard navigate={navigate} issues={issues} issuesLoaded={issuesLoaded} />
+                <IssueCard navigate={navigate} issues={issues} issuesLoaded={issuesLoaded} entryMode={entryMode} />
                 
                 {/* 右側快捷操作按鈕堆疊區域 */}
                 <aside className="action-button-stack">

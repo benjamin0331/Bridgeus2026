@@ -211,9 +211,15 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const navigate = useNavigate();
   const mode = useMemo(() => {
     const params = new URLSearchParams(location.search);
-    return params.get('mode') === 'match' ? 'match' : 'ai';
+    const raw = params.get('mode');
+    if (raw === 'match') return 'match';
+    if (raw === 'ai') return 'ai';
+    // 沒帶 mode＝混合入口：先填問卷，由後端分流後才知道是哪一種。
+    return 'mixed';
   }, [location.search]);
-  const isMatchingMode = mode === 'match';
+  const isMixedEntry = mode === 'mixed';
+  const [resolvedMode, setResolvedMode] = useState(isMixedEntry ? null : mode);
+  const isMatchingMode = (resolvedMode ?? mode) === 'match';
   const modeLabel = isMatchingMode ? '配對模式' : 'AI 模式';
 
   const [showSurvey, setShowSurvey] = useState(!isMatchingMode);
@@ -1430,6 +1436,51 @@ function TopicChat({ user, issues, issuesLoaded }) {
       survey_open_answers: openAnswers,
     }));
 
+    if (isMixedEntry) {
+      setMatchingError('');
+      setIsMatchingActionLoading(true);
+      try {
+        const response = await api.post('/api/dialogue/entry/', {
+          topic_id: Number(id),
+          survey_answers: answers,
+          survey_open_answers: openAnswers,
+        });
+
+        if (!isChatPageMountedRef.current) return;
+
+        if (response.data.route === 'ai') {
+          setResolvedMode('ai');
+          // 分流端點已經把 session 建好了，直接收下 session_id——
+          // ensureSession() 之後會因為 sessionId 有值而短路，不會重建一場，
+          // 也不會去打被把關擋住的 /api/dialogue/sessions/。
+          setSessionId(response.data.session_id);
+          setAiStanceMeta(extractAiStanceMeta(response.data));
+          setAiStanceDrift(extractStanceDrift(response.data));
+          setMessages([]);
+          setSemanticTreePayload(null);
+          setSemanticTreeStatus('ready');
+          setSemanticTreeMessage('');
+          semanticTreeAnalyzeSignatureRef.current = '';
+          shouldAutoScrollAiRef.current = true;
+          setChatError('');
+        } else {
+          setResolvedMode('match');
+          setMatchingState(response.data);
+        }
+        setShowSurvey(false);
+      } catch (error) {
+        if (!isChatPageMountedRef.current) return;
+        setMatchingError(
+          error?.response?.data?.detail || '目前無法開始對話，請稍後再試。',
+        );
+      } finally {
+        if (isChatPageMountedRef.current) {
+          setIsMatchingActionLoading(false);
+        }
+      }
+      return;
+    }
+
     if (!isMatchingMode) {
       wsRef.current?.close();
       wsRef.current = null;
@@ -1483,6 +1534,36 @@ function TopicChat({ user, issues, issuesLoaded }) {
       if (isChatPageMountedRef.current) {
         setIsMatchingActionLoading(false);
       }
+    }
+  };
+
+  const [fallbackBusy, setFallbackBusy] = useState(false);
+  const fallbackOffer = matchingState?.fallback_offer;
+
+  const handleAcceptFallback = async () => {
+    if (fallbackBusy) return;
+    setFallbackBusy(true);
+    setMatchingError('');
+    try {
+      const response = await api.post('/api/dialogue/entry/fallback/', {
+        topic_id: Number(id),
+      });
+      if (!isChatPageMountedRef.current) return;
+      setResolvedMode('ai');
+      setMatchingState(null);
+      setSessionId(response.data.session_id);
+      setAiStanceMeta(extractAiStanceMeta(response.data));
+      setAiStanceDrift(extractStanceDrift(response.data));
+      setMessages([]);
+      shouldAutoScrollAiRef.current = true;
+      setChatError('');
+    } catch (error) {
+      if (!isChatPageMountedRef.current) return;
+      setMatchingError(
+        error?.response?.data?.detail || '目前無法改成 AI 對話，請稍後再試。',
+      );
+    } finally {
+      if (isChatPageMountedRef.current) setFallbackBusy(false);
     }
   };
 
@@ -1835,6 +1916,31 @@ function TopicChat({ user, issues, issuesLoaded }) {
             <p className="matching-status-copy">
               你現在已經在等待佇列中。離開頁面會自動取消等待；配對成功後短暫重整頁面可以回到同一個聊天室。
             </p>
+            {fallbackOffer?.available && (
+              <div className="matching-fallback-offer">
+                <p>目前沒有找到合適的對談對象。要改成和 AI 代理人對話嗎？</p>
+                <div className="matching-status-actions">
+                  <button
+                    className="matching-status-btn"
+                    type="button"
+                    disabled={fallbackBusy}
+                    onClick={handleAcceptFallback}
+                  >
+                    改成 AI 對話
+                  </button>
+                  <button
+                    className="matching-status-btn secondary"
+                    type="button"
+                    disabled={fallbackBusy}
+                    onClick={() => setMatchingState((prev) => (
+                      prev ? { ...prev, fallback_offer: null } : prev
+                    ))}
+                  >
+                    繼續等待
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="matching-status-meta">
               <div className="matching-status-row">
                 <span className="matching-status-label">立場類型</span>

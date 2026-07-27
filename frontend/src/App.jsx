@@ -54,6 +54,7 @@ function App() {
   const [authMessage, setAuthMessage] = useState('');
   const [issues, setIssues] = useState([]);
   const [issuesLoaded, setIssuesLoaded] = useState(false);
+  const [entryMode, setEntryMode] = useState('split');
 
   const handleLogin = useCallback((nextUser) => {
     setAuthMessage('');
@@ -121,6 +122,34 @@ function App() {
     };
   }, [user]);
 
+  useEffect(() => {
+    if (!user) {
+      setEntryMode('split');
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const fetchEntryMode = async () => {
+      try {
+        const response = await api.get('/api/me/');
+        if (!cancelled) {
+          setEntryMode(response.data?.entry_mode === 'mixed' ? 'mixed' : 'split');
+        }
+      } catch (error) {
+        console.error('Failed to load entry mode:', error);
+        // 讀不到就退回分開入口：兩個入口都看得到，比整個消失好。
+        if (!cancelled) setEntryMode('split');
+      }
+    };
+
+    void fetchEntryMode();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+
   if (!user) {
     return (
       <Routes>
@@ -151,6 +180,7 @@ function App() {
                   userName={user.name}
                   issues={issues}
                   issuesLoaded={issuesLoaded}
+                  entryMode={entryMode}
                 />
               )}
             />

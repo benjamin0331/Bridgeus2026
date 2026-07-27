@@ -896,3 +896,17 @@
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+.matching-fallback-offer {
+  margin-top: 20px;
+  padding: 16px;
+  border: 1px solid #f0d9a0;
+  border-radius: 10px;
+  background: #fff9ec;
+}
+
+.matching-fallback-offer p {
+  margin: 0 0 12px;
+  font-size: 14px;
+  color: #8a6d3b;
+}
