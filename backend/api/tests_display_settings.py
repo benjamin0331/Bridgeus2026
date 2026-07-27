@@ -366,3 +366,26 @@ class DialogueTopicListVisibilityTests(APITestCase):
 
         self.assertNotIn(102, self._topic_ids(self.participant))
         self.assertNotIn(102, self._topic_ids(self.researcher))
+
+    def test_role_filtering_works_through_real_jwt_auth(self):
+        """用真的 access token 打，而不是 force_authenticate。
+
+        force_authenticate 會直接塞 request.user、完全跳過 authentication_classes，
+        所以上面那些測試驗證得到過濾邏輯，卻驗證不到「這個 view 必須用
+        JWTAuthentication」這件事。若有人把 JWTStatelessUserAuthentication 加回去，
+        它回傳的 TokenUser.groups 是 EmptyManager，user_is_researcher() 會永遠是
+        False，研究者就會被當成一般使用者而看不到這個議題——這個測試就是為了在
+        那種情況下失敗。
+        """
+        from rest_framework_simplejwt.tokens import AccessToken
+
+        TopicDisplayOverride.objects.create(
+            topic_id=102, visible_to_participant=False, visible_to_researcher=True
+        )
+
+        token = str(AccessToken.for_user(self.researcher))
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        response = self.client.get("/api/dialogue/topics/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn(102, {row["id"] for row in response.data})
