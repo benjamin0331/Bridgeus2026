@@ -19,6 +19,30 @@
 - 後端指令一律在 `backend/` 目錄下用 `uv run` 執行。
 - **測試必須序列執行**：後端測試共用同一個 Postgres test database，同時跑兩個測試程序會失敗。
 - 每個 Task 只跑該 Task 的測試檔，最後再跑迴歸。
+- 測試指令一律帶絕對路徑 `cd`，否則 `uv run` 找不到虛擬環境並以
+  `Failed to spawn: pytest` 靜默失敗（階段一踩過）：
+  `cd /Users/light/code/backend && uv run pytest <目標>`
+
+### ⚠️ 已知的測試盲點：`force_authenticate` 會跳過 `authentication_classes`
+
+階段一 Task 5 的教訓。DRF 的 `force_authenticate` 直接塞 `request.user`，**完全不走
+authentication 流程**，所以任何只用它的測試都驗證不到「這個 view 用哪個 authentication
+class」。階段一因此漏掉了 `DialogueTopicListView` 的核心修正，後來補了一個用真
+`AccessToken` 的測試，並以變異測試確認它抓得到退化。
+
+本階段 Task 7（把關）與 Task 8（`/api/me/`）都依賴
+`get_entry_mode(is_researcher=user_is_researcher(user))`，而 `user_is_researcher()` 對
+simplejwt 的 `TokenUser` **永遠回 False**（`TokenUser.groups` 是 `EmptyManager`）。
+這兩個 task 各自**必須加一個用真 JWT 的測試**：
+
+```python
+        from rest_framework_simplejwt.tokens import AccessToken
+
+        token = str(AccessToken.for_user(self.researcher))
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+```
+
+並且要實際驗證該測試在退回 stateless auth 時會失敗——否則它只是裝飾。
 
 ---
 
