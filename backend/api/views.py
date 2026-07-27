@@ -36,9 +36,11 @@ from .models import (
     Issue,
     IssueReaction,
     MatchStanceDrift,
+    PlatformDisplaySetting,
     PlatformFeedback,
     PostDialogueResponse,
     Title,
+    TopicDisplayOverride,
     UserStanceProfile,
     UserTitle,
 )
@@ -46,7 +48,11 @@ from .dialogue_topics import (
     TOPIC_CONFIGS,
     get_dialogue_survey,
 )
-from .display_settings import get_stance_thresholds, visible_topics
+from .display_settings import (
+    default_stance_thresholds,
+    get_stance_thresholds,
+    visible_topics,
+)
 from .timeline_access import LOCKED_DETAIL, timeline_unlock_state
 from .serializers import (
     AccountCreateSerializer,
@@ -66,12 +72,14 @@ from .serializers import (
     MatchingRoomSemanticTreeTimelineSerializer,
     MatchingStateSerializer,
     MatchingTopicSerializer,
+    PlatformDisplaySettingSerializer,
     PlatformFeedbackSerializer,
     PlatformFeedbackOutputSerializer,
     PostDialogueResponseConsentSerializer,
     PostDialogueResponseOutputSerializer,
     PostDialogueResponseSerializer,
     BridgeUsTokenObtainPairSerializer,
+    TopicDisplayOverrideSerializer,
     ViewpointNodeReviewDecisionSerializer,
     ViewpointNodeReviewSerializer,
 )
@@ -1689,6 +1697,116 @@ class AccountPasswordResetView(APIView):
         target.set_password(serializer.validated_data["password"])
         target.save(update_fields=["password"])
         return Response({"detail": "密碼已重設。"})
+
+
+def _topic_display_row(topic_id: int, *, override=None) -> dict:
+    """設定頁用的單一議題狀態：目前生效值 + 程式碼預設值 + 是否被覆寫。
+
+    override 可由呼叫端預先撈好一次性傳進來，避免逐議題各查一次
+    （DisplaySettingsView.get 就是這樣批次載入的）。
+    """
+    if override is None:
+        override = TopicDisplayOverride.objects.filter(topic_id=topic_id).first()
+    support, oppose = get_stance_thresholds(topic_id=topic_id)
+    default_support, default_oppose = default_stance_thresholds(topic_id=topic_id)
+
+    return {
+        "topic_id": topic_id,
+        "title": TOPIC_CONFIGS.get(topic_id, {}).get("title", ""),
+        "visible_to_participant": (
+            override.visible_to_participant if override else True
+        ),
+        "visible_to_researcher": (
+            override.visible_to_researcher if override else True
+        ),
+        "support_threshold": support,
+        "oppose_threshold": oppose,
+        "default_support_threshold": default_support,
+        "default_oppose_threshold": default_oppose,
+        "is_threshold_overridden": bool(
+            override
+            and (
+                override.support_threshold is not None
+                or override.oppose_threshold is not None
+            )
+        ),
+    }
+
+
+def _sorted_topic_ids() -> list[int]:
+    return sorted(
+        TOPIC_CONFIGS,
+        key=lambda topic_id: TOPIC_CONFIGS[topic_id].get("display_order", topic_id),
+    )
+
+
+class DisplaySettingsView(APIView):
+    """研究者專用：全站顯示設定 + 每個議題的目前狀態。"""
+
+    permission_classes = [IsResearcher]
+
+    def get(self, request):
+        overrides = {
+            override.topic_id: override
+            for override in TopicDisplayOverride.objects.all()
+        }
+        return Response(
+            {
+                "platform": PlatformDisplaySettingSerializer(
+                    PlatformDisplaySetting.load()
+                ).data,
+                "topics": [
+                    _topic_display_row(topic_id, override=overrides.get(topic_id))
+                    for topic_id in _sorted_topic_ids()
+                ],
+            }
+        )
+
+    def patch(self, request):
+        setting = PlatformDisplaySetting.load()
+        serializer = PlatformDisplaySettingSerializer(
+            setting, data=request.data, partial=True
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save(updated_by=request.user)
+        return Response(PlatformDisplaySettingSerializer(setting).data)
+
+
+class DisplaySettingsTopicView(APIView):
+    """研究者專用：單一議題的可見性與門檻覆寫。"""
+
+    permission_classes = [IsResearcher]
+
+    THRESHOLD_WARNING = "門檻變更只影響之後填寫的問卷，既有資料不會重算。"
+
+    def patch(self, request, topic_id: int):
+        if topic_id not in TOPIC_CONFIGS:
+            return Response(
+                {"detail": "找不到這個議題。"}, status=status.HTTP_404_NOT_FOUND
+            )
+
+        serializer = TopicDisplayOverrideSerializer(
+            data=request.data, context={"topic_id": topic_id}
+        )
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        override, _ = TopicDisplayOverride.objects.get_or_create(topic_id=topic_id)
+        for field in (
+            "visible_to_participant",
+            "visible_to_researcher",
+            "support_threshold",
+            "oppose_threshold",
+        ):
+            if field in data:
+                setattr(override, field, data[field])
+        override.updated_by = request.user
+        override.save()
+
+        payload = _topic_display_row(topic_id, override=override)
+        if "support_threshold" in data or "oppose_threshold" in data:
+            payload["warning"] = self.THRESHOLD_WARNING
+        return Response(payload)
 
 
 class CCNDInsightsView(APIView):

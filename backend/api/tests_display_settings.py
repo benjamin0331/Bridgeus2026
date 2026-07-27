@@ -478,3 +478,198 @@ class ThresholdChangeDoesNotRewriteHistoryTests(TestCase):
             user_id=user.id,
         )
         self.assertEqual(payload["stance_category"], "support")
+
+
+class DisplaySettingsApiTests(APITestCase):
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from django.contrib.auth.models import Group
+
+        from api.permissions import RESEARCHER_GROUP_NAME
+
+        User = get_user_model()
+        group, _ = Group.objects.get_or_create(name=RESEARCHER_GROUP_NAME)
+        self.researcher = User.objects.create_user(
+            username="cfg_researcher", password="pw-strong-12345"
+        )
+        self.researcher.groups.add(group)
+        self.participant = User.objects.create_user(
+            username="cfg_participant", password="pw-strong-12345"
+        )
+
+    def test_participant_cannot_read_settings(self):
+        self.client.force_authenticate(user=self.participant)
+        response = self.client.get("/api/settings/display/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_participant_cannot_patch_settings(self):
+        self.client.force_authenticate(user=self.participant)
+        response = self.client.patch(
+            "/api/settings/display/", {"match_fallback_timeout_minutes": 9}
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_participant_cannot_patch_topic(self):
+        self.client.force_authenticate(user=self.participant)
+        response = self.client.patch(
+            "/api/settings/display/topics/102/", {"visible_to_participant": False}
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_researcher_reads_defaults(self):
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.get("/api/settings/display/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["platform"]["participant_entry_mode"], "mixed")
+        self.assertEqual(response.data["platform"]["researcher_entry_mode"], "split")
+        self.assertEqual(
+            response.data["platform"]["match_fallback_timeout_minutes"], 5
+        )
+
+        row = next(r for r in response.data["topics"] if r["topic_id"] == 102)
+        self.assertTrue(row["visible_to_participant"])
+        self.assertTrue(row["visible_to_researcher"])
+        self.assertEqual(row["support_threshold"], 4.5)
+        self.assertEqual(row["default_support_threshold"], 4.5)
+        self.assertFalse(row["is_threshold_overridden"])
+
+    def test_researcher_updates_platform_settings(self):
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.patch(
+            "/api/settings/display/",
+            {"participant_entry_mode": "split", "match_fallback_timeout_minutes": 12},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        setting = PlatformDisplaySetting.load()
+        self.assertEqual(setting.participant_entry_mode, "split")
+        self.assertEqual(setting.match_fallback_timeout_minutes, 12)
+        self.assertEqual(setting.updated_by_id, self.researcher.id)
+
+    def test_patching_one_platform_field_keeps_the_others(self):
+        """PlatformDisplaySetting.save() 會用整個實例下 UPDATE，所以 partial
+        更新必須是對 load() 回來的那列做修改，不能另建實例。"""
+        self.client.force_authenticate(user=self.researcher)
+        self.client.patch(
+            "/api/settings/display/", {"researcher_entry_mode": "mixed"}
+        )
+
+        self.client.patch(
+            "/api/settings/display/", {"match_fallback_timeout_minutes": 7}
+        )
+
+        setting = PlatformDisplaySetting.load()
+        self.assertEqual(setting.match_fallback_timeout_minutes, 7)
+        self.assertEqual(setting.researcher_entry_mode, "mixed")
+
+    def test_timeout_out_of_range_is_rejected(self):
+        self.client.force_authenticate(user=self.researcher)
+
+        for bad in (0, 121):
+            response = self.client.patch(
+                "/api/settings/display/", {"match_fallback_timeout_minutes": bad}
+            )
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        self.assertEqual(PlatformDisplaySetting.load().match_fallback_timeout_minutes, 5)
+
+    def test_researcher_toggles_topic_visibility(self):
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.patch(
+            "/api/settings/display/topics/102/", {"visible_to_participant": False}
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["visible_to_participant"])
+        self.assertTrue(response.data["visible_to_researcher"])
+        override = TopicDisplayOverride.objects.get(topic_id=102)
+        self.assertFalse(override.visible_to_participant)
+        self.assertEqual(override.updated_by_id, self.researcher.id)
+
+    def test_researcher_overrides_thresholds_and_gets_warning(self):
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.patch(
+            "/api/settings/display/topics/102/",
+            {"support_threshold": 5.5, "oppose_threshold": 2.5},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["support_threshold"], 5.5)
+        self.assertTrue(response.data["is_threshold_overridden"])
+        self.assertIn("既有資料不會重算", response.data["warning"])
+
+    def test_visibility_only_patch_has_no_warning(self):
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.patch(
+            "/api/settings/display/topics/102/", {"visible_to_researcher": False}
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertNotIn("warning", response.data)
+
+    def test_oppose_must_be_below_support(self):
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.patch(
+            "/api/settings/display/topics/102/",
+            {"support_threshold": 3.0, "oppose_threshold": 4.0},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(TopicDisplayOverride.objects.filter(topic_id=102).exists())
+
+    def test_partial_override_validated_against_current_effective_value(self):
+        """只送 support=3.0，但目前 oppose 是 3.5——合起來不合法，要擋。"""
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.patch(
+            "/api/settings/display/topics/102/", {"support_threshold": 3.0}
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_threshold_outside_scale_is_rejected(self):
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.patch(
+            "/api/settings/display/topics/102/", {"support_threshold": 9.0}
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_reset_threshold_to_default_with_null(self):
+        self.client.force_authenticate(user=self.researcher)
+        self.client.patch(
+            "/api/settings/display/topics/102/",
+            {"support_threshold": 5.5, "oppose_threshold": 2.5},
+            format="json",
+        )
+
+        response = self.client.patch(
+            "/api/settings/display/topics/102/",
+            {"support_threshold": None, "oppose_threshold": None},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["support_threshold"], 4.5)
+        self.assertFalse(response.data["is_threshold_overridden"])
+
+    def test_unknown_topic_returns_404(self):
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.patch(
+            "/api/settings/display/topics/999/", {"visible_to_participant": False}
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_topics_are_returned_in_display_order(self):
+        from api.dialogue_topics import TOPIC_CONFIGS
+
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.get("/api/settings/display/")
+
+        expected = sorted(
+            TOPIC_CONFIGS,
+            key=lambda tid: TOPIC_CONFIGS[tid].get("display_order", tid),
+        )
+        actual = [row["topic_id"] for row in response.data["topics"]]
+        self.assertEqual(actual, expected)

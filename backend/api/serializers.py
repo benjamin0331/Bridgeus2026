@@ -13,6 +13,7 @@ from .models import (
     AIConversation,
     DiscomfortReport,
     MatchMessage,
+    PlatformDisplaySetting,
     PlatformFeedback,
     PostDialogueResponse,
 )
@@ -547,4 +548,66 @@ class PasswordResetSerializer(serializers.Serializer):
             dj_validate_password(value)
         except DjangoValidationError as exc:
             raise serializers.ValidationError(list(exc.messages))
+
+
+class PlatformDisplaySettingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PlatformDisplaySetting
+        fields = [
+            "participant_entry_mode",
+            "researcher_entry_mode",
+            "match_fallback_timeout_minutes",
+            "updated_at",
+        ]
+        read_only_fields = ["updated_at"]
+
+    def validate_match_fallback_timeout_minutes(self, value):
+        if not 1 <= value <= 120:
+            raise serializers.ValidationError("等待時間需介於 1 到 120 分鐘。")
+        return value
+
+
+class TopicDisplayOverrideSerializer(serializers.Serializer):
+    """單一議題的顯示覆寫。四個欄位都選填；門檻傳 null＝還原成程式碼預設值。
+
+    門檻驗證必須看「套用後的實際結果」而不是只看這次送來的欄位：只送
+    support=3.0 但目前 oppose 是 3.5 的話，合起來是不合法的，得擋下來。
+    """
+
+    visible_to_participant = serializers.BooleanField(required=False)
+    visible_to_researcher = serializers.BooleanField(required=False)
+    support_threshold = serializers.FloatField(required=False, allow_null=True)
+    oppose_threshold = serializers.FloatField(required=False, allow_null=True)
+
+    def validate(self, attrs):
+        from .display_settings import default_stance_thresholds, get_stance_thresholds
+
+        topic_id = self.context["topic_id"]
+        survey_config = get_dialogue_survey(topic_id) or {}
+        scale_config = survey_config.get("scale", {})
+        scale_min = float(scale_config.get("min", 1))
+        scale_max = float(scale_config.get("max", 7))
+
+        current_support, current_oppose = get_stance_thresholds(topic_id=topic_id)
+        default_support, default_oppose = default_stance_thresholds(topic_id=topic_id)
+
+        def resolve(field, current, default):
+            if field not in attrs:
+                return current
+            value = attrs[field]
+            return default if value is None else float(value)
+
+        support = resolve("support_threshold", current_support, default_support)
+        oppose = resolve("oppose_threshold", current_oppose, default_oppose)
+
+        for label, value in (("支持門檻", support), ("反對門檻", oppose)):
+            if not scale_min <= value <= scale_max:
+                raise serializers.ValidationError(
+                    f"{label}需介於 {scale_min} 到 {scale_max} 之間。"
+                )
+
+        if oppose >= support:
+            raise serializers.ValidationError("反對門檻必須小於支持門檻。")
+
+        return attrs
         return value

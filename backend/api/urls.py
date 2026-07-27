@@ -39,6 +39,11 @@ urlpatterns = [
     path('accounts/', views.AccountListCreateView.as_view()),
     path('accounts/<int:pk>/', views.AccountDetailView.as_view()),
     path('accounts/<int:pk>/reset-password/', views.AccountPasswordResetView.as_view()),
+    path('settings/display/', views.DisplaySettingsView.as_view()),
+    path(
+        'settings/display/topics/<int:topic_id>/',
+        views.DisplaySettingsTopicView.as_view(),
+    ),
     path('dialogue/topics/', views.DialogueTopicListView.as_view()),
     path(
         'dialogue/topics/<int:topic_id>/survey/',

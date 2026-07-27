@@ -9,7 +9,9 @@ from .models import (
     MatchMessage,
     MatchQueueEntry,
     MatchStanceDrift,
+    PlatformDisplaySetting,
     Title,
+    TopicDisplayOverride,
     UserStanceProfile,
     UserTitle,
 )
@@ -161,3 +163,28 @@ class UserTitleAdmin(admin.ModelAdmin):
 class IssueReactionAdmin(admin.ModelAdmin):
     list_display = ("id", "issue", "reactor", "emoji_index", "created_at")
     search_fields = ("issue__title", "reactor__username")
+
+
+@admin.register(PlatformDisplaySetting)
+class PlatformDisplaySettingAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "participant_entry_mode",
+        "researcher_entry_mode",
+        "match_fallback_timeout_minutes",
+        "updated_by",
+        "updated_at",
+    )
+
+
+@admin.register(TopicDisplayOverride)
+class TopicDisplayOverrideAdmin(admin.ModelAdmin):
+    list_display = (
+        "topic_id",
+        "visible_to_participant",
+        "visible_to_researcher",
+        "support_threshold",
+        "oppose_threshold",
+        "updated_by",
+        "updated_at",
+    )
