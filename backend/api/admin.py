@@ -3,6 +3,7 @@ from django.contrib import admin
 from .models import (
     AIConversation,
     CCNDTimelineUnlock,
+    DialogueEntryAssignment,
     DialogueMatch,
     IssueReaction,
     MatchAISuggestion,
@@ -188,3 +189,19 @@ class TopicDisplayOverrideAdmin(admin.ModelAdmin):
         "updated_by",
         "updated_at",
     )
+
+
+@admin.register(DialogueEntryAssignment)
+class DialogueEntryAssignmentAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "user",
+        "topic_id",
+        "route",
+        "stance_category",
+        "stance_score",
+        "fallback_accepted_at",
+        "assigned_at",
+    )
+    list_filter = ("route", "stance_category", "topic_id")
+    search_fields = ("user__username",)

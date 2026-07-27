@@ -791,3 +791,54 @@ class TopicDisplayOverride(models.Model):
 
     def __str__(self):
         return f"topic={self.topic_id}"
+
+
+class DialogueEntryAssignment(models.Model):
+    """混合入口把某位使用者在某個議題分到哪一組。
+
+    兩個用途：
+    1. 把關依據——混合模式下，直接呼叫 matching/join 或 dialogue/sessions
+       要有對應的指派才放行。純推導做不到，因為配對逾時後極端立場的人
+       也必須能進 AI。
+    2. 實驗資料——「這位受試者被指派到哪組、當時 stance 多少、用哪組門檻
+       算的、有沒有因為配對逾時而轉去 AI」。
+
+    重新填寫問卷會覆寫同一筆（update_or_create）並清空 fallback 欄位。
+    """
+
+    class Route(models.TextChoices):
+        AI = "ai", "AI 對話"
+        MATCH = "match", "真人配對"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="entry_assignments",
+    )
+    topic_id = models.PositiveIntegerField(db_index=True)
+    route = models.CharField(max_length=8, choices=Route.choices, db_index=True)
+    stance_score = models.DecimalField(max_digits=4, decimal_places=2)
+    stance_category = models.CharField(max_length=20)
+    # 指派當下生效的門檻。門檻可被 Supervisor 調整，沒有這兩欄就無法回答
+    # 「這筆樣本是用哪組門檻分流的」。
+    support_threshold = models.FloatField()
+    oppose_threshold = models.FloatField()
+    entry_mode_at_assignment = models.CharField(max_length=16)
+    assigned_at = models.DateTimeField(auto_now_add=True)
+    fallback_offered_at = models.DateTimeField(
+        null=True, blank=True, help_text="第一次被提示可以改跟 AI 對話的時間"
+    )
+    fallback_accepted_at = models.DateTimeField(
+        null=True, blank=True, help_text="使用者接受改跟 AI 對話的時間"
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "topic_id"],
+                name="uniq_entry_assignment_user_topic",
+            ),
+        ]
+
+    def __str__(self):
+        return f"user={self.user_id} topic={self.topic_id} route={self.route}"
