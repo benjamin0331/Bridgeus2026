@@ -46,26 +46,31 @@ const KnowledgeBaseTopicPage = () => {
 
   useEffect(() => {
     let cancelled = false;
-    setLoaded(false);
 
-    api
-      .get('/api/summary/viewpoints/browse/', {
-        params: { topic_id: topicId, page, page_size: PAGE_SIZE },
-      })
-      .then((response) => {
-        if (cancelled) return;
-        setResults(Array.isArray(response.data?.results) ? response.data.results : []);
-        setCount(response.data?.count ?? 0);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setResults([]);
-          setCount(0);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoaded(true);
-      });
+    const loadPage = async () => {
+      setLoaded(false);
+
+      await api
+        .get('/api/summary/viewpoints/browse/', {
+          params: { topic_id: topicId, page, page_size: PAGE_SIZE },
+        })
+        .then((response) => {
+          if (cancelled) return;
+          setResults(Array.isArray(response.data?.results) ? response.data.results : []);
+          setCount(response.data?.count ?? 0);
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setResults([]);
+            setCount(0);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setLoaded(true);
+        });
+    };
+
+    void loadPage();
 
     return () => {
       cancelled = true;

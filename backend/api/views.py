@@ -13,6 +13,7 @@ from django.db.models import FloatField, Q, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework import generics, permissions, status
+from rest_framework.exceptions import ValidationError
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -45,6 +46,7 @@ from .dialogue_topics import (
     get_dialogue_survey,
     get_dialogue_topics,
 )
+from .display_settings import get_survey_scoring_config, resolve_stance_category
 from .timeline_access import LOCKED_DETAIL, timeline_unlock_state
 from .serializers import (
     AIConversationSerializer,
@@ -203,7 +205,7 @@ def _dialogue_session_response_payload(
     stance_drift = session_state.get("stance_drift")
     stance_score = session_state.get("user_stance_score")
     try:
-        stance_category = _resolve_stance_category(
+        stance_category = resolve_stance_category(
             topic_id=int(session_record.get("topic_id")),
             user_stance_score=float(stance_score),
         )
@@ -246,41 +248,6 @@ def _update_ai_session_stance_drift(
         return (session_record.get("session") or {}).get("stance_drift")
 
 
-def _get_survey_scoring_config(topic_id: int) -> dict:
-    survey_config = get_dialogue_survey(topic_id) or {}
-    scale_config = survey_config.get("scale", {})
-    stance_rules = survey_config.get("stance_rules", {})
-    likert_questions = survey_config.get("questions", [])
-
-    return {
-        "scale_min": int(scale_config.get("min", 1)),
-        "scale_max": int(scale_config.get("max", 7)),
-        "reverse_question_ids": {
-            str(question_id)
-            for question_id in stance_rules.get("reverse_question_ids", [])
-        },
-        "support_threshold": float(stance_rules.get("support_threshold", 4.5)),
-        "oppose_threshold": float(stance_rules.get("oppose_threshold", 3.5)),
-        "neutral_score": float(
-            (
-                float(scale_config.get("min", 1))
-                + float(scale_config.get("max", 7))
-            )
-            / 2
-        ),
-        "likert_question_ids": {
-            str(question["id"]) for question in likert_questions
-        },
-        "open_question_mappings": [
-            {
-                "id": question["id"],
-                "code": question["code"],
-            }
-            for question in survey_config.get("open_questions", [])
-        ],
-    }
-
-
 def _get_open_answer(
     survey_open_answers: dict[str, str],
     *,
@@ -300,7 +267,7 @@ def _compute_user_stance_score(
     topic_id: int,
     survey_answers: dict[str, int],
 ) -> float:
-    scoring_config = _get_survey_scoring_config(topic_id)
+    scoring_config = get_survey_scoring_config(topic_id)
     if not survey_answers:
         return round(scoring_config["neutral_score"], 2)
 
@@ -328,22 +295,12 @@ def _compute_user_stance_score(
     return round(sum(adjusted_scores) / len(adjusted_scores), 2)
 
 
-def _resolve_stance_category(*, topic_id: int, user_stance_score: float) -> str:
-    scoring_config = _get_survey_scoring_config(topic_id)
-
-    if user_stance_score > scoring_config["support_threshold"]:
-        return "support"
-    if user_stance_score < scoring_config["oppose_threshold"]:
-        return "oppose"
-    return "neutral"
-
-
 def _resolve_stances(
     *,
     topic_id: int,
     user_stance_score: float,
 ) -> tuple[str, str, str]:
-    stance_category = _resolve_stance_category(
+    stance_category = resolve_stance_category(
         topic_id=topic_id,
         user_stance_score=user_stance_score,
     )
@@ -362,7 +319,7 @@ def _resolve_open_answers(
     topic_id: int,
     survey_open_answers: dict[str, str],
 ) -> dict[str, str]:
-    scoring_config = _get_survey_scoring_config(topic_id)
+    scoring_config = get_survey_scoring_config(topic_id)
     resolved_answers = {}
 
     for question in scoring_config["open_question_mappings"]:
@@ -463,7 +420,7 @@ def _upsert_user_stance_profile(
     already upserts this via ``enqueue_for_matching``; this keeps the AI-mode flow
     in sync so AI-only users also have a reusable profile.
     """
-    stance_category = _resolve_stance_category(
+    stance_category = resolve_stance_category(
         topic_id=topic_id,
         user_stance_score=user_stance_score,
     )
@@ -990,7 +947,7 @@ class DialogueSessionCreateView(APIView):
                 "session_id": session_id,
                 "dialogue_phase": session.dialogue_phase.value,
                 "stance_score": session.user_stance_score,
-                "stance_category": _resolve_stance_category(
+                "stance_category": resolve_stance_category(
                     topic_id=validated["topic_id"],
                     user_stance_score=session.user_stance_score,
                 ),
@@ -1152,7 +1109,7 @@ class DialogueSessionReplyView(APIView):
                 "chunks": chunks,
                 "dialogue_phase": session.dialogue_phase.value,
                 "stance_score": session.user_stance_score,
-                "stance_category": _resolve_stance_category(
+                "stance_category": resolve_stance_category(
                     topic_id=session_record.get("topic_id"),
                     user_stance_score=session.user_stance_score,
                 ),
@@ -1479,7 +1436,7 @@ class ViewpointReviewListView(generics.ListAPIView):
         if status_param != "all":
             qs = qs.filter(review_status=status_param)
 
-        topic_id = self.request.query_params.get("topic_id")
+        topic_id = _parse_topic_id(self.request.query_params.get("topic_id"))
         if topic_id:
             qs = qs.filter(topic_id=topic_id)
 
@@ -1517,7 +1474,22 @@ class ViewpointReviewDecisionView(APIView):
         return Response(ViewpointNodeReviewSerializer(node).data)
 
 
-def _approved_viewpoints_queryset(topic_id: str | None):
+def _parse_topic_id(raw: str | None) -> int | None:
+    """把 query param 的 topic_id 轉成 int；沒帶（None/空字串）回傳 None，呼叫端
+    自行決定要不要當必填。帶了但不是合法數字（例如 ?topic_id=abc）就丟 DRF
+    的 ValidationError，讓例外處理統一轉成 400——而不是讓 Django ORM 在
+    `.filter(topic_id=raw)` 時對非數字字串丟未被接住的 ValueError，變成
+    未預期的 500。
+    """
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise ValidationError({"topic_id": "topic_id 必須是有效的議題編號。"})
+
+
+def _approved_viewpoints_queryset(topic_id: int | None):
     qs = ViewpointNode.objects.filter(
         review_status=ViewpointNode.ReviewStatus.APPROVED
     ).select_related("summary")
@@ -1573,7 +1545,7 @@ class KnowledgeBaseHighlightsView(APIView):
     authentication_classes = [JWTStatelessUserAuthentication]
 
     def get(self, request):
-        topic_id = request.query_params.get("topic_id")
+        topic_id = _parse_topic_id(request.query_params.get("topic_id"))
 
         try:
             limit = int(request.query_params.get("limit", 5))
@@ -1655,7 +1627,7 @@ class KnowledgeBaseViewpointBrowseView(APIView):
     pagination_class = ViewpointBrowsePagination
 
     def get(self, request):
-        topic_id = request.query_params.get("topic_id")
+        topic_id = _parse_topic_id(request.query_params.get("topic_id"))
         if not topic_id:
             return Response(
                 {"detail": "topic_id 為必填。"},
@@ -1686,7 +1658,7 @@ class VideoRecommendationListView(generics.ListAPIView):
 
     def get_queryset(self):
         qs = VideoRecommendation.objects.filter(is_published=True)
-        topic_id = self.request.query_params.get("topic_id")
+        topic_id = _parse_topic_id(self.request.query_params.get("topic_id"))
         if topic_id:
             qs = qs.filter(topic_id=topic_id)
         return qs
@@ -1889,7 +1861,7 @@ class MatchingJoinView(APIView):
             topic_id=validated["topic_id"],
             survey_answers=validated["survey_answers"],
         )
-        stance_category = _resolve_stance_category(
+        stance_category = resolve_stance_category(
             topic_id=validated["topic_id"],
             user_stance_score=stance_score,
         )

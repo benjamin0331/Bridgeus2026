@@ -9,7 +9,7 @@ from django.contrib.auth.models import User
 from django.test import TestCase
 from django.utils import timezone
 
-from api.models import DialogueMatch, MatchMessage, MatchStanceDrift
+from api.models import DialogueMatch, MatchMessage
 from apps.matching.services.matcher import close_match
 from apps.matching.services.semantic_tree import (
     OWNER_USER_A,
@@ -44,17 +44,23 @@ class TriggerM6PipelineOnCloseTests(TestCase):
             room_id="test-room-m6-trigger",
         )
 
+        # ccnd_semantic_dist is computed from MatchMessage.embedding as the
+        # cosine distance from the SAME speaker's previous message (see
+        # apps/summary/pipeline/assemble.py). message index 0 and index 2 are
+        # both side "a"; giving them orthogonal embeddings gives message
+        # index 2 a cosine distance of 1.0 from its own previous message,
+        # comfortably clearing Step 2's SEMANTIC_DIST_THRESHOLD=0.15 gate.
+        embedding_a0 = [1.0] + [0.0] * 383
+        embedding_a2 = [0.0, 1.0] + [0.0] * 382
+
         messages = []
         for index, (side, content) in enumerate(_TURNS):
             sender = self.user_a if side == "a" else self.user_b
-            if index == 2:
-                # Gives message index 2 (side "a") a real drift > SEMANTIC_DIST_THRESHOLD
-                # so it clears Step 2 of quality_filter.extract_valuable_pairs().
-                MatchStanceDrift.objects.create(
-                    match=self.match, user=self.user_a, drift_value=0.5
-                )
+            embedding = {0: embedding_a0, 2: embedding_a2}.get(index)
             messages.append(
-                MatchMessage.objects.create(match=self.match, sender=sender, content=content)
+                MatchMessage.objects.create(
+                    match=self.match, sender=sender, content=content, embedding=embedding
+                )
             )
 
         owner_a_state = create_owner_tree_state(OWNER_USER_A, "核電")

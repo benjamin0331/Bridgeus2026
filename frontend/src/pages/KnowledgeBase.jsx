@@ -81,43 +81,49 @@ const KnowledgeBase = () => {
 
   // 選定議題後才拉「熱門對話 Top 5」和過濾影片推薦。
   useEffect(() => {
-    if (!selectedTopicId) {
-      setTopConversations([]);
-      setTopConversationsLoaded(false);
-      setVideos([]);
-      setVideosLoaded(false);
-      return undefined;
-    }
-
     let cancelled = false;
-    setTopConversationsLoaded(false);
-    setVideosLoaded(false);
 
-    api
-      .get('/api/summary/viewpoints/highlights/', {
-        params: { topic_id: selectedTopicId, limit: TOP_CONVERSATIONS_LIMIT },
-      })
-      .then((response) => {
-        if (!cancelled) setTopConversations(Array.isArray(response.data) ? response.data : []);
-      })
-      .catch(() => {
-        if (!cancelled) setTopConversations([]);
-      })
-      .finally(() => {
-        if (!cancelled) setTopConversationsLoaded(true);
-      });
+    const loadTopicData = async () => {
+      if (!selectedTopicId) {
+        setTopConversations([]);
+        setTopConversationsLoaded(false);
+        setVideos([]);
+        setVideosLoaded(false);
+        return;
+      }
 
-    api
-      .get('/api/summary/videos/', { params: { topic_id: selectedTopicId } })
-      .then((response) => {
-        if (!cancelled) setVideos(Array.isArray(response.data) ? response.data : []);
-      })
-      .catch(() => {
-        if (!cancelled) setVideos([]);
-      })
-      .finally(() => {
-        if (!cancelled) setVideosLoaded(true);
-      });
+      setTopConversationsLoaded(false);
+      setVideosLoaded(false);
+
+      await Promise.all([
+        api
+          .get('/api/summary/viewpoints/highlights/', {
+            params: { topic_id: selectedTopicId, limit: TOP_CONVERSATIONS_LIMIT },
+          })
+          .then((response) => {
+            if (!cancelled) setTopConversations(Array.isArray(response.data) ? response.data : []);
+          })
+          .catch(() => {
+            if (!cancelled) setTopConversations([]);
+          })
+          .finally(() => {
+            if (!cancelled) setTopConversationsLoaded(true);
+          }),
+        api
+          .get('/api/summary/videos/', { params: { topic_id: selectedTopicId } })
+          .then((response) => {
+            if (!cancelled) setVideos(Array.isArray(response.data) ? response.data : []);
+          })
+          .catch(() => {
+            if (!cancelled) setVideos([]);
+          })
+          .finally(() => {
+            if (!cancelled) setVideosLoaded(true);
+          }),
+      ]);
+    };
+
+    void loadTopicData();
 
     return () => {
       cancelled = true;

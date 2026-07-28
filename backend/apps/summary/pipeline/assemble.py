@@ -1,23 +1,17 @@
 """M6 觀點知識庫 — 組資料層：把一場 H-H DialogueMatch 的 MatchMessage 組成
 apps.summary.pipeline.quality_filter.run_pipeline() 需要的 messages: list[dict]。
 
-在這之前，ccnd_semantic_dist / ccnd_stance_shift 已經各自有唯讀函式可以取值
-（hh_analysis.get_message_drift_value、semantic_tree.get_lit_node_count），
-但沒有任何程式碼把兩者接起來餵給 run_pipeline()——這支檔案就是那條串接層。
-
-時間語意（請注意，這是設計判斷，不是既定事實）：
-get_message_drift_value(as_of=message.created_at) 回傳的是「這則訊息當下，
-最近一筆『已存在』的 drift 記錄」。實際運作中 MatchStanceDrift 是在訊息存檔後
-才重算寫入的（略晚於 message.created_at），所以對訊息 N 而言，這裡取到的是
-「訊息 N 送出當下、已知的最新偏移量」（通常反映的是前一則自己發言的結果），
-而不是「訊息 N 自己觸發的那次重算結果」。如果要改成後者（訊息 N 觸發的重算
-結果），需要改成找 measured_at >= message.created_at 的第一筆，而不是這裡採用
-的 <= 最新一筆。
+ccnd_semantic_dist / ccnd_stance_shift 都是「跟同一位發言者上一則發言之間的
+差值」，不是全場累積值——Step 3 的加權評分（quality_filter.py 的
+W_SEMANTIC/W_STANCE 合計 70% 權重）本意是量化「這則發言本身帶來多少新意」，
+如果餵累積值（例如全場論述移動總量、累積點亮節點數），會系統性地讓「講得晚」
+的發言分數偏高，而不是「講得好」的發言分數偏高，跟評分的本意不符。第一則發言
+沒有「自己的上一則」可比，記 0.0——Step 2 的門檻本來就會篩掉低分發言，不需要
+特殊處理。
 """
 
 from api.models import DialogueMatch, MatchStanceDrift
-from api.views import _resolve_stance_category
-from apps.matching.services.hh_analysis import get_message_drift_value
+from api.display_settings import resolve_stance_category
 from apps.matching.services.semantic_tree import (
     OWNER_USER_A,
     OWNER_USER_B,
@@ -27,6 +21,7 @@ from apps.matching.services.semantic_tree import (
 )
 from apps.summary.pipeline.quality_filter import run_pipeline
 from apps.summary.pipeline.write import write_dialogue_summary, write_viewpoint
+from chat.services.embedding import cosine_similarity
 
 # 假設的滿分點亮節點數，換算 get_lit_node_count() 的原始計數成 0-100 分；
 # 與 apps/summary/pipeline/quality_filter.py 模組 docstring 記載的公式一致。
@@ -38,12 +33,16 @@ def build_messages_for_match(match: DialogueMatch) -> list[dict]:
 
     每則訊息：
     - side：發送者是 match.user_a 就是 "a"，否則 "b"
-    - ccnd_semantic_dist：發送者在這則訊息當下最近一次已知的論述移動/drift
-    - ccnd_stance_shift：發送者在這則訊息當下累積點亮的 CCND 節點數，
-      換算成 100/MAX_LIT_NODES 分制
+    - ccnd_semantic_dist：跟「同一位發言者上一則發言」的 embedding cosine
+      distance（1 - cosine_similarity）；第一則記 0.0
+    - ccnd_stance_shift：跟「同一位發言者上一則發言」相比多點亮了幾個 CCND
+      節點（累積計數的差，不是總數），換算成 100/MAX_LIT_NODES 分制
     - message_id：MatchMessage 的 id
     """
     messages = []
+    prev_embedding_by_side: dict[str, list[float] | None] = {}
+    prev_lit_count_by_side: dict[str, int] = {}
+
     for msg in match.messages.order_by("created_at", "id"):
         if msg.sender_id == match.user_a_id:
             side, owner_key = "a", OWNER_USER_A
@@ -52,22 +51,30 @@ def build_messages_for_match(match: DialogueMatch) -> list[dict]:
         else:
             continue  # 不屬於這場配對雙方的訊息，理論上不會發生，跳過不納入
 
-        semantic_dist = get_message_drift_value(
-            match_id=match.id, user_id=msg.sender_id, as_of=msg.created_at
-        )
+        prev_embedding = prev_embedding_by_side.get(side)
+        if prev_embedding is not None and msg.embedding is not None:
+            semantic_dist = round(1 - cosine_similarity(msg.embedding, prev_embedding), 4)
+        else:
+            semantic_dist = 0.0
+
         lit_count = get_lit_node_count(
             match, owner_key=owner_key, source_message_id=str(msg.id)
         )
+        lit_delta = max(0, lit_count - prev_lit_count_by_side.get(side, 0))
 
         messages.append(
             {
                 "side": side,
                 "content": msg.content,
                 "ccnd_semantic_dist": semantic_dist,
-                "ccnd_stance_shift": round(100 / MAX_LIT_NODES * lit_count, 4),
+                "ccnd_stance_shift": round(100 / MAX_LIT_NODES * lit_delta, 4),
                 "message_id": msg.id,
             }
         )
+
+        prev_embedding_by_side[side] = msg.embedding
+        prev_lit_count_by_side[side] = lit_count
+
     return messages
 
 
@@ -77,10 +84,10 @@ def _stance_for_score(topic_id: int, stance_score) -> str:
     對應 DialogueSummary.side_a_stance / side_b_stance。沿用配對當下記錄在
     DialogueMatch 上的分數（而不是重查 UserStanceProfile 的當前值，那可能在
     配對之後又被使用者填了新的問卷、跟這場對話當時的立場對不上），並且套用
-    api.views._resolve_stance_category() 同一套 topic 門檻，跟問卷結果頁、
-    配對演算法用同一套判定標準，不再自己另立一份。
+    api.display_settings.resolve_stance_category() 同一套 topic 門檻，跟問卷
+    結果頁、配對演算法用同一套判定標準，不再自己另立一份。
     """
-    return _resolve_stance_category(topic_id=topic_id, user_stance_score=float(stance_score))
+    return resolve_stance_category(topic_id=topic_id, user_stance_score=float(stance_score))
 
 
 def _quality_score(ranked: list[dict]) -> float | None:

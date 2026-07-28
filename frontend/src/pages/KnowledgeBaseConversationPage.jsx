@@ -29,20 +29,25 @@ const KnowledgeBaseConversationPage = () => {
 
   useEffect(() => {
     let cancelled = false;
-    setLoaded(false);
-    setError(false);
 
-    api
-      .get(`/api/summary/viewpoints/${viewpointId}/conversation/`)
-      .then((response) => {
-        if (!cancelled) setConversation(response.data ?? null);
-      })
-      .catch(() => {
-        if (!cancelled) setError(true);
-      })
-      .finally(() => {
-        if (!cancelled) setLoaded(true);
-      });
+    const loadConversation = async () => {
+      setLoaded(false);
+      setError(false);
+
+      await api
+        .get(`/api/summary/viewpoints/${viewpointId}/conversation/`)
+        .then((response) => {
+          if (!cancelled) setConversation(response.data ?? null);
+        })
+        .catch(() => {
+          if (!cancelled) setError(true);
+        })
+        .finally(() => {
+          if (!cancelled) setLoaded(true);
+        });
+    };
+
+    void loadConversation();
 
     return () => {
       cancelled = true;
