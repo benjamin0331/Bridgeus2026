@@ -25,6 +25,21 @@ server {
     proxy_set_header X-Forwarded-Proto $scheme;
   }
 
+  # Godot 常駐 headless server 的 WebSocket 多人連線（非 Django Channels，
+  # 是 Godot 自己的 WebSocketMultiplayerPeer，見 godot/World/game.gd）。
+  # 常駐 server 跑在 host 上（systemd，非容器內），走 host.docker.internal
+  # 觸及，跟 BACKEND_HOST 同樣的 extra_hosts 映射即可。
+  location /godot-ws {
+    proxy_pass http://${GODOT_WS_HOST}:${GODOT_WS_PORT};
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
+
   location / {
     try_files $uri $uri/ /index.html;
   }

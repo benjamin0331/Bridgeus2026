@@ -1,0 +1,63 @@
+/* Part F — platform feedback. Reuses pq-* styles; this file only adds the
+   NPS 0–10 scale and the thank-you variant. */
+
+/* NPS 0–10 row */
+.pf-nps-scale {
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+  flex-wrap: nowrap;
+}
+
+.pf-nps-dot {
+  flex: 1;
+  min-width: 0;
+  aspect-ratio: 1 / 1;
+  border: 2px solid #333;
+  border-radius: 50%;
+  background-color: white;
+  color: #333;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.pf-nps-dot.selected {
+  background-color: #676767;
+  color: white;
+}
+
+/* Thank-you (mirrors DebriefingPage's db-thank-you) */
+.pf-thank-you {
+  margin: auto;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  align-items: center;
+}
+
+.pf-thank-you h2 {
+  font-size: 26px;
+  font-weight: bold;
+  color: #1a1a1a;
+}
+
+.pf-thank-you p {
+  color: #555;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.pf-withdrawn-note {
+  color: #8a6d3b;
+}
+
+@media (max-width: 640px) {
+  .pf-nps-dot {
+    font-size: 11px;
+    border-width: 1.5px;
+  }
+}

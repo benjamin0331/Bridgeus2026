@@ -351,6 +351,117 @@ def find_node_by_id(node: dict[str, Any] | None, node_id: str) -> dict[str, Any]
     return None
 
 
+def find_nodes_born_from_message(
+    node: dict[str, Any] | None,
+    source_message_id: str,
+) -> list[dict[str, Any]]:
+    """Return every node whose first message (mode == "new") was recorded
+    for `source_message_id` — i.e. the nodes that were created when that
+    message was analyzed, as opposed to nodes it only merged into.
+    """
+    born: list[dict[str, Any]] = []
+    for child in (node or {}).get("children") or []:
+        if not isinstance(child, dict):
+            continue
+        messages = child.get("messages") or []
+        if messages and isinstance(messages[0], dict):
+            first_message = messages[0]
+            if (
+                first_message.get("mode") == "new"
+                and clean_text(first_message.get("sourceMessageId")) == clean_text(source_message_id)
+            ):
+                born.append(child)
+        born.extend(find_nodes_born_from_message(child, source_message_id))
+    return born
+
+
+def born_nodes_payload(
+    tree: dict[str, Any] | None,
+    source_message_id: str,
+) -> list[dict[str, Any]]:
+    """Light, UI-facing shape of the nodes a given message created.
+
+    Note the time axis: this is keyed on `sourceMessageId` (a property of the
+    message itself), NOT on recordedAt/analyzedAt. The timeline reconstructs the
+    tree using the analysis clock (`recordedAt`), but "which nodes did this
+    message give birth to" must never be derived from that clock — keeping the
+    two axes apart is what stops batch-analysis timing from distorting the
+    figure.
+    """
+    return [
+        {
+            "id": clean_text(node.get("id")),
+            "name": clean_text(node.get("name")),
+            "stance": clean_text(node.get("stance")),
+        }
+        for node in find_nodes_born_from_message(tree, source_message_id)
+    ]
+
+
+def resolve_cutoff_for_message(
+    analysis_history: list[dict[str, Any]] | None,
+    source_message_id: str,
+) -> str | None:
+    """Look up the `analyzedAt` timestamp recorded for `source_message_id`
+    in an owner's `analysisHistory` — this is the cutoff to pass to
+    `reconstruct_tree_as_of()` to see the tree "as of" that message, even
+    if the message produced no items of its own.
+    """
+    target_id = clean_text(source_message_id)
+    for entry in analysis_history or []:
+        if isinstance(entry, dict) and clean_text(entry.get("sourceId")) == target_id:
+            return clean_text(entry.get("analyzedAt")) or None
+    return None
+
+
+def reconstruct_tree_as_of(tree: dict[str, Any], cutoff_recorded_at: str) -> dict[str, Any]:
+    """Return a copy of `tree` showing only messages recorded at or before
+    `cutoff_recorded_at`. Nodes aren't repositioned once created, so this
+    is a prune of the current tree rather than a replay from scratch: a
+    node whose messages are all after the cutoff hadn't been created yet
+    and is dropped along with its descendants; a node that had already
+    been created keeps only its messages up to the cutoff, with
+    `claimText` rolled back to match the last of those messages.
+
+    Anchor nodes are never dropped (the UI always shows all fixed anchors)
+    but their `hiddenUntilUsed` flag is recomputed for this cutoff, since
+    the live tree only ever flips it from True to False and never back —
+    an anchor first touched *after* the cutoff must still show as hidden
+    in the snapshot even though it's long since unhidden in the live tree.
+    """
+    cutoff = clean_text(cutoff_recorded_at)
+    snapshot = deepcopy(tree)
+
+    def prune(node: dict[str, Any]) -> None:
+        kept_children = []
+        for child in node.get("children") or []:
+            if not isinstance(child, dict):
+                continue
+            is_anchor = child.get("type") == "anchor"
+            messages = child.get("messages")
+            if messages:
+                visible = [
+                    message
+                    for message in messages
+                    if isinstance(message, dict) and clean_text(message.get("recordedAt")) <= cutoff
+                ]
+                if not visible:
+                    continue
+                child["messages"] = visible
+                if child.get("claimText"):
+                    child["claimText"] = visible[-1].get("text") or child["claimText"]
+            prune(child)
+            if is_anchor:
+                child["hiddenUntilUsed"] = not bool(child.get("children"))
+            elif not messages and not child.get("children"):
+                continue
+            kept_children.append(child)
+        node["children"] = kept_children
+
+    prune(snapshot)
+    return snapshot
+
+
 def find_child_by_name(node: dict[str, Any] | None, name: str) -> dict[str, Any] | None:
     return next(
         (
@@ -390,29 +501,52 @@ def _looks_like_internal_id(value: Any) -> bool:
     return bool(_INTERNAL_ID_RE.match(clean_text(value)))
 
 
+def _latest_stance(node: dict[str, Any]) -> str:
+    messages = node.get("messages") or []
+    if messages and isinstance(messages[-1], dict):
+        return clean_text(messages[-1].get("stance")) or "中立"
+    return clean_text(node.get("stance")) or "中立"
+
+
 def list_existing_node_names(tree: dict[str, Any] | None) -> str:
-    """Flatten each anchor's existing child names so the model can reuse the
-    exact string and merge synonymous claims instead of spawning near-duplicates.
+    """Flatten each anchor's existing child names (plus, for leaf claim
+    nodes, their current stance and underlying claim) so the model can
+    reuse the exact string and merge synonymous claims — or recognize that
+    a new, opposite-stance claim is actually a stance update on the same
+    discussion axis — instead of spawning near-duplicate/mirror nodes.
     """
     lines = []
     for anchor in (tree or {}).get("children") or []:
         if not isinstance(anchor, dict):
             continue
-        names: list[str] = []
+        entries: list[str] = []
+        seen_labels: set[str] = set()
 
-        def collect(node: dict[str, Any]) -> None:
+        def collect(node: dict[str, Any], path_prefix: list[str]) -> None:
             for child in node.get("children") or []:
                 if not isinstance(child, dict):
                     continue
                 name = clean_text(child.get("name"))
+                child_path = path_prefix + [name] if name else path_prefix
                 if name:
-                    names.append(name)
-                collect(child)
+                    # Include the path prefix so the model can see a node's
+                    # place in the hierarchy (needed to pick the right
+                    # `path` when reusing a node) and so two different nodes
+                    # that happen to share a bare name aren't collapsed into
+                    # one displayed entry.
+                    label = "＞".join(child_path)
+                    if label not in seen_labels:
+                        seen_labels.add(label)
+                        claim = clean_text(child.get("claimText"))
+                        if claim:
+                            entries.append(f"{label}（目前立場：{_latest_stance(child)}；主張：{claim}）")
+                        else:
+                            entries.append(label)
+                collect(child, child_path)
 
-        collect(anchor)
-        if names:
-            unique_names = list(dict.fromkeys(names))
-            lines.append(f"{anchor.get('name')}：{'、'.join(unique_names)}")
+        collect(anchor, [])
+        if entries:
+            lines.append(f"{anchor.get('name')}：{'、'.join(entries)}")
     return "\n".join(lines) if lines else "（目前各分類底下還沒有任何節點）"
 
 
@@ -465,6 +599,19 @@ def build_openai_request(
             "- 範例：「核電風險不可控」「核能事故後果嚴重」核心主張都是『核安風險高』，應合併。",
             "- 寧可掛到既有節點，也不要為了細微差異新增節點；同一則訊息內也不要同時輸出兩個意思相近的 items。",
             "",
+            # NOTE: this rule and 合併規則 above both resolve to the same action
+            # (reuse the existing node's exact pointName/path) — see
+            # find_child_by_name / apply_analysis_items_to_tree below, which
+            # merge purely by exact-name match regardless of *why* the model
+            # decided to reuse the name. The model doesn't need to classify
+            # which rule "applies"; either one converges on the same output.
+            "立場更新規則（新增，務必遵守）：",
+            "- 有些新主張和某個既有節點在討論『同一個討論維度』（例如都在回答『核廢問題能不能解決』），但這次的立場和既有節點不同（例如既有節點是『反對』，這次語氣是『支持』）。",
+            "- 這種情況屬於『立場更新』，不是新論點：請直接重用該既有節點『完全相同的 pointName 與 path』，讓系統把這次的立場記錄併入同一個節點的歷史，不要另外新增一個看起來相反的節點。",
+            "- 判斷依據是『討論的是不是同一個潛在問題』，不是『立場是否相同』；立場不同不代表要拆成新節點。",
+            "- 範例：現有節點『核廢問題待解（目前立場：反對；主張：核廢處理方式尚未成熟）』，本次輸入『瑞典的地下處置方式已經證實可行』→ 屬於同一討論維度（核廢問題能否解決）、立場轉為支持，應輸出 pointName＝『核廢問題待解』（沿用既有節點），不要新建『核廢處理有解方』這類新節點。",
+            "- 若不確定屬於合併規則還是立場更新規則，效果相同：兩者都指向重用既有 pointName，不需要為了分辨規則類型而猶豫。",
+            "",
             "分類規則：",
             "- anchorId 必須是最主要的議題分類。",
             "- 如果同一段話同時涉及兩個主題，才分成兩個 items。",
@@ -492,6 +639,9 @@ def build_openai_request(
             "- 長度建議 6 到 12 個中文字。",
             "- 不要使用完整句子。",
             "- 不要使用「等等」、「很多問題」、「有疑慮」這種模糊名稱。",
+            "- pointName 必須包含至少一個具體名詞或實體（例如地名、技術名稱、政策名稱、數據），不能只是抽象的立場摘要。",
+            "  BAD：「核廢問題待解」「有解方」「風險很高」→ 太抽象，看不出實質內容。",
+            "  GOOD：「瑞典地下處置方案」「核四延役爭議」「反應爐被動安全設計」→ 具體、可辨識。",
             "- 不要和 path 最後一層完全同名。",
             "",
             "confidence 規則：",
@@ -550,6 +700,8 @@ def validate_analysis_items(
     payload: dict[str, Any],
     tree: dict[str, Any],
     anchors: list[dict[str, str]] | None = None,
+    *,
+    min_confidence: float = MIN_CONFIDENCE,
 ) -> dict[str, list[dict[str, Any]]]:
     resolved_anchors = anchors or FIXED_ANCHORS
     anchor_map = {anchor["id"]: anchor for anchor in resolved_anchors}
@@ -587,8 +739,8 @@ def validate_analysis_items(
         if confidence != confidence:
             invalid_items.append(_item_error(raw_item, "missing confidence"))
             continue
-        if confidence < MIN_CONFIDENCE:
-            invalid_items.append(_item_error(raw_item, f"confidence below {MIN_CONFIDENCE}"))
+        if confidence < min_confidence:
+            invalid_items.append(_item_error(raw_item, f"confidence below {min_confidence}"))
             continue
         if confidence > 1:
             invalid_items.append(_item_error(raw_item, "confidence must be 1 or lower"))
@@ -659,12 +811,20 @@ def _max_generated_counter(node: dict[str, Any] | None) -> int:
     return max(current, child_max)
 
 
-def _create_generated_point_node(name: str, counter: int, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+def _create_generated_point_node(
+    name: str,
+    counter: int,
+    metadata: dict[str, Any] | None = None,
+    *,
+    message_id: str = "",
+) -> dict[str, Any]:
     return {
         "id": f"agent_{counter}",
         "name": name,
         "type": "point",
         "children": [],
+        "created_at": timezone.now().isoformat(),
+        "message_id": message_id,
         **(metadata or {}),
     }
 
@@ -710,7 +870,7 @@ def _append_node_message(
             **_message_source_metadata(source_message),
         }
     )
-    if not node.get("claimText") and mode != "category":
+    if text and mode != "category":
         node["claimText"] = text
     return True
 
@@ -747,6 +907,7 @@ def apply_analysis_items_to_tree(
                     "generatedBy": "openai",
                     "sourceClaim": item.get("claimText"),
                 },
+                message_id=clean_text((source_message or {}).get("id")),
             )
             parent_node.setdefault("children", []).append(new_node)
             parent_node = new_node
@@ -769,6 +930,7 @@ def apply_analysis_items_to_tree(
                     "confidence": item.get("confidence"),
                     "rationale": item.get("rationale"),
                 },
+                message_id=clean_text((source_message or {}).get("id")),
             )
             parent_node.setdefault("children", []).append(target_node)
             mode = "new"
@@ -880,6 +1042,13 @@ def analyze_with_openai(
 
 LOCAL_CLASSIFIER_TOPIC_IDS = {102}
 
+# MIN_CONFIDENCE (0.55) was tuned for an LLM's self-reported meta-confidence,
+# which tends to run high. The local classifier's confidence is a raw softmax
+# argmax probability over a 36-way cluster space, where even a correct call
+# often lands around 0.5 — reusing MIN_CONFIDENCE would silently drop most of
+# its output. Tune this independently as real traffic comes in.
+LOCAL_CLASSIFIER_MIN_CONFIDENCE = 0.35
+
 
 def uses_local_classifier(topic_id: int | None) -> bool:
     return topic_id in LOCAL_CLASSIFIER_TOPIC_IDS
@@ -903,7 +1072,12 @@ def analyze_text_for_tree(
 
         candidate_items = nuclear_node_classifier.build_candidate_items(text, resolved_anchors)
         return {
-            **validate_analysis_items({"items": candidate_items}, tree, resolved_anchors),
+            **validate_analysis_items(
+                {"items": candidate_items},
+                tree,
+                resolved_anchors,
+                min_confidence=LOCAL_CLASSIFIER_MIN_CONFIDENCE,
+            ),
             "model": "local-bert-pipeline",
         }
 
@@ -950,6 +1124,70 @@ def _owner_key_for_message(match: DialogueMatch, sender_id: int | None) -> str |
         return OWNER_USER_A
     if sender_id == match.user_b_id:
         return OWNER_USER_B
+    return None
+
+
+def get_lit_node_count(
+    match: DialogueMatch,
+    *,
+    owner_key: str,
+    source_message_id: str,
+    root_name: str = "核電",
+) -> int:
+    """回傳某位參與者在 source_message_id 那則訊息當下，累積點亮過幾個不重複的
+    CCND micro node。
+
+    給 M6 觀點知識庫 pipeline（apps/summary/pipeline/quality_filter.py 的
+    ccnd_stance_shift）用來取得逐則的「點亮節點數」：先用 resolve_cutoff_for_message
+    找出該訊息被分析當下的時間點，reconstruct_tree_as_of 還原當時的樹快照，
+    再用 ccnd_snapshot_analysis.flatten_tree 攤平、以 (owner_key, node_id) 去重計數
+    ——同一顆節點被同一人多次點亮只算一次。
+
+    root_name 只影響空狀態（尚無任何分析紀錄）時的預設樹名稱，不影響既有樹內容。
+    找不到該訊息的分析紀錄（尚未分析過）時回傳 0。
+    """
+    from apps.matching.services.ccnd_snapshot_analysis import flatten_tree
+
+    state = get_semantic_tree_state(match, root_name=root_name)
+    owner_state = state["participants"].get(owner_key)
+    if not owner_state:
+        return 0
+
+    cutoff = resolve_cutoff_for_message(owner_state["analysisHistory"], source_message_id)
+    if cutoff is None:
+        return 0
+
+    snapshot = reconstruct_tree_as_of(owner_state["treeData"], cutoff)
+    hits = flatten_tree(snapshot, owner_key=owner_key)
+    return len({hit["_node_key"] for hit in hits})
+
+
+def get_message_dimension(
+    match: DialogueMatch,
+    *,
+    owner_key: str,
+    source_message_id: str,
+) -> str | None:
+    """回傳某位參與者在 source_message_id 那則訊息命中的第一個 CCND anchor id。
+
+    給 M6 觀點知識庫 pipeline（apps/summary/pipeline/assemble.py 的
+    run_pipeline_for_match）用來決定 ViewpointNode.dimension：一則訊息最多對到
+    MAX_ANALYSIS_ITEMS=2 個 anchor，這裡只取第一個命中的；訊息沒有任何 CCND
+    分析紀錄（不曾命中任何節點）時回傳 None，呼叫端應該視為「無法分類」而跳過
+    寫入，不要自己亂猜一個 anchor。
+    """
+    from apps.matching.services.ccnd_snapshot_analysis import flatten_tree
+
+    state = get_semantic_tree_state(match, root_name="核電")
+    owner_state = state["participants"].get(owner_key)
+    if not owner_state:
+        return None
+
+    target_id = clean_text(source_message_id)
+    hits = flatten_tree(owner_state["treeData"], owner_key=owner_key)
+    for hit in hits:
+        if clean_text(hit.get("source_message_id")) == target_id:
+            return hit.get("parent_anchor_id")
     return None
 
 
@@ -1020,6 +1258,75 @@ def semantic_tree_payload(
         "analysisStatus": analysis_status,
         "message": message,
         "analyzedCount": analyzed_count,
+    }
+
+
+def semantic_tree_timeline_payload(
+    *,
+    match: DialogueMatch,
+    root_name: str,
+    current_user_id: int | None,
+    source_message_id: str,
+) -> dict[str, Any] | None:
+    """Reconstruct the current user's tree as it looked right after
+    `source_message_id` was analyzed. Returns None if that message hasn't
+    been analyzed yet (or doesn't belong to this participant), so the
+    caller can turn that into a 404.
+    """
+    state = get_semantic_tree_state(match, root_name=root_name)
+    owner_key = _owner_key_for_user(match, current_user_id)
+    owner_state = state["participants"][owner_key]
+
+    cutoff = resolve_cutoff_for_message(owner_state["analysisHistory"], source_message_id)
+    if cutoff is None:
+        return None
+
+    snapshot = reconstruct_tree_as_of(owner_state["treeData"], cutoff)
+    return {
+        "room_id": match.room_id,
+        "match_id": match.id,
+        "topic_id": match.topic_id,
+        "asOfMessageId": clean_text(source_message_id),
+        "asOfTimestamp": cutoff,
+        "treeData": snapshot,
+        "anchors": state["anchors"],
+        "bornNodes": born_nodes_payload(snapshot, source_message_id),
+    }
+
+
+def semantic_tree_session_timeline_payload(
+    *,
+    session_record: dict[str, Any],
+    session_id: str,
+    root_name: str,
+    source_message_id: str,
+) -> dict[str, Any] | None:
+    """AI-session equivalent of semantic_tree_timeline_payload(): reconstruct
+    the tree as it looked right after `source_message_id` (an AIConversation
+    turn id) was analyzed. Returns None if that turn hasn't been analyzed
+    yet, so the caller can turn that into a 404.
+
+    `room_id` mirrors `session_id` here — AI sessions don't have a real
+    room, but exposing the same key lets the frontend/serializer treat both
+    conversation kinds uniformly instead of branching on kind everywhere.
+    """
+    state = get_ai_semantic_tree_state(session_record, root_name=root_name)
+    owner_state = state["participants"][OWNER_AI_USER]
+
+    cutoff = resolve_cutoff_for_message(owner_state["analysisHistory"], source_message_id)
+    if cutoff is None:
+        return None
+
+    snapshot = reconstruct_tree_as_of(owner_state["treeData"], cutoff)
+    return {
+        "session_id": session_id,
+        "room_id": session_id,
+        "topic_id": session_record.get("topic_id"),
+        "asOfMessageId": clean_text(source_message_id),
+        "asOfTimestamp": cutoff,
+        "treeData": snapshot,
+        "anchors": state["anchors"],
+        "bornNodes": born_nodes_payload(snapshot, source_message_id),
     }
 
 

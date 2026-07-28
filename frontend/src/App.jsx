@@ -2,14 +2,21 @@ import { useState, useEffect, useCallback } from 'react'
 import { Routes, Route, useNavigate, useParams, useLocation } from 'react-router-dom'
 import './App.css'
 
-import api, { AUTH_LOGOUT_EVENT, clearAuthStorage, getAccessTokenExpiry } from './api/client'
+import api, { AUTH_LOGOUT_EVENT, clearAuthStorage } from './api/client'
 import Navbar from './components/Navbar'
 import Sidebar from './components/Sidebar'
 import HomePage from './pages/HomePage'
 import TopicChat from './pages/TopicChat'
 import KnowledgeBase from './pages/KnowledgeBase'
 import HistoryPage from './pages/HistoryPage'
+import AchievementPage from './pages/AchievementPage'
 import LoginPage from './pages/LoginPage'
+import PostQuestionnairePage from './pages/PostQuestionnairePage'
+import DebriefingPage from './pages/DebriefingPage'
+import PlatformFeedbackPage from './pages/PlatformFeedbackPage'
+import ViewpointReviewPage from './pages/ViewpointReviewPage'
+import SettingsPage from './pages/SettingsPage'
+import GodotLobby from './pages/GodotLobby'
 
 function TopicChatRoute({ user, issues, issuesLoaded }) {
   const { id } = useParams();
@@ -81,23 +88,6 @@ function App() {
     window.addEventListener(AUTH_LOGOUT_EVENT, handleAuthLogout);
     return () => window.removeEventListener(AUTH_LOGOUT_EVENT, handleAuthLogout);
   }, [handleLogout]);
-
-  useEffect(() => {
-    if (!user) {
-      return undefined;
-    }
-
-    const expiresAt = getAccessTokenExpiry();
-    if (!expiresAt) {
-      return undefined;
-    }
-
-    const timerId = window.setTimeout(() => {
-      handleLogout('登入已過期，請重新登入。');
-    }, Math.max(expiresAt - Date.now(), 0));
-
-    return () => window.clearTimeout(timerId);
-  }, [handleLogout, user]);
 
   useEffect(() => {
     if (!user) {
@@ -178,11 +168,20 @@ function App() {
 
             <Route path="/kb" element={<KnowledgeBase />} />
             <Route path="/history" element={<HistoryPage />} />
-            <Route path="/chat" element={<div className="empty-page-message">Godot還在排隊</div>} />
+            <Route path="/post-questionnaire" element={<PostQuestionnairePage />} />
+            <Route path="/debriefing" element={<DebriefingPage />} />
+            <Route path="/platform-feedback" element={<PlatformFeedbackPage />} />
+            <Route path="/achievement" element={<AchievementPage />} />
+            {/* 研究者專用；Sidebar 只在 user.isResearcher 時才顯示連結，但路徑本身
+                任何登入者都連得到，實際存取控制一律在後端 IsResearcher——
+                一般參與者帳號打開這條路徑只會看到 403 錯誤訊息。 */}
+            <Route path="/viewpoint-review" element={<ViewpointReviewPage />} />
+            <Route path="/settings" element={<SettingsPage user={user} />} />
+            <Route path="/chat" element={<GodotLobby />} />
           </Routes>
         </div>
 
-        <Sidebar navigate={navigate} isTopicPage={isTopicPage} />
+        <Sidebar navigate={navigate} isTopicPage={isTopicPage} isResearcher={Boolean(user?.isResearcher)} />
       </div>
     </div>
   )

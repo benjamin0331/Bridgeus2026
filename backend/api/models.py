@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.contrib.auth.models import User
 from django.db import models
 from django.db.models import F, Q
 from pgvector.django import VectorField
@@ -345,4 +346,360 @@ class MatchStanceDrift(models.Model):
         return (
             f"drift match={self.match_id} user={self.user_id} "
             f"value={self.drift_value:.4f}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Post-dialogue questionnaire
+# ---------------------------------------------------------------------------
+
+# (post_index, pre_question_id) — needed for research cross-referencing
+POST_LIKERT_TO_PRE_QUESTION = {1: 8, 2: 5, 3: 3, 4: 7, 5: 1, 6: 4, 7: 6, 8: 2}
+
+
+def _post_likert_reversed_indices(topic_id: int) -> set[int]:
+    """Resolve reverse-scored post items from the topic's pre-survey config."""
+    from .dialogue_topics import get_dialogue_survey
+
+    survey = get_dialogue_survey(topic_id) or {}
+    reversed_pre_questions = {
+        int(question["id"])
+        for question in survey.get("questions", [])
+        if question.get("reverse_scored")
+    }
+    return {
+        post_index
+        for post_index, pre_question_id in POST_LIKERT_TO_PRE_QUESTION.items()
+        if pre_question_id in reversed_pre_questions
+    }
+
+
+def _likert_field(verbose_name):
+    return models.PositiveSmallIntegerField(
+        verbose_name=verbose_name,
+        help_text="1–7 Likert scale",
+    )
+
+
+class PostDialogueResponse(models.Model):
+    class ExperimentCondition(models.TextChoices):
+        AI = "ai", "H-AI"
+        HH = "hh", "H-H"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="post_dialogue_responses",
+    )
+    topic_id = models.PositiveIntegerField(db_index=True)
+    session_id = models.CharField(max_length=64, blank=True, null=True, db_index=True)
+    room_id = models.CharField(max_length=64, blank=True, null=True, db_index=True)
+    experiment_condition = models.CharField(
+        max_length=4,
+        choices=ExperimentCondition.choices,
+        db_index=True,
+    )
+
+    # Part C-1: Post stance Likert (8 items, scrambled order mirrors pre-test Q1-Q8)
+    post_likert_1 = _likert_field("C1-1 (pre=Q8, positive)")
+    post_likert_2 = _likert_field("C1-2 (pre=Q5, reverse)")
+    post_likert_3 = _likert_field("C1-3 (pre=Q3, positive)")
+    post_likert_4 = _likert_field("C1-4 (pre=Q7, positive)")
+    post_likert_5 = _likert_field("C1-5 (pre=Q1, positive)")
+    post_likert_6 = _likert_field("C1-6 (pre=Q4, reverse)")
+    post_likert_7 = _likert_field("C1-7 (pre=Q6, reverse)")
+    post_likert_8 = _likert_field("C1-8 (pre=Q2, reverse)")
+
+    # Part C-2: Experience scale
+    exp_stance_change_1 = _likert_field("C2-1 主觀立場改變自覺")
+    exp_stance_change_2 = _likert_field("C2-2 主觀立場改變自覺")
+    exp_quality_1 = _likert_field("C2-3 對話品質感知")
+    exp_quality_2 = _likert_field("C2-4 對話品質感知")
+    exp_reflection_1 = _likert_field("C2-5 自我反思/元認知")
+    exp_reflection_2 = _likert_field("C2-6 自我反思/元認知")
+
+    # Part C-3: CCND assessment
+    ccnd_attention = _likert_field("C3-1 注意力門檻")
+    ccnd_awareness = _likert_field("C3-2 認知差異覺察")
+    ccnd_influence = _likert_field("C3-3 表達/思考調整")
+
+    # Part C-4: Opponent judgment (H-AI only; NULL for H-H)
+    # 1=human, 2=AI, 3=uncertain
+    opponent_judgment = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="1=真人, 2=AI, 3=不確定；H-H 組為 NULL",
+    )
+
+    # Part D: Open questions
+    post_open_comprehension = models.TextField(
+        help_text="D1 — 對立觀點陳述（最低 50 字）；與前測 Q10 同題幹，向量化後存 pgvector"
+    )
+    post_open_feedback = models.TextField(
+        blank=True,
+        help_text="D2 — 自由回饋，無字數限制",
+    )
+
+    # Part E: Discomfort flag (detail stored in DiscomfortReport)
+    discomfort_flag = models.BooleanField(default=False)
+
+    # Debriefing consent: NULL=pending, True=consent, False=withdrawn
+    consent_confirmed = models.BooleanField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(opponent_judgment__isnull=True)
+                | Q(opponent_judgment__in=[1, 2, 3]),
+                name="post_opponent_judgment_valid",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["user", "topic_id", "created_at"],
+                name="post_response_user_topic_idx",
+            ),
+        ]
+
+    # --- Scoring methods ---
+
+    def _adjusted_c1_scores(self) -> list[float]:
+        reversed_indices = _post_likert_reversed_indices(self.topic_id)
+        scores = []
+        for i in range(1, 9):
+            raw = getattr(self, f"post_likert_{i}")
+            scores.append(8 - raw if i in reversed_indices else float(raw))
+        return scores
+
+    def s_post(self) -> float:
+        return round(sum(self._adjusted_c1_scores()) / 8, 4)
+
+    def delta_s(self, s_pre: float) -> float:
+        return round(self.s_post() - float(s_pre), 4)
+
+    def stance_centrism(self, s_pre: float) -> float:
+        """< 0 = depolarized, > 0 = polarized further, = 0 = unchanged."""
+        return round(abs(self.s_post() - 4) - abs(float(s_pre) - 4), 4)
+
+    def __str__(self):
+        return (
+            f"PostResponse user={self.user_id} topic={self.topic_id} "
+            f"cond={self.experiment_condition}"
+        )
+
+
+class DiscomfortReport(models.Model):
+    response = models.OneToOneField(
+        PostDialogueResponse,
+        on_delete=models.CASCADE,
+        related_name="discomfort_report",
+    )
+    detail = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"DiscomfortReport response={self.response_id}"
+
+
+# ---------------------------------------------------------------------------
+# Part F — platform experience feedback (collected after debriefing)
+# ---------------------------------------------------------------------------
+
+
+class PlatformFeedback(models.Model):
+    """Part F: 7-item platform UX feedback, filled right after debriefing.
+
+    Linked one-to-one to a PostDialogueResponse so the experiment condition,
+    topic and stance-change deltas can be JOINed for the cross-indicators
+    described in Part F (e.g. F5 vs |ΔS|, NPS H-AI vs H-H).
+    """
+
+    response = models.OneToOneField(
+        PostDialogueResponse,
+        on_delete=models.CASCADE,
+        related_name="platform_feedback",
+    )
+
+    # F1–F5: 7-point satisfaction Likert (1=非常不滿意, 7=非常滿意)
+    ux_matching = _likert_field("F1 配對機制")
+    ux_chatroom = _likert_field("F2 對話室體驗")
+    ux_nlp_intervention = _likert_field("F3 NLP 介入機制")
+    ux_ccnd = _likert_field("F4 概念認知網路圖")
+    ux_overall = _likert_field("F5 系統整體可用性")
+
+    # F6: NPS (0–10)
+    nps_score = models.PositiveSmallIntegerField(help_text="F6 推薦意願 0–10")
+
+    # F7: open-ended improvement suggestion (optional)
+    ux_improvement = models.TextField(
+        blank=True,
+        null=True,
+        help_text="F7 最需要改進的地方（選填）",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(nps_score__gte=0) & Q(nps_score__lte=10),
+                name="platform_feedback_nps_0_10",
+            ),
+        ]
+
+    # --- Analysis helpers ---
+
+    def mean_ux(self) -> float:
+        """F1–F5 平均功能滿意度。"""
+        total = (
+            self.ux_matching
+            + self.ux_chatroom
+            + self.ux_nlp_intervention
+            + self.ux_ccnd
+            + self.ux_overall
+        )
+        return round(total / 5, 4)
+
+    def nps_category(self) -> str:
+        """9–10 推薦者、7–8 被動者、0–6 批評者。"""
+        if self.nps_score >= 9:
+            return "promoter"
+        if self.nps_score >= 7:
+            return "passive"
+        return "detractor"
+
+    def __str__(self):
+        return (
+            f"PlatformFeedback response={self.response_id} "
+            f"mean_ux={self.mean_ux()} nps={self.nps_score}"
+        )
+
+
+class Issue(models.Model):
+    author = models.ForeignKey(User, on_delete=models.CASCADE, related_name="issues")
+    title = models.CharField(max_length=255)
+    body = models.TextField(blank=True)
+    stance = models.CharField(max_length=20, null=True, blank=True)
+    emotion = models.FloatField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Issue({self.id}) by user={self.author_id}: {self.title[:40]}"
+
+
+class Title(models.Model):
+    """一個頭銜的定義。擁有/解鎖關係另存在 UserTitle——由主功能的成就系統
+    決定誰擁有什麼，這裡只是頭銜本身的名稱與預設顏色。"""
+    name = models.CharField(max_length=50, unique=True)
+    color = models.CharField(max_length=7, null=True, blank=True)  # 預設 hex 色，UserTitle.color 可覆蓋
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
+class UserTitle(models.Model):
+    """使用者擁有某個頭銜的紀錄，外加是否為目前選擇顯示、以及玩家自訂顏色。
+    一個使用者同時只能選一個頭銜——用 partial unique index 在 DB 層擋住
+    （SQLite 3.8+ 與 PostgreSQL 都支援），不只靠 view 端的寫入順序保證。
+    view 端仍要「先清掉舊選擇、再設新的」，否則會撞到這個 constraint。"""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="owned_titles")
+    title = models.ForeignKey(Title, on_delete=models.CASCADE, related_name="holders")
+    unlocked_at = models.DateTimeField(auto_now_add=True)
+    is_selected = models.BooleanField(default=False)
+    color = models.CharField(max_length=7, null=True, blank=True)  # 玩家自訂色，蓋過 Title.color
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["user", "title"], name="user_title_unique"),
+            models.UniqueConstraint(
+                fields=["user"],
+                condition=Q(is_selected=True),
+                name="user_one_selected_title",
+            ),
+        ]
+        ordering = ["unlocked_at"]
+
+    def __str__(self):
+        return f"{self.user_id}:{self.title.name}"
+
+
+class IssueReaction(models.Model):
+    """一位讀者對一則議題的表情回復（5 選 1，emoji 圖在 Godot 端，這裡只存
+    int index）。一人一議題一個，重送 = 覆蓋（見 views.IssueReactionsView）。"""
+    issue = models.ForeignKey(Issue, on_delete=models.CASCADE, related_name="reactions")
+    reactor = models.ForeignKey(User, on_delete=models.CASCADE, related_name="issue_reactions")
+    emoji_index = models.PositiveSmallIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["issue", "reactor"], name="issue_reaction_one_per_reader"
+            ),
+        ]
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"issue={self.issue_id} reactor={self.reactor_id} idx={self.emoji_index}"
+
+
+class CCNDTimelineUnlock(models.Model):
+    """Researcher-issued override that unlocks one participant's CCND timeline
+    for one conversation ahead of the normal gate.
+
+    The timeline is gated until the participant finishes the whole M6 flow
+    (Part F), because replaying their own CCND before answering the CCND
+    self-report items — C3 in the post-dialogue questionnaire and F4 (ux_ccnd)
+    in Part F — would contaminate those answers. A participant who abandons the
+    questionnaire would otherwise be locked out of their own history forever;
+    this model is the manual escape hatch (the other one is the 12h auto-unlock,
+    which needs no stored state).
+    """
+
+    class Kind(models.TextChoices):
+        AI = "ai", "H-AI"
+        MATCH = "match", "H-H"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="ccnd_timeline_unlocks",
+        help_text="被解鎖的受試者",
+    )
+    kind = models.CharField(max_length=8, choices=Kind.choices)
+    # session_id (kind=ai) or room_id (kind=match)
+    conversation_id = models.CharField(max_length=64, db_index=True)
+    granted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="ccnd_timeline_unlocks_granted",
+        help_text="核准解鎖的研究者",
+    )
+    reason = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "kind", "conversation_id"],
+                name="uniq_ccnd_timeline_unlock",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"CCNDTimelineUnlock user={self.user_id} "
+            f"{self.kind}={self.conversation_id}"
         )

@@ -10,9 +10,8 @@ import numpy as np
 from asgiref.sync import sync_to_async
 from django.utils import timezone
 
-from chat.services.embedding import cosine_distance, cosine_similarity, get_embedding
+from chat.services.embedding import cosine_distance
 
-TOPIC_RELEVANCE_THRESHOLD = 0.35
 STALEMATE_THRESHOLD = 0.05
 DIRECTION_THRESHOLD = 0.02
 
@@ -40,39 +39,6 @@ def _mean_embedding(embeddings) -> np.ndarray | None:
     return np.mean(vectors, axis=0)
 
 
-def get_topic_anchor_embedding(topic_description: str) -> list[float]:
-    return get_embedding(topic_description)
-
-
-def check_match_topic_relevance(
-    *,
-    match_id: int,
-    user_id: int,
-    topic_anchor_embedding,
-    window: int = 3,
-) -> dict:
-    from api.models import MatchMessage
-
-    messages = list(
-        MatchMessage.objects.filter(
-            match_id=match_id,
-            sender_id=user_id,
-            embedding__isnull=False,
-        ).order_by("-created_at")[:window]
-    )
-    mean_embedding = _mean_embedding(message.embedding for message in messages)
-    if mean_embedding is None or topic_anchor_embedding is None:
-        return {"relevance_score": 1.0, "is_off_topic": False}
-
-    score = float(cosine_similarity(mean_embedding, topic_anchor_embedding))
-    if not math.isfinite(score):
-        return {"relevance_score": 1.0, "is_off_topic": False}
-    return {
-        "relevance_score": round(score, 4),
-        "is_off_topic": score < TOPIC_RELEVANCE_THRESHOLD,
-    }
-
-
 def calculate_match_stance_drift(*, match_id: int, user_id: int) -> dict:
     from api.models import DialogueMatch, MatchMessage, MatchStanceDrift, UserStanceProfile
 
@@ -95,9 +61,6 @@ def calculate_match_stance_drift(*, match_id: int, user_id: int) -> dict:
         sender_id=user_id,
         embedding__isnull=False,
     )
-    if last_record is not None:
-        messages = messages.filter(created_at__gt=last_record.measured_at)
-
     mean_embedding = _mean_embedding(
         message.embedding for message in messages.order_by("created_at")
     )
@@ -178,6 +141,28 @@ def calculate_ai_session_stance_drift(
     return payload
 
 
+def get_message_drift_value(*, match_id: int, user_id: int, as_of) -> float:
+    """回傳某個時間點當下，該使用者最新一筆已持久化的立場偏移量（drift_value，
+    前端標籤「論述移動」）。
+
+    給 M6 觀點知識庫 pipeline（apps/summary/pipeline/quality_filter.py 的
+    ccnd_semantic_dist）用來取得逐則的論述移動量：讀取 api/consumers.py 每則
+    「發言者本人」新發言後透過 calculate_match_stance_drift() 寫入的
+    MatchStanceDrift 記錄，只做唯讀查詢，不重算、不新增 drift 記錄——重算是
+    即時對話室自己的職責，這裡只是替歷史訊息回填当時最近的已知值。
+    """
+    from api.models import MatchStanceDrift
+
+    record = (
+        MatchStanceDrift.objects.filter(
+            match_id=match_id, user_id=user_id, measured_at__lte=as_of
+        )
+        .order_by("-measured_at")
+        .first()
+    )
+    return record.drift_value if record else 0.0
+
+
 def detect_match_stalemate(*, match_id: int, window_size: int = 5) -> dict:
     from api.models import DialogueMatch, MatchMessage
 
@@ -236,9 +221,8 @@ def build_stalemate_prompt(keywords: list[str]) -> str:
     return random.choice(_STALEMATE_PROMPTS).format(keyword=keywords[0])
 
 
-aget_topic_anchor_embedding = sync_to_async(get_topic_anchor_embedding, thread_sensitive=False)
-acheck_match_topic_relevance = sync_to_async(check_match_topic_relevance, thread_sensitive=False)
 acalculate_match_stance_drift = sync_to_async(calculate_match_stance_drift, thread_sensitive=False)
 acalculate_ai_session_stance_drift = sync_to_async(calculate_ai_session_stance_drift, thread_sensitive=False)
+aget_message_drift_value = sync_to_async(get_message_drift_value, thread_sensitive=False)
 adetect_match_stalemate = sync_to_async(detect_match_stalemate, thread_sensitive=False)
 aextract_match_opponent_keywords = sync_to_async(extract_match_opponent_keywords, thread_sensitive=False)

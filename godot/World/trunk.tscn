@@ -1,0 +1,37 @@
+[gd_scene format=3 uid="uid://l1h0wq6obvlk"]
+
+[ext_resource type="Texture2D" uid="uid://bawd8k56eqmrj" path="res://Assets/ForgottenMemories/Trees.png" id="1_f5p7b"]
+[ext_resource type="Script" uid="uid://b1jog54pxyuvu" path="res://World/trunk.gd" id="1_mv0ev"]
+
+[sub_resource type="CapsuleShape2D" id="CapsuleShape2D_mv0ev"]
+radius = 22.0
+height = 44.0
+
+[sub_resource type="CapsuleShape2D" id="CapsuleShape2D_r8s0m"]
+radius = 1.0
+height = 32.0
+
+[node name="Trunk" type="StaticBody2D" unique_id=1967746299]
+scale = Vector2(0.5, 0.5)
+script = ExtResource("1_mv0ev")
+
+[node name="Sprite2D" type="Sprite2D" parent="." unique_id=1126345007]
+texture = ExtResource("1_f5p7b")
+region_enabled = true
+region_rect = Rect2(585, 192, 64, 64)
+
+[node name="Area2D" type="Area2D" parent="." unique_id=663722021]
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Area2D" unique_id=2038424137]
+position = Vector2(0, 3)
+rotation = 1.5707964
+shape = SubResource("CapsuleShape2D_mv0ev")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="." unique_id=236618910]
+position = Vector2(0, 6)
+rotation = 1.5707964
+shape = SubResource("CapsuleShape2D_r8s0m")
+
+[node name="Marker2D" type="Marker2D" parent="." unique_id=292045801]
+position = Vector2(0, -25)
+scale = Vector2(1e-05, 1e-05)

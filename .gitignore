@@ -4,6 +4,9 @@
 .idea/
 .vscode/
 
+# superpowers brainstorming scratch
+.superpowers/
+
 # Python cache / tooling
 **/__pycache__/
 *.py[cod]
@@ -33,8 +36,8 @@ backend/staticfiles/
 backend/.cache/
 backend/media/
 
-# Locally fine-tuned classifier weights (~2.7GB) — too large for git.
-# Distribute via shared drive / cloud storage instead; config/label files stay tracked.
+# ML classifier weights (~391MB each) — copy in separately, see
+# backend/apps/matching/ml_models/nuclear_node_model/README.md
 backend/apps/matching/ml_models/*/model_macro/model.safetensors
 backend/apps/matching/ml_models/*/model_micro_*/model.safetensors
 

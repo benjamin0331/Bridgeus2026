@@ -183,10 +183,8 @@ class DialogueSession:
     user_stance_label: str = ""
     user_stance_score: float = 4.0
     user_initial_argument: str = ""
-    # collaborative / polarized / unknown — inferred from the questionnaire at
-    # session creation (see reasoning_mode.infer_user_reasoning_mode). Tunes the
-    # agent's baseline intervention intensity in the system prompt.
     user_reasoning_mode: str = "unknown"
+    focus_signal_count: int = 0
     dialogue_phase: DialoguePhase = DialoguePhase.ENGAGEMENT
     history: list[DialogueMessage] = field(default_factory=list)
 
@@ -201,6 +199,7 @@ class DialogueSession:
             "user_stance_score": self.user_stance_score,
             "user_initial_argument": self.user_initial_argument,
             "user_reasoning_mode": self.user_reasoning_mode,
+            "focus_signal_count": self.focus_signal_count,
             "dialogue_phase": self.dialogue_phase.value,
             "history": [m.to_dict() for m in self.history],
         }
@@ -217,6 +216,7 @@ class DialogueSession:
             user_stance_score=data.get("user_stance_score", 4.0),
             user_initial_argument=data.get("user_initial_argument", ""),
             user_reasoning_mode=data.get("user_reasoning_mode", "unknown"),
+            focus_signal_count=data.get("focus_signal_count", 0),
             dialogue_phase=DialoguePhase(
                 data.get("dialogue_phase", DialoguePhase.ENGAGEMENT.value)
             ),
@@ -224,6 +224,14 @@ class DialogueSession:
                 DialogueMessage.from_dict(m) for m in data.get("history", [])
             ],
         )
+
+    @property
+    def effective_reasoning_mode(self) -> str:
+        """Resolved mode injected into the prompt.
+        unknown + focus_signal_count >= 2 → upgrade to collaborative."""
+        if self.user_reasoning_mode == "unknown" and self.focus_signal_count >= 2:
+            return "collaborative"
+        return self.user_reasoning_mode
 
     @property
     def turn_count(self) -> int:
@@ -285,8 +293,52 @@ _COLLABORATIVE_MARKERS = frozenset({
 _POLARIZED_MARKERS = frozenset({
     "絕對", "一定要", "完全反對", "完全支持", "堅決",
     "絕不", "必須廢核", "必須重啟", "不可能接受",
-    "強烈反對", "強烈支持", "根本不",
+    "強烈反對", "強烈支持",
 })
+
+# ── Focus signal detection (real-time, per-turn) ─────────────────────────────
+_FOCUS_CONFIRMATION = frozenset({
+    "不是嗎", "對嗎", "是嗎", "對吧", "是吧",
+    "認同嗎", "你覺得呢", "你說呢", "對不對",
+    "是這樣嗎", "這樣對吧", "是這樣吧", "你認為呢",
+    "你認同", "說得對嗎", "沒錯吧", "沒問題吧",
+})
+_FOCUS_EXPLICIT = frozenset({
+    "我想表示", "我要說的是", "就是這個", "我想講的",
+    "我的意思是", "說的就是", "我想說的就是",
+    "正是這樣", "我想強調的是", "我的重點是",
+    "我說的是", "講的就是", "我說的就是",
+    "先說清楚", "是前提", "必須先確認",
+})
+_FOCUS_REJECTION_NEGATION = frozenset({
+    "不做", "不是決策者", "我不是", "我沒辦法",
+    "不想做", "不接受", "不做此",
+})
+_FOCUS_REJECTION_HYPOTHETICAL = frozenset({
+    "假設", "決策者", "假設你是", "假設我是",
+})
+
+
+def detect_focus_signal(message: str) -> bool:
+    """
+    Rule-based detector: returns True if the message is a convergence/focus signal.
+
+    Rules (any one triggers True):
+    1. 確認尋求 — contains a confirmation-seeking phrase (嗎/吧/呢 in confirmatory context)
+    2. 拒絕假設 — negation word + hypothetical-framing word co-occur in same message
+    3. 明確指認 — explicit anchoring phrase ("就是這個", "先說清楚" …)
+    4. [收窄]    — TODO: scope-narrowing requires structural analysis; skipped for now
+    """
+    if any(phrase in message for phrase in _FOCUS_EXPLICIT):
+        return True
+    if any(phrase in message for phrase in _FOCUS_CONFIRMATION):
+        return True
+    if (
+        any(neg in message for neg in _FOCUS_REJECTION_NEGATION)
+        and any(hyp in message for hyp in _FOCUS_REJECTION_HYPOTHETICAL)
+    ):
+        return True
+    return False
 
 
 def infer_reasoning_mode(
@@ -436,7 +488,7 @@ class DialogueAgent:
             ),
             "turn_count": str(session.turn_count),
             "dialogue_phase": session.dialogue_phase.value,
-            "user_reasoning_mode": session.user_reasoning_mode,
+            "user_reasoning_mode": session.effective_reasoning_mode,
             "user_message": latest_msg,
         }
 
@@ -477,7 +529,7 @@ class DialogueAgent:
             ),
             "turn_count": str(session.turn_count),
             "dialogue_phase": session.dialogue_phase.value,
-            "user_reasoning_mode": session.user_reasoning_mode,
+            "user_reasoning_mode": session.effective_reasoning_mode,
         }
 
         system_text = self._system_prompt_raw
@@ -559,18 +611,42 @@ if __name__ == "__main__":
     print("🚀 初始化 DialogueAgent...")
     agent = DialogueAgent(collection_name="nuclear_energy_all")
 
+    print("\n═" * 25)
+    print("使用者推理模式（決定 AI 的對話策略）")
+    print("  1  collaborative  — 協作探索型，AI 以共同思考者角色，視角翻轉最多 1 次")
+    print("  2  polarized      — 立場鞏固型，AI 採完整三階段策略，正常頻率視角翻轉")
+    print("  3  unknown        — 預設值，先以 polarized 為準，偵測 2 次聚焦信號後自動降級")
+    mode_input = input("選擇 [1/2/3，直接 Enter = unknown]：").strip()
+    reasoning_mode_map = {"1": "collaborative", "2": "polarized", "3": "unknown"}
+    chosen_mode = reasoning_mode_map.get(mode_input, "unknown")
+    print(f"→ 使用模式：{chosen_mode}\n")
+
+    print("使用者立場（決定 AI 對立的方向）")
+    print("  1  反對核電（stance_score=2.0）")
+    print("  2  支持核電（stance_score=6.0）")
+    print("  3  中立（stance_score=4.0）")
+    stance_input = input("選擇 [1/2/3，直接 Enter = 反對核電]：").strip()
+    stance_map = {
+        "1": ("反對核電", 2.0, "支持重啟核電", "核電是兼顧減碳與穩定供電的務實選擇"),
+        "2": ("支持核電", 6.0, "反對重啟核電", "核廢料與地震風險使核電不符台灣國情"),
+        "3": ("中立",     4.0, "鼓勵深入辯論", "希望你能從多角度探索這個議題的核心矛盾"),
+    }
+    user_stance_label, user_stance_score, agent_stance, agent_stance_summary = \
+        stance_map.get(stance_input, stance_map["1"])
+    print(f"→ 使用者立場：{user_stance_label}，AI 採對立角色：{agent_stance}\n")
+    print("═" * 25)
+
     session = DialogueSession(
         topic="核能政策",
         topic_description="台灣是否應重啟核電廠以應對能源轉型與減碳需求",
-        agent_stance="支持重啟核電",
-        agent_stance_summary=(
-            "在確保安全的前提下，核電是兼顧減碳與穩定供電的務實選擇，"
-            "不應因恐懼而放棄"
-        ),
-        user_stance_label="反對核電",
-        user_stance_score=2.0,
+        agent_stance=agent_stance,
+        agent_stance_summary=agent_stance_summary,
+        user_stance_label=user_stance_label,
+        user_stance_score=user_stance_score,
+        user_reasoning_mode=chosen_mode,
     )
 
+    print(f"[模式：{chosen_mode} | 使用者：{user_stance_label} | AI：{agent_stance}]")
     print("輸入 'exit' 或按 Ctrl+C 結束對話\n")
 
     while True:
@@ -593,4 +669,4 @@ if __name__ == "__main__":
         response = agent.respond(session)
         session.add_agent_message(response)
         print(response)
-        print(f"\n[第 {session.turn_count} 輪 | 階段：{session.dialogue_phase.value}]\n")
+        print(f"\n[第 {session.turn_count} 輪 | 階段：{session.dialogue_phase.value} | 模式：{session.user_reasoning_mode}]\n")
