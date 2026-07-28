@@ -10,6 +10,135 @@
   box-sizing: border-box;
 }
 
+/* --- Result card -------------------------------------------------------- */
+
+.pq-result-note {
+  margin-bottom: 20px;
+  padding: 12px 16px;
+  border: 1px solid #e8dcc0;
+  border-radius: 14px;
+  background-color: #fdf6e3;
+  color: #7a6a45;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.pq-result-scores {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin: 12px 0 24px;
+}
+
+.pq-score-box {
+  flex: 1;
+  padding: 18px 12px;
+  border-radius: 18px;
+  background-color: #efe9e2;
+  text-align: center;
+}
+
+.pq-score-label {
+  display: block;
+  margin-bottom: 8px;
+  color: #888;
+  font-size: 12px;
+}
+
+.pq-score-value {
+  display: block;
+  color: #2c2c2c;
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.pq-score-arrow {
+  flex-shrink: 0;
+  color: #b3a794;
+  font-size: 24px;
+}
+
+.pq-result-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.pq-metric {
+  padding: 14px 18px;
+  border-left: 5px solid #c7bdb0;
+  border-radius: 16px;
+  background-color: #f0ebe4;
+}
+
+.pq-metric-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.pq-metric-name {
+  color: #444;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.pq-metric-num {
+  color: #2c2c2c;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.pq-metric-desc {
+  margin: 0;
+  color: #666;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.pq-metric-good {
+  border-left-color: #3a5a3a;
+  background-color: #eaf1ea;
+}
+
+.pq-metric-good .pq-metric-num {
+  color: #3a5a3a;
+}
+
+.pq-metric-warn {
+  border-left-color: #b4801f;
+  background-color: #f7efdf;
+}
+
+.pq-metric-warn .pq-metric-num {
+  color: #a9761c;
+}
+
+.pq-metric-up {
+  border-left-color: #2f6f8f;
+  background-color: #e6f0f4;
+}
+
+.pq-metric-down {
+  border-left-color: #8f5a2f;
+  background-color: #f4ece4;
+}
+
+.pq-metric-flat {
+  border-left-color: #b0a794;
+}
+
+.pq-result-hint {
+  margin: 0;
+  color: #999;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 /* Card — takes full available height so footer is always visible */
 .pq-container {
   width: 100%;

@@ -23,11 +23,14 @@ from apps.matching.services.hh_ai import (
 from apps.matching.services.hh_analysis import (
     acalculate_ai_session_stance_drift,
     acalculate_match_stance_drift,
-    acheck_match_topic_relevance,
     adetect_match_stalemate,
     aextract_match_opponent_keywords,
-    aget_topic_anchor_embedding,
     build_stalemate_prompt,
+)
+from apps.matching.services.topic_relevance import (
+    acheck_match_topic_relevance,
+    aget_topic_anchor_embedding,
+    get_topic_relevance_policy,
 )
 from chat.services.embedding import aget_embedding
 from chat.services.emotion import aget_analyze_emotion
@@ -97,7 +100,18 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
             await self.close(code=4004)
             return
 
+        self.message_queue = asyncio.Queue()
+        self.response_worker = asyncio.create_task(self._process_message_queue())
         await self.accept()
+
+    async def disconnect(self, close_code):
+        worker = getattr(self, "response_worker", None)
+        if worker is not None:
+            worker.cancel()
+            try:
+                await worker
+            except asyncio.CancelledError:
+                pass
 
     async def receive(self, text_data=None, bytes_data=None):
         if not text_data:
@@ -115,7 +129,24 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
         if not user_message:
             return
 
-        await self._stream_response(user_message)
+        await self.message_queue.put(user_message)
+
+    async def _process_message_queue(self):
+        while True:
+            user_message = await self.message_queue.get()
+            try:
+                await self._stream_response(user_message)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "Queued dialogue response failed session=%s user=%s.",
+                    self.session_id,
+                    self.user.id,
+                )
+                await self._send_error("目前無法處理這則訊息，已繼續處理後續訊息。")
+            finally:
+                self.message_queue.task_done()
 
     async def _stream_response(self, user_message: str):
         from apps.matching.services.ai_agent import DialoguePhase, DialogueSession
@@ -184,7 +215,15 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
         )
         await self._persist_session_record(session_record)
 
-        await self.send(json.dumps({"type": "agent_stream_end", "stance_drift": stance_drift}))
+        await self.send(
+            json.dumps(
+                {
+                    "type": "agent_stream_end",
+                    "stance_drift": stance_drift,
+                    "turn_id": saved_turn.id if saved_turn is not None else None,
+                }
+            )
+        )
 
     async def _get_session_record(self):
         from api.views import _restore_dialogue_session_record_for_user
@@ -318,6 +357,8 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
         self.room_group_name = f"match_room_{self.room_id}"
         self.blocked_count = 0
         self.system_prompts_triggered = 0
+        self._topic_anchor_embedding = None
+        self._topic_anchor_lock = asyncio.Lock()
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.accept()
 
@@ -629,6 +670,7 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
             result = await acheck_match_topic_relevance(
                 match_id=self.match.id,
                 user_id=self.user.id,
+                topic_id=self.match.topic_id,
                 topic_anchor_embedding=anchor,
             )
         except Exception:
@@ -679,25 +721,30 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
             logger.exception("Stalemate detection failed for match %s.", match_id)
 
     async def _ensure_topic_anchor_embedding(self):
-        if self.match.topic_anchor_embedding is not None:
-            return self.match.topic_anchor_embedding
+        if self._topic_anchor_embedding is not None:
+            return self._topic_anchor_embedding
 
-        topic_description = TOPIC_CONFIGS.get(self.match.topic_id, {}).get(
-            "topic_description",
-            self._topic_label(),
-        )
-        try:
-            anchor = await aget_topic_anchor_embedding(topic_description)
-        except Exception:
-            logger.exception("Topic anchor embedding failed for match %s.", self.match.id)
-            return None
+        async with self._topic_anchor_lock:
+            if self._topic_anchor_embedding is not None:
+                return self._topic_anchor_embedding
 
-        self.match.topic_anchor_embedding = anchor
-        try:
-            await self.match.asave(update_fields=["topic_anchor_embedding"])
-        except Exception:
-            logger.exception("Topic anchor save failed for match %s.", self.match.id)
-        return anchor
+            policy = get_topic_relevance_policy(
+                self.match.topic_id,
+                fallback_anchor_text=self._topic_label(),
+            )
+            try:
+                anchor = await aget_topic_anchor_embedding(policy.anchor_text)
+            except Exception:
+                logger.exception("Topic anchor embedding failed for match %s.", self.match.id)
+                return None
+
+            self._topic_anchor_embedding = anchor
+            self.match.topic_anchor_embedding = anchor
+            try:
+                await self.match.asave(update_fields=["topic_anchor_embedding"])
+            except Exception:
+                logger.exception("Topic anchor save failed for match %s.", self.match.id)
+            return anchor
 
     async def match_message(self, event):
         await self.send(

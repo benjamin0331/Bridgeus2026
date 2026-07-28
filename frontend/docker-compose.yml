@@ -7,5 +7,7 @@ services:
     environment:
       BACKEND_HOST: ${BACKEND_HOST:-host.docker.internal}
       BACKEND_PORT: ${BACKEND_PORT:-8005}
+      GODOT_WS_HOST: ${GODOT_WS_HOST:-host.docker.internal}
+      GODOT_WS_PORT: ${GODOT_WS_PORT:-8085}
     extra_hosts:
       - "host.docker.internal:host-gateway"

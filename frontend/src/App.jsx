@@ -8,12 +8,17 @@ import Sidebar from './components/Sidebar'
 import HomePage from './pages/HomePage'
 import TopicChat from './pages/TopicChat'
 import KnowledgeBase from './pages/KnowledgeBase'
+import KnowledgeBaseTopicPage from './pages/KnowledgeBaseTopicPage'
+import KnowledgeBaseConversationPage from './pages/KnowledgeBaseConversationPage'
 import HistoryPage from './pages/HistoryPage'
 import AchievementPage from './pages/AchievementPage'
 import LoginPage from './pages/LoginPage'
 import PostQuestionnairePage from './pages/PostQuestionnairePage'
 import DebriefingPage from './pages/DebriefingPage'
 import PlatformFeedbackPage from './pages/PlatformFeedbackPage'
+import ViewpointReviewPage from './pages/ViewpointReviewPage'
+import SettingsPage from './pages/SettingsPage'
+import GodotLobby from './pages/GodotLobby'
 
 function TopicChatRoute({ user, issues, issuesLoaded }) {
   const { id } = useParams();
@@ -51,6 +56,7 @@ function App() {
   const [authMessage, setAuthMessage] = useState('');
   const [issues, setIssues] = useState([]);
   const [issuesLoaded, setIssuesLoaded] = useState(false);
+  const [entryMode, setEntryMode] = useState('split');
 
   const handleLogin = useCallback((nextUser) => {
     setAuthMessage('');
@@ -65,6 +71,7 @@ function App() {
     setUser(null);
     setIssues([]);
     setIssuesLoaded(false);
+    setEntryMode('split');
     navigate('/', { replace: true });
   }, [navigate]);
 
@@ -118,6 +125,35 @@ function App() {
     };
   }, [user]);
 
+  useEffect(() => {
+    // 登出時的重設交給 handleLogout，不在 effect 內同步 setState
+    // （react-hooks/set-state-in-effect），跟 issues/issuesLoaded 同一個模式。
+    if (!user) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const fetchEntryMode = async () => {
+      try {
+        const response = await api.get('/api/me/');
+        if (!cancelled) {
+          setEntryMode(response.data?.entry_mode === 'mixed' ? 'mixed' : 'split');
+        }
+      } catch (error) {
+        console.error('Failed to load entry mode:', error);
+        // 讀不到就退回分開入口：兩個入口都看得到，比整個消失好。
+        if (!cancelled) setEntryMode('split');
+      }
+    };
+
+    void fetchEntryMode();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+
   if (!user) {
     return (
       <Routes>
@@ -148,6 +184,7 @@ function App() {
                   userName={user.name}
                   issues={issues}
                   issuesLoaded={issuesLoaded}
+                  entryMode={entryMode}
                 />
               )}
             />
@@ -164,16 +201,23 @@ function App() {
             />
 
             <Route path="/kb" element={<KnowledgeBase />} />
+            <Route path="/kb/topics/:topicId" element={<KnowledgeBaseTopicPage />} />
+            <Route path="/kb/conversations/:viewpointId" element={<KnowledgeBaseConversationPage />} />
             <Route path="/history" element={<HistoryPage />} />
             <Route path="/post-questionnaire" element={<PostQuestionnairePage />} />
             <Route path="/debriefing" element={<DebriefingPage />} />
             <Route path="/platform-feedback" element={<PlatformFeedbackPage />} />
             <Route path="/achievement" element={<AchievementPage />} />
-            <Route path="/chat" element={<div className="empty-page-message">Godot還在排隊</div>} />
+            {/* 研究者專用；Sidebar 只在 user.isResearcher 時才顯示連結，但路徑本身
+                任何登入者都連得到，實際存取控制一律在後端 IsResearcher——
+                一般參與者帳號打開這條路徑只會看到 403 錯誤訊息。 */}
+            <Route path="/viewpoint-review" element={<ViewpointReviewPage />} />
+            <Route path="/settings" element={<SettingsPage user={user} />} />
+            <Route path="/chat" element={<GodotLobby />} />
           </Routes>
         </div>
 
-        <Sidebar navigate={navigate} isTopicPage={isTopicPage} />
+        <Sidebar navigate={navigate} isTopicPage={isTopicPage} isResearcher={Boolean(user?.isResearcher)} />
       </div>
     </div>
   )

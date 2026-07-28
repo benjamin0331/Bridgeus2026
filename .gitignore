@@ -4,6 +4,9 @@
 .idea/
 .vscode/
 
+# superpowers brainstorming scratch
+.superpowers/
+
 # Python cache / tooling
 **/__pycache__/
 *.py[cod]

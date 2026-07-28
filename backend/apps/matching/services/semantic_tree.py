@@ -1127,6 +1127,70 @@ def _owner_key_for_message(match: DialogueMatch, sender_id: int | None) -> str |
     return None
 
 
+def get_lit_node_count(
+    match: DialogueMatch,
+    *,
+    owner_key: str,
+    source_message_id: str,
+    root_name: str = "核電",
+) -> int:
+    """回傳某位參與者在 source_message_id 那則訊息當下，累積點亮過幾個不重複的
+    CCND micro node。
+
+    給 M6 觀點知識庫 pipeline（apps/summary/pipeline/quality_filter.py 的
+    ccnd_stance_shift）用來取得逐則的「點亮節點數」：先用 resolve_cutoff_for_message
+    找出該訊息被分析當下的時間點，reconstruct_tree_as_of 還原當時的樹快照，
+    再用 ccnd_snapshot_analysis.flatten_tree 攤平、以 (owner_key, node_id) 去重計數
+    ——同一顆節點被同一人多次點亮只算一次。
+
+    root_name 只影響空狀態（尚無任何分析紀錄）時的預設樹名稱，不影響既有樹內容。
+    找不到該訊息的分析紀錄（尚未分析過）時回傳 0。
+    """
+    from apps.matching.services.ccnd_snapshot_analysis import flatten_tree
+
+    state = get_semantic_tree_state(match, root_name=root_name)
+    owner_state = state["participants"].get(owner_key)
+    if not owner_state:
+        return 0
+
+    cutoff = resolve_cutoff_for_message(owner_state["analysisHistory"], source_message_id)
+    if cutoff is None:
+        return 0
+
+    snapshot = reconstruct_tree_as_of(owner_state["treeData"], cutoff)
+    hits = flatten_tree(snapshot, owner_key=owner_key)
+    return len({hit["_node_key"] for hit in hits})
+
+
+def get_message_dimension(
+    match: DialogueMatch,
+    *,
+    owner_key: str,
+    source_message_id: str,
+) -> str | None:
+    """回傳某位參與者在 source_message_id 那則訊息命中的第一個 CCND anchor id。
+
+    給 M6 觀點知識庫 pipeline（apps/summary/pipeline/assemble.py 的
+    run_pipeline_for_match）用來決定 ViewpointNode.dimension：一則訊息最多對到
+    MAX_ANALYSIS_ITEMS=2 個 anchor，這裡只取第一個命中的；訊息沒有任何 CCND
+    分析紀錄（不曾命中任何節點）時回傳 None，呼叫端應該視為「無法分類」而跳過
+    寫入，不要自己亂猜一個 anchor。
+    """
+    from apps.matching.services.ccnd_snapshot_analysis import flatten_tree
+
+    state = get_semantic_tree_state(match, root_name="核電")
+    owner_state = state["participants"].get(owner_key)
+    if not owner_state:
+        return None
+
+    target_id = clean_text(source_message_id)
+    hits = flatten_tree(owner_state["treeData"], owner_key=owner_key)
+    for hit in hits:
+        if clean_text(hit.get("source_message_id")) == target_id:
+            return hit.get("parent_anchor_id")
+    return None
+
+
 def _owner_payload(
     owner_state: dict[str, Any],
     *,

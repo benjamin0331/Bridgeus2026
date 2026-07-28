@@ -36,7 +36,9 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overflow-anchor: none;
   padding: 14px;
 }
 

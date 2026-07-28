@@ -92,6 +92,34 @@
   box-shadow: 0 18px 34px rgba(83, 62, 44, 0.13);
 }
 
+.achievement-card--locked {
+  border-color: rgba(117, 96, 78, 0.1);
+  background: rgba(240, 236, 230, 0.55);
+  box-shadow: none;
+}
+
+.achievement-card--locked .achievement-name {
+  color: #8f847a;
+  font-size: 16px;
+}
+
+.achievement-card--locked .achievement-how {
+  color: #a79c90;
+}
+
+.achievement-locked-tag {
+  flex-shrink: 0;
+  color: #a79c90;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.achievement-card--locked:hover {
+  transform: none;
+  border-color: rgba(117, 96, 78, 0.1);
+  box-shadow: none;
+}
+
 .achievement-row-main {
   display: flex;
   align-items: baseline;

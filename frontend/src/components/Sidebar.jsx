@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-function Sidebar({ navigate, isTopicPage = false }) {
+function Sidebar({ navigate, isTopicPage = false, isResearcher = false }) {
   const [isOpen, setIsOpen] = useState(false);
   const handleNavigate = (path) => {
     navigate(path);
@@ -42,7 +42,15 @@ function Sidebar({ navigate, isTopicPage = false }) {
           >
             <img src="/Achievement.png" alt="" className="utility-icon" />
           </button>
-          <img src="/star.png" alt="Favorite" className="utility-icon" />
+          <button
+            className="sidebar-icon-btn"
+            type="button"
+            onClick={() => handleNavigate('/kb')}
+            aria-label="觀點知識庫"
+            title="觀點知識庫"
+          >
+            <img src="/star.png" alt="" className="utility-icon" />
+          </button>
           <button
             className="sidebar-icon-btn"
             type="button"
@@ -52,7 +60,28 @@ function Sidebar({ navigate, isTopicPage = false }) {
           >
             <img src="/history.svg" alt="" className="utility-icon" />
           </button>
-          <img src="/settings.png" alt="Settings" className="utility-icon" />
+          <button
+            className="sidebar-icon-btn"
+            type="button"
+            onClick={() => handleNavigate('/settings')}
+            aria-label="設定"
+            title="設定"
+          >
+            <img src="/settings.png" alt="" className="utility-icon" />
+          </button>
+          {/* 只有屬於「研究者」Group 的帳號才看得到，實際存取控制在後端
+              IsResearcher，這裡只是決定要不要顯示連結。 */}
+          {isResearcher && (
+            <button
+              className="sidebar-icon-btn"
+              type="button"
+              onClick={() => handleNavigate('/viewpoint-review')}
+              aria-label="觀點知識庫審核"
+              title="觀點知識庫審核"
+            >
+              📋
+            </button>
+          )}
         </div>
 
         {/* 回到首頁導航按鈕：點擊後執行 navigate('/') 跳轉 */}
