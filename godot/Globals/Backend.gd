@@ -35,25 +35,76 @@ func acquire_token_from_host() -> bool:
 	access_token = token
 	return true
 
+# 輪詢間隔與次數：券 TTL 60 秒，多等不花成本；15 秒上限是為了「Cloudflare Tunnel
+# 一跳 + Django round trip + 校園網路」留夠餘裕——失敗的代價是硬失敗（見 Important 1）。
+const _TICKET_POLL_INTERVAL := 0.1
+const _TICKET_POLL_TRIES := 150   # 0.1s * 150 = 15s
+
+# request_entry_ticket() 的重入守衛：window.bridgeus_ticket 是共用全域，沒有請求
+# 身份的概念，兩個 coroutine 同時輪詢會讀到同一張券，而後端兌換是 CAS，
+# 第二個 peer 會被踢且查不出原因。目前只有 _on_join_pressed 的 hide_buttons()
+# 巧合地擋住重複呼叫，這裡加明確守衛而不依賴呼叫端的 UI 狀態。
+var _ticket_in_flight := false
+
+# 最近一次 request_entry_ticket() 失敗的原因代碼，供 UI 顯示可行動的訊息用。
+# 回傳值仍然只有「拿到／沒拿到」，因為呼叫端的控制流只有兩條；但研究情境下
+# 受試者看不到 console，訊息必須說得出「該做什麼」。
+# 值：""=成功、"not_web"、"no_host"、"denied"（宿主頁回報 ERROR，多半是未登入
+# 或後端錯）、"timeout"、"busy"（重入守衛擋下）。
+var last_ticket_error := ""
+
 # --- 入場券：client 端拉券（Web 專用）---------------------------------------
 # 每次要連線前呼叫。向宿主頁（GodotLobby.jsx）要一張一次性入場券，輪詢等結果。
 # 「拉」而不是 iframe 載入時「推」：券 60 秒到期且一次性，撐不過 WASM 冷啟動，
 # 重連時更會拿著已兌換的券被踢（見 spec §5.1）。
-# 回空字串代表要不到：未嵌在主功能頁（直開 export）、未登入、或後端故障。
+# 回空字串代表要不到；用 last_ticket_error 分辨原因。
+#
+# 呼叫端必須 await。開頭無條件讓出一幀，是為了讓桌面與 Web 的行為一致：
+# 否則桌面在 OS.has_feature("web") 為 false 時會在碰到任何 await 之前就 return
+# （回真的 String），Web 才會在第一個 await 處 suspend（回 completion Signal）。
+# 兩種回傳型別在 GDScript 呼叫端看起來都能後面加 `.xxx` 而不報錯，漏寫 await
+# 的錯誤只會在桌面雙開測試——也就是本階段的驗收方式——完全看不出來，等到
+# 正式 Web 環境才爆。
+#
+# 取捨：審查建議改用 JavaScriptBridge.create_callback() 消掉輪詢/三態協定/
+# 'ERROR' 哨兵與重入問題，這是 Godot 4 更慣用的做法。不採用是因為 Task 1 的
+# window.bridgeus_ticket 三態契約已經 commit（改動範圍會外溢到 GodotLobby.jsx），
+# 且 JS callback 物件需要用成員變數持有以避免被 GC——複雜度是轉移，不是消失。
 func request_entry_ticket() -> String:
-	if not OS.has_feature("web"):
+	await get_tree().process_frame
+	if _ticket_in_flight:
+		last_ticket_error = "busy"
 		return ""
-	# 直開 export（沒有宿主頁）快速失敗，不空等 5 秒。
+	_ticket_in_flight = true
+	var ticket: String = await _request_entry_ticket_inner()
+	_ticket_in_flight = false
+	return ticket
+
+func _request_entry_ticket_inner() -> String:
+	if not OS.has_feature("web"):
+		last_ticket_error = "not_web"
+		return ""
+	# 直開 export（沒有宿主頁）快速失敗，不空等。
 	var has_fn = JavaScriptBridge.eval(
 		"typeof window.bridgeus_request_ticket == 'function'", true)
-	if not has_fn:
+	if has_fn != true:
+		last_ticket_error = "no_host"
 		return ""
 	JavaScriptBridge.eval("window.bridgeus_request_ticket()", true)
-	for i in 50:   # 最多等 5 秒（fetch 正常 <1 秒；'ERROR' 是宿主頁報的失敗）
-		await get_tree().create_timer(0.1).timeout
+	for _i in _TICKET_POLL_TRIES:
+		await get_tree().create_timer(_TICKET_POLL_INTERVAL).timeout
+		# 耦合提醒：宿主頁 bridgeus_request_ticket() 第一件事就是把
+		# window.bridgeus_ticket 同步清成 ''，所以這裡第一次輪詢不會讀到
+		# 上一輪的殘值。安全性來自 GodotLobby.jsx 那邊的語句順序，不是這裡
+		# 保證的——未來重構那支函式時要留意別打破這個順序。
 		var t = JavaScriptBridge.eval("window.bridgeus_ticket || ''", true)
 		if typeof(t) == TYPE_STRING and t != "":
-			return "" if t == "ERROR" else t
+			if t == "ERROR":
+				last_ticket_error = "denied"
+				return ""
+			last_ticket_error = ""
+			return t
+	last_ticket_error = "timeout"
 	return ""
 
 # --- 議題 -----------------------------------------------------------------
@@ -181,8 +232,16 @@ func request_topic_match(topic: String, user_ids: Array, callback := Callable())
 # 把 client 遞來的券換成後端 user_id。成功 callback(user_id > 0)；
 # 任何失敗（券無效/已用過/逾期/網路錯）一律 callback(0)——呼叫端的處置只有
 # 「踢掉這個 peer」一種，不需要區分原因（後端 log 有記，見階段一 spec §5.3）。
+# callback 這裡是必填（不像檔案裡其他公開函式用 `:= Callable()` 加 is_valid()
+# 守衛）：故意不一致——兌換沒有 callback 就沒有意義，呼叫端一定要處理結果。
 func redeem_ticket(ticket: String, callback: Callable) -> void:
+	if ticket == "":
+		callback.call(0)
+		return
 	if service_token == "":
+		# 正式流程走不到這裡：dev host 在 submit_ticket 就該早退。真的走到
+		# 代表部署設定漏了 GODOT_SERVICE_TOKEN，跟 request_topic_match 一樣出聲。
+		push_warning("redeem_ticket 需要 GODOT_SERVICE_TOKEN（僅 headless server 該有），略過")
 		callback.call(0)
 		return
 	_post_with_service_token("/godot/tickets/redeem/", {"ticket": ticket}, func(code, data):
