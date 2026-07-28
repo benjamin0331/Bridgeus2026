@@ -32,14 +32,21 @@ def issue_ticket(*, user, now=None) -> GodotEntryTicket:
 
 def _log_redeem_failure(*, token: str, now) -> None:
     """兌換失敗時把真正的原因記在 server log。回傳值仍然不區分原因（見 redeem_ticket），
-    但沒有這段的話，線上出問題時「玩家進不了大廳」完全無從查起。"""
+    但沒有這段的話，線上出問題時「玩家進不了大廳」完全無從查起。
+
+    逾期用傳進來的 now 判斷、而不是靠 else 推斷：CAS 落空的當下有可能是競態
+    （另一條連線剛好搶先兌換），這時券既沒過期也還沒被我們看到 redeemed_at，
+    推斷法會謊報成「已逾期」——正好在你最需要正確線索的時候誤導。
+    """
     ticket = GodotEntryTicket.objects.filter(token=token).first()
     if ticket is None:
         reason = "查無此券"
     elif ticket.redeemed_at is not None:
         reason = "已兌換過"
-    else:
+    elif ticket.expires_at <= now:
         reason = "已逾期"
+    else:
+        reason = "競態落敗或狀態在重查前又變動"
     logger.info("Godot 入場券兌換失敗（%s）", reason)
 
 
