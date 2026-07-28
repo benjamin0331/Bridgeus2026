@@ -928,3 +928,26 @@ class DialogueEntryAssignment(models.Model):
 
     def __str__(self):
         return f"user={self.user_id} topic={self.topic_id} route={self.route}"
+
+
+class GodotEntryTicket(models.Model):
+    """一次性的 Godot 大廳入場券。主功能發，Godot server 用服務金鑰兌換。
+
+    存在的理由：Godot server 只需要知道「這個 peer 是哪個 user」，不需要、也不該
+    持有主功能的長效 access token——長效憑證一旦進了遊戲 server 的記憶體與 log
+    就很難收回。券短效、一次性、只有持服務金鑰的一方能兌換，洩漏後果有界。
+    見 docs/superpowers/specs/2026-07-28-godot-identity-and-match-binding-design.md §5。
+    """
+
+    token = models.CharField(max_length=64, unique=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="godot_tickets",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(db_index=True)
+    redeemed_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"ticket user={self.user_id} redeemed={self.redeemed_at is not None}"
