@@ -169,6 +169,7 @@ func _on_join_pressed() -> void:
 	if error != OK:
 		print("無法連接 WebSocket，錯誤碼：", error)
 		_ticket = ""   # 用完即丟，跟流程其他地方一致——連不上就別留著半用的券
+		_notify("無法建立連線，請稍後再試")
 		return
 
 	multiplayer.multiplayer_peer = peer
@@ -268,7 +269,14 @@ func hide_buttons():
 # 連不上時把入口還給玩家。沒有這段的話按鈕已經被 hide_buttons() 藏起來，
 # 玩家只剩重整一途——而重整要再付一次 WASM 冷啟動。
 func _on_connection_failed() -> void:
+	# 換一顆全新的 peer：舊的 socket 未必已回到 DISCONNECTED，沿用會讓下一次
+	# create_client 回 ERR_ALREADY_IN_USE。
 	multiplayer.multiplayer_peer = null
+	peer = WebSocketMultiplayerPeer.new()
+	# one-shot 只在訊號真的發出時才解除；連線失敗時它還掛著，不斷開的話
+	# 第二次按 Join 會重複連接。
+	if multiplayer.connected_to_server.is_connected(_on_connected_to_server):
+		multiplayer.connected_to_server.disconnect(_on_connected_to_server)
 	_ticket = ""
 	host_btn.visible = not OS.has_feature("web")
 	join_btn.show()
@@ -454,6 +462,17 @@ func request_unseat() -> void:
 
 # server-only：指派到第一個空木樁；已在座位者忽略；都滿則拒絕。
 func _do_seat(peer_id: int, topic: String) -> void:
+	# 先擋沒有資格的請求者，而不是等湊成一對才用 user_ids.has(0) 把兩個人一起退座——
+	# 那條路徑會連無辜的另一位一起趕走，等於讓不送券的 client 無限癱瘓配對。
+	if get_node_or_null(str(peer_id)) == null:
+		return   # 沒有身體（沒走過 submit_ticket）就沒有坐的資格，靜默忽略
+	if Backend.service_token != "" and not _peer_users.has(peer_id):
+		# 正式模式下沒有已驗證身份 → 明確拒絕請求者本人，不動別人的座位。
+		if peer_id == multiplayer.get_unique_id():
+			seat_denied("配對需要正式登入身份，請從主功能頁面進入")
+		else:
+			seat_denied.rpc_id(peer_id, "配對需要正式登入身份，請從主功能頁面進入")
+		return
 	if _occupancy.values().has(peer_id):
 		return   # 不可同時佔兩個座位
 	var trunks: Array = _TOPIC_TRUNKS.get(topic, [])
@@ -483,8 +502,9 @@ func _do_seat(peer_id: int, topic: String) -> void:
 		var user_ids := []
 		for pid in occupants:
 			user_ids.append(_peer_users.get(pid, 0))
-		# 任一方沒有已驗證身份（本機開發模式、或不該發生的漏網）就不建房，
-		# 明確拒絕並釋放座位——比送出 [0, 0] 讓後端 400 之後無聲無息好。
+		# 縱深防禦第二道：主要防線已在 _do_seat 開頭擋掉沒身份的請求者，正常情況
+		# 不該走到這裡；留著是防本機開發模式（兩邊都沒身份仍會湊成一對）或任何
+		# 漏網情況——送出 [0, 0] 讓後端 400 之後無聲無息，不如明確拒絕並釋放座位。
 		if user_ids.has(0):
 			for pid in occupants:
 				if pid == multiplayer.get_unique_id():
