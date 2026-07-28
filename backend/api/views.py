@@ -67,6 +67,7 @@ from .display_settings import (
     visible_topics,
 )
 from .timeline_access import LOCKED_DETAIL, timeline_unlock_state
+from api.godot_tickets import TICKET_TTL_SECONDS, issue_ticket, redeem_ticket
 from .serializers import (
     AccountCreateSerializer,
     AccountListSerializer,
@@ -3423,6 +3424,48 @@ class IssueReactionsView(APIView):
             defaults={"emoji_index": emoji_index},
         )
         return self.get(request, issue_id)
+
+
+class GodotTicketIssueView(APIView):
+    """POST /api/godot/tickets/ — 主功能頁面替目前登入者換一張 Godot 大廳入場券。
+
+    回傳的 ticket 由 GodotLobby.jsx 塞進 iframe 的 window.bridgeus_ticket，
+    Godot client 再交給 headless server 兌換（見 integration spec §5）。
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        ticket = issue_ticket(user=request.user)
+        return Response(
+            {"ticket": ticket.token, "expires_in": TICKET_TTL_SECONDS},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class GodotTicketRedeemView(APIView):
+    """POST /api/godot/tickets/redeem/ — 常駐 headless Godot server 用服務金鑰
+    把入場券換成 user_id，藉此確認「這個 peer 是哪個使用者」。
+
+    呼叫者是 Godot server、不是使用者，沒有也不該有 JWT。清空 authentication_classes
+    是必要的：預設的 JWTAuthentication 遇到過期/損壞的 Authorization header 會
+    直接丟 401，根本輪不到底下的服務金鑰驗證跑（同 GodotMatchRoomView）。
+    """
+
+    authentication_classes = []
+    permission_classes = [IsGodotServiceToken]
+
+    def post(self, request):
+        token = request.data.get("ticket")
+        user = redeem_ticket(token=token) if isinstance(token, str) else None
+        if user is None:
+            # 不區分「不存在／已用過／逾期」——呼叫端用不到，區分了等於給探測者 oracle。
+            return Response(
+                {"detail": "入場券無效。"}, status=status.HTTP_400_BAD_REQUEST
+            )
+        return Response(
+            {"user_id": user.id, "nickname": user.first_name or user.username}
+        )
 
 
 class GodotMatchRoomView(APIView):
