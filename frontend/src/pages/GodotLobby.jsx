@@ -24,12 +24,27 @@ export default function GodotLobby() {
     // 拉式發券：Godot 每次要連線前呼叫這個函式，完成後把券寫進 bridgeus_ticket
     // （Godot 端輪詢）。不能在 iframe 載入時就發——券是一次性、60 秒到期，
     // 撐不過 WASM 冷啟動，重連時更會拿著已兌換的券被踢（見 spec §5.1）。
-    // 失敗寫 'ERROR' 而非留空：讓 Godot 分得出「還在等」跟「要不到」。
+    //
+    // 三種狀態靠 bridgeus_ticket 的值區分：undefined=還沒要過、''=請求中、
+    // 'ERROR'=要不到、其他=券本身。後端的券是 secrets.token_urlsafe(32)，
+    // 永遠不可能等於 'ERROR'，所以這個哨兵值不會跟真券撞號。
+    //
+    // seq 是為了防競態：連續呼叫兩次時，先發的請求可能後回，沒有這個守衛就會
+    // 用舊結果蓋掉新結果。只有最後一次呼叫的回應能寫入。
+    let ticketSeq = 0;
     frameWindow.bridgeus_request_ticket = () => {
+      const mySeq = ++ticketSeq;
       frameWindow.bridgeus_ticket = '';
       api.post('/api/godot/tickets/')
-        .then((res) => { frameWindow.bridgeus_ticket = res.data.ticket; })
-        .catch(() => { frameWindow.bridgeus_ticket = 'ERROR'; });
+        .then((res) => {
+          if (mySeq !== ticketSeq) return;
+          frameWindow.bridgeus_ticket = res.data.ticket;
+        })
+        .catch((err) => {
+          if (mySeq !== ticketSeq) return;
+          console.error('[GodotLobby] 入場券取得失敗', err);
+          frameWindow.bridgeus_ticket = 'ERROR';
+        });
     };
 
     // 多人連線位址：同源拓樸下 /godot-ws 由 Cloudflare Tunnel 轉到 headless
