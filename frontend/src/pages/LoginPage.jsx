@@ -28,7 +28,11 @@ function LoginPage({ setUser, authMessage = '' }) {
       const nextUser = {
         name: userId,
         username: userId,
-        id: tokenPayload?.user_id ?? userId
+        id: tokenPayload?.user_id ?? userId,
+        // 只用來決定前端要不要顯示研究者專用連結（例如 /viewpoint-review）；
+        // 實際的存取控制一律由後端 IsResearcher（「研究者」Django Group）把關，
+        // 這裡不是安全邊界。
+        isResearcher: Boolean(tokenPayload?.is_researcher)
       };
 
       localStorage.setItem('bridgeus_user', JSON.stringify(nextUser));

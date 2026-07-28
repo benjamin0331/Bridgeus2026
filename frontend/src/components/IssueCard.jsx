@@ -13,7 +13,18 @@ const ISSUE_ENTRY_MODES = [
   },
 ];
 
-function buildIssueEntries(issues) {
+function buildIssueEntries(issues, entryMode) {
+  // 混合入口：每個議題只有一張卡，導向不帶 mode 的路徑，由後端依立場分流。
+  if (entryMode === 'mixed') {
+    return issues.map((issue) => ({
+      ...issue,
+      entryKey: `${issue.id}-mixed`,
+      mode: null,
+      modeLabel: '開始對話',
+      modeDescription: '填完立場問卷後自動安排對談對象',
+    }));
+  }
+
   return issues.flatMap((issue) =>
     ISSUE_ENTRY_MODES.map((mode) => ({
       ...issue,
@@ -25,8 +36,8 @@ function buildIssueEntries(issues) {
   );
 }
 
-function IssueCard({ navigate, issues, issuesLoaded }) {
-  const entries = buildIssueEntries(issues);
+function IssueCard({ navigate, issues, issuesLoaded, entryMode = 'split' }) {
+  const entries = buildIssueEntries(issues, entryMode);
   const hasIssues = entries.length > 0;
 
   return (
@@ -39,12 +50,16 @@ function IssueCard({ navigate, issues, issuesLoaded }) {
             <div
               key={issue.entryKey}
               className="issue-item"
-              onClick={() => navigate(`/topic/${issue.id}?mode=${issue.mode}`)}
+              onClick={() =>
+                navigate(
+                  issue.mode ? `/topic/${issue.id}?mode=${issue.mode}` : `/topic/${issue.id}`,
+                )
+              }
             >
               <div className="issue-primary">
                 <div className="issue-title-row">
                   <span className="issue-title-text">{issue.title}</span>
-                  <span className={`issue-mode-badge mode-${issue.mode}`}>
+                  <span className={`issue-mode-badge mode-${issue.mode || 'mixed'}`}>
                     {issue.modeLabel}
                   </span>
                 </div>

@@ -4,6 +4,9 @@
 .idea/
 .vscode/
 
+# superpowers brainstorming scratch
+.superpowers/
+
 # Python cache / tooling
 **/__pycache__/
 *.py[cod]
@@ -32,6 +35,15 @@ backend/chroma_data/
 backend/staticfiles/
 backend/.cache/
 backend/media/
+
+# ML classifier weights (~391MB each) — copy in separately, see
+# backend/apps/matching/ml_models/nuclear_node_model/README.md
+backend/apps/matching/ml_models/*/model_macro/model.safetensors
+backend/apps/matching/ml_models/*/model_micro_*/model.safetensors
+
+# Godot web build (~52MB generated artifact) — export locally from godot/,
+# see GodotLobby.jsx. Not version-controlled; each dev exports their own.
+frontend/public/godot/
 
 # Frontend local dependencies / build output
 frontend/node_modules/

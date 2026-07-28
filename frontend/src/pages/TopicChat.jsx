@@ -4,6 +4,7 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import './TopicChat.css';
 import ConversationTreePanel from '../components/ConversationTreePanel';
 import SurveyModal from '../components/SurveyModal';
+import StanceReuseModal from '../components/StanceReuseModal';
 import api from '../api/client';
 
 const MATCHING_POLL_INTERVAL_MS = 3000;
@@ -78,13 +79,32 @@ function isElementNearBottom(element) {
   return distanceFromBottom <= MATCH_SCROLL_BOTTOM_THRESHOLD_PX;
 }
 
+function semanticTreePayloadKey(payload) {
+  if (payload?.session_id) {
+    return `ai:${payload.session_id}`;
+  }
+  if (payload?.room_id) {
+    return `match:${payload.room_id}`;
+  }
+  return '';
+}
+
+function reactionKey(target) {
+  return target ? `${target.type}:${target.id}` : null;
+}
+
 function mapHistoryToMessages(history, userName) {
-  return history.map((message, index) => ({
-    id: `${message.role}-${index}`,
-    type: message.role === 'agent' ? 'agent' : 'user',
-    userName: message.role === 'agent' ? 'BridgeUs' : userName,
-    text: message.content,
-  }));
+  return history.map((message, index) => {
+    const isAgent = message.role === 'agent';
+    const turnId = message.turn_id ?? null;
+    return {
+      id: `${message.role}-${index}`,
+      type: isAgent ? 'agent' : 'user',
+      userName: isAgent ? 'BridgeUs' : userName,
+      text: message.content,
+      reactTarget: isAgent && turnId ? { type: 'ai', id: turnId } : null,
+    };
+  });
 }
 
 function formatTimestamp(value) {
@@ -190,8 +210,57 @@ function mapMatchMessagesToDisplay(messages, userId) {
       userName: isCurrentUser ? MATCH_SELF_NAME : MATCH_PARTNER_NAME,
       text: message.content,
       timestamp: message.created_at,
+      reactTarget: isCurrentUser
+        ? null
+        : { type: 'match', id: Number(message.id) },
     };
   });
+}
+
+function ThumbIcon({ down = false }) {
+  return (
+    <svg
+      className={`reaction-icon${down ? ' reaction-icon--down' : ''}`}
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      aria-hidden="true"
+    >
+      <path
+        fill="currentColor"
+        d="M2 21h3V9H2v12zm20-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L13.17 1 6.59 7.59C6.22 7.96 6 8.45 6 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1z"
+      />
+    </svg>
+  );
+}
+
+function MessageReactions({ target, value, onReact }) {
+  if (!target) {
+    return null;
+  }
+
+  return (
+    <div className="message-reactions">
+      <button
+        type="button"
+        className={`reaction-btn like${value === 1 ? ' active' : ''}`}
+        onClick={() => onReact(target, 1)}
+        aria-label="Like"
+        aria-pressed={value === 1}
+      >
+        <ThumbIcon />
+      </button>
+      <button
+        type="button"
+        className={`reaction-btn dislike${value === -1 ? ' active' : ''}`}
+        onClick={() => onReact(target, -1)}
+        aria-label="Unlike"
+        aria-pressed={value === -1}
+      >
+        <ThumbIcon down />
+      </button>
+    </div>
+  );
 }
 
 function TopicChat({ user, issues, issuesLoaded }) {
@@ -200,9 +269,19 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const navigate = useNavigate();
   const mode = useMemo(() => {
     const params = new URLSearchParams(location.search);
-    return params.get('mode') === 'match' ? 'match' : 'ai';
+    const raw = params.get('mode');
+    if (raw === 'match') return 'match';
+    if (raw === 'ai') return 'ai';
+    // 沒帶 mode＝混合入口：先填問卷，由後端分流後才知道是哪一種。
+    return 'mixed';
   }, [location.search]);
-  const isMatchingMode = mode === 'match';
+  const isMixedEntry = mode === 'mixed';
+  const [resolvedMode, setResolvedMode] = useState(isMixedEntry ? null : mode);
+  const isMatchingMode = (resolvedMode ?? mode) === 'match';
+  // 只看網址、不看 resolvedMode。底下那個「換頁大重設」effect 必須只在換議題
+  // 或換網址時才跑；若讓它跟著 isMatchingMode 走，混合入口在頁面內完成分流
+  // （或 fallback 從配對轉 AI）時也會觸發整套重設，把剛建立的 session 清掉。
+  const urlIsMatchingMode = mode === 'match';
   const modeLabel = isMatchingMode ? '配對模式' : 'AI 模式';
 
   const [showSurvey, setShowSurvey] = useState(!isMatchingMode);
@@ -211,6 +290,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const [surveyOpenAnswers, setSurveyOpenAnswers] = useState({});
   const [isSurveyLoading, setIsSurveyLoading] = useState(true);
   const [surveyError, setSurveyError] = useState('');
+  const [savedStanceProfile, setSavedStanceProfile] = useState(null);
+  const [stanceRedoConfirmed, setStanceRedoConfirmed] = useState(false);
 
   const [sessionId, setSessionId] = useState(null);
   const [inputValue, setInputValue] = useState('');
@@ -219,6 +300,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const [aiStanceDrift, setAiStanceDrift] = useState(null);
   const [isSending, setIsSending] = useState(false);
   const [isAgentStreaming, setIsAgentStreaming] = useState(false);
+  const [isAiSendCoolingDown, setIsAiSendCoolingDown] = useState(false);
   const [chatError, setChatError] = useState('');
   const [isSessionRestoring, setIsSessionRestoring] = useState(false);
   const [pendingRestoredSession, setPendingRestoredSession] = useState(null);
@@ -243,9 +325,10 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const [showScrollToBottomButton, setShowScrollToBottomButton] = useState(false);
 
   const [isRightPanelOpen, setIsRightPanelOpen] = useState(false);
+  const [reactions, setReactions] = useState({});
 
   const messagesContainerRef = useRef(null);
-  const messagesEndRef = useRef(null);
+  const reactionsRef = useRef({});
   const isComposingRef = useRef(false);
   const textareaRef = useRef(null);
   const wsRef = useRef(null);
@@ -254,12 +337,18 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const matchWsRoomIdRef = useRef(null);
   const currentAgentMsgIdRef = useRef(null);
   const isSendingRef = useRef(false);
+  const pendingAiReplyCountRef = useRef(0);
+  const aiLastSendAtRef = useRef(0);
+  const aiSendCooldownTimerRef = useRef(null);
+  const sessionCreationPromiseRef = useRef(null);
   const activeMatchRef = useRef({ roomId: null, status: null, topicId: null });
   const leaveRequestSentRef = useRef(false);
   const cancelQueueRequestSentRef = useRef(false);
   const isChatPageMountedRef = useRef(true);
+  const shouldAutoScrollAiRef = useRef(true);
   const shouldAutoScrollMatchRef = useRef(true);
   const semanticTreeAnalyzeSignatureRef = useRef('');
+  const semanticTreeRequestIdRef = useRef(0);
   const currentIssue = issues?.find((item) => item.id === parseInt(id, 10));
   const displayUserName = user?.name || '公民';
   const matchPartnerName = MATCH_PARTNER_NAME;
@@ -299,7 +388,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
   const scrollMessagesToBottom = useCallback((behavior = 'smooth') => {
     window.requestAnimationFrame(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
+      const container = messagesContainerRef.current;
+      if (!container) {
+        return;
+      }
+      container.scrollTo({ top: container.scrollHeight, behavior });
     });
   }, []);
 
@@ -309,7 +402,59 @@ function TopicChat({ user, issues, issuesLoaded }) {
     });
   }, []);
 
+  const mergeFetchedReactions = useCallback((list, type) => {
+    if (!Array.isArray(list)) {
+      return;
+    }
+    setReactions((previous) => {
+      const next = { ...previous };
+      list.forEach((item) => {
+        if (item?.target_id != null) {
+          next[`${type}:${item.target_id}`] = item.value;
+        }
+      });
+      reactionsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const handleReact = useCallback(async (target, clickedValue) => {
+    if (!target) {
+      return;
+    }
+
+    const key = reactionKey(target);
+    const previousValue = reactionsRef.current[key] || 0;
+    const nextValue = previousValue === clickedValue ? 0 : clickedValue;
+    const optimistic = { ...reactionsRef.current };
+    if (nextValue === 0) {
+      delete optimistic[key];
+    } else {
+      optimistic[key] = nextValue;
+    }
+    reactionsRef.current = optimistic;
+    setReactions(optimistic);
+
+    try {
+      await api.post('/api/message-reactions/', {
+        target_type: target.type,
+        target_id: target.id,
+        value: nextValue,
+      });
+    } catch {
+      const reverted = { ...reactionsRef.current };
+      if (previousValue === 0) {
+        delete reverted[key];
+      } else {
+        reverted[key] = previousValue;
+      }
+      reactionsRef.current = reverted;
+      setReactions(reverted);
+    }
+  }, []);
+
   const resetAiSemanticTreeState = useCallback(() => {
+    semanticTreeRequestIdRef.current += 1;
     setSemanticTreePayload(null);
     setSemanticTreeStatus('ready');
     setSemanticTreeMessage('');
@@ -335,6 +480,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setPendingRestoredSession(null);
     setShowSurvey(false);
     setChatError('');
+    shouldAutoScrollAiRef.current = true;
     window.requestAnimationFrame(() => {
       scrollMessagesToBottom('auto');
     });
@@ -354,6 +500,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setPendingRestoredSession(null);
     setSessionId(null);
     setMessages([]);
+    reactionsRef.current = {};
+    setReactions({});
     setAiStanceMeta(null);
     setAiStanceDrift(null);
     setSurveyAnswers({});
@@ -362,11 +510,30 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setChatError('');
     setIsSending(false);
     setIsAgentStreaming(false);
+    setStanceRedoConfirmed(false);
+    shouldAutoScrollAiRef.current = true;
     setShowSurvey(true);
   }, [resetAiSemanticTreeState]);
 
   const applySemanticTreePayload = useCallback((payload) => {
-    setSemanticTreePayload(payload || null);
+    if (!payload?.treeData) {
+      return;
+    }
+
+    setSemanticTreePayload((currentPayload) => {
+      if (semanticTreePayloadKey(currentPayload) !== semanticTreePayloadKey(payload)) {
+        return payload;
+      }
+
+      const currentAnalyzedCount = Array.isArray(currentPayload?.analyzedSourceIds)
+        ? currentPayload.analyzedSourceIds.length
+        : 0;
+      const incomingAnalyzedCount = Array.isArray(payload.analyzedSourceIds)
+        ? payload.analyzedSourceIds.length
+        : 0;
+
+      return incomingAnalyzedCount < currentAnalyzedCount ? currentPayload : payload;
+    });
     setSemanticTreeStatus(payload?.analysisStatus || 'ready');
     setSemanticTreeMessage(payload?.message || '');
   }, []);
@@ -387,16 +554,19 @@ function TopicChat({ user, issues, issuesLoaded }) {
   }, []);
 
   const handleMessagesScroll = useCallback((event) => {
+    const isNearBottom = isElementNearBottom(event.currentTarget);
     if (!isMatchingMode) {
+      shouldAutoScrollAiRef.current = isNearBottom;
+      setShowScrollToBottomButton(Boolean(sessionId) && !isNearBottom);
       return;
     }
 
-    const isNearBottom = isElementNearBottom(event.currentTarget);
     shouldAutoScrollMatchRef.current = isNearBottom;
     setShowScrollToBottomButton(isMatchChatReady && !isNearBottom);
-  }, [isMatchChatReady, isMatchingMode]);
+  }, [isMatchChatReady, isMatchingMode, sessionId]);
 
   const handleScrollToBottom = useCallback(() => {
+    shouldAutoScrollAiRef.current = true;
     shouldAutoScrollMatchRef.current = true;
     setShowScrollToBottomButton(false);
     scrollMessagesToBottom('smooth');
@@ -465,6 +635,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
         return;
       }
 
+      if (data.type === 'match_stance_drift') {
+        setMatchStanceDrift(data.stance_drift || null);
+        return;
+      }
+
       if (data.type === 'error') {
         setMatchChatError(data.content || '配對聊天室連線發生錯誤。');
       }
@@ -496,6 +671,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
       wsRef.current?.close();
       wsRef.current = null;
       wsSessionIdRef.current = null;
+      if (aiSendCooldownTimerRef.current) {
+        window.clearTimeout(aiSendCooldownTimerRef.current);
+      }
       closeMatchWebSocket();
     };
   }, [closeMatchWebSocket]);
@@ -505,7 +683,12 @@ function TopicChat({ user, issues, issuesLoaded }) {
       return;
     }
 
-    scrollMessagesToBottom('smooth');
+    if (shouldAutoScrollAiRef.current) {
+      scrollMessagesToBottom('auto');
+      setShowScrollToBottomButton(false);
+    } else {
+      setShowScrollToBottomButton(true);
+    }
   }, [isAgentStreaming, isMatchingMode, isSending, messages, scrollMessagesToBottom]);
 
   useEffect(() => {
@@ -521,7 +704,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     }
 
     if (shouldAutoScrollMatchRef.current) {
-      scrollMessagesToBottom('smooth');
+      scrollMessagesToBottom('auto');
       setShowScrollToBottomButton(false);
     } else {
       setShowScrollToBottomButton(true);
@@ -554,10 +737,14 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setSurveyAnswers({});
     setSurveyOpenAnswers({});
     setSurveyError('');
-    setShowSurvey(!isMatchingMode);
+    setSavedStanceProfile(null);
+    setStanceRedoConfirmed(false);
+    setShowSurvey(!urlIsMatchingMode);
     setSessionId(null);
     setInputValue('');
     setMessages([]);
+    reactionsRef.current = {};
+    setReactions({});
     setAiStanceMeta(null);
     setAiStanceDrift(null);
     setIsSending(false);
@@ -571,7 +758,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     wsSessionIdRef.current = null;
     closeMatchWebSocket();
     setMatchingState(null);
-    setIsMatchingStateLoading(isMatchingMode);
+    setIsMatchingStateLoading(urlIsMatchingMode);
     setIsMatchingActionLoading(false);
     setMatchingError('');
     setMatchMessages([]);
@@ -593,7 +780,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     cancelQueueRequestSentRef.current = false;
     shouldAutoScrollMatchRef.current = true;
     setShowScrollToBottomButton(false);
-  }, [closeMatchWebSocket, id, isMatchingMode]);
+  }, [closeMatchWebSocket, id, urlIsMatchingMode]);
 
   useEffect(() => {
     if (!currentIssue) {
@@ -633,6 +820,37 @@ function TopicChat({ user, issues, issuesLoaded }) {
     };
 
     fetchSurvey();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentIssue, id]);
+
+  useEffect(() => {
+    if (!currentIssue) {
+      setSavedStanceProfile(null);
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const fetchStanceProfile = async () => {
+      try {
+        const response = await api.get(
+          `/api/dialogue/topics/${id}/stance-profile/`,
+        );
+        if (!cancelled) {
+          setSavedStanceProfile(response.data);
+        }
+      } catch {
+        // Best-effort: on failure just fall back to always showing the survey.
+        if (!cancelled) {
+          setSavedStanceProfile({ exists: false });
+        }
+      }
+    };
+
+    fetchStanceProfile();
 
     return () => {
       cancelled = true;
@@ -680,7 +898,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
   }, [currentIssue, id, isMatchingMode]);
 
   useEffect(() => {
-    if (isMatchingMode || !currentIssue) {
+    // 已經有 session 就不要還原：混合入口的分流端點與 fallback 端點都會當場
+    // 建好 session 並把 id 交給前端，這時再去拉 sessions/latest/ 會把那場剛
+    // 建立的對話當成「上次的對話」，跳出「要繼續上次嗎」問使用者。
+    // 純 ?mode=ai 進來時 sessionId 仍是 null，重新整理後的續用行為不受影響。
+    if (isMatchingMode || !currentIssue || sessionId) {
       return undefined;
     }
 
@@ -738,7 +960,58 @@ function TopicChat({ user, issues, issuesLoaded }) {
     return () => {
       cancelled = true;
     };
-  }, [currentIssue, displayUserName, id, isMatchingMode]);
+  }, [currentIssue, displayUserName, id, isMatchingMode, sessionId]);
+
+  useEffect(() => {
+    if (isMatchingMode || !sessionId) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const fetchReactions = async () => {
+      try {
+        const response = await api.get(
+          `/api/message-reactions/?target_type=ai&conversation_id=${encodeURIComponent(sessionId)}`,
+        );
+        if (!cancelled) {
+          mergeFetchedReactions(response.data?.reactions, 'ai');
+        }
+      } catch {
+        // Reactions are optional UI state; chat remains usable if loading fails.
+      }
+    };
+    void fetchReactions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isMatchingMode, mergeFetchedReactions, sessionId]);
+
+  useEffect(() => {
+    if (!isMatchChatReady || !matchingState?.room_id) {
+      return undefined;
+    }
+
+    const roomId = matchingState.room_id;
+    let cancelled = false;
+    const fetchReactions = async () => {
+      try {
+        const response = await api.get(
+          `/api/message-reactions/?target_type=match&conversation_id=${encodeURIComponent(roomId)}`,
+        );
+        if (!cancelled) {
+          mergeFetchedReactions(response.data?.reactions, 'match');
+        }
+      } catch {
+        // Reactions are optional UI state; chat remains usable if loading fails.
+      }
+    };
+    void fetchReactions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isMatchChatReady, matchingState?.room_id, mergeFetchedReactions]);
 
   useEffect(() => {
     if (!isMatchChatReady || !matchingState?.room_id) {
@@ -887,12 +1160,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
     }
 
     if (!isMatchChatReady || !matchingState?.room_id) {
-      setSemanticTreePayload(null);
-      setSemanticTreeStatus('ready');
-      setSemanticTreeMessage('');
+      semanticTreeRequestIdRef.current += 1;
       setIsSemanticTreeLoading(false);
       setIsSemanticTreeAnalyzing(false);
-      semanticTreeAnalyzeSignatureRef.current = '';
       return undefined;
     }
 
@@ -900,17 +1170,19 @@ function TopicChat({ user, issues, issuesLoaded }) {
     const roomId = matchingState.room_id;
 
     const fetchSemanticTree = async () => {
+      const requestId = semanticTreeRequestIdRef.current + 1;
+      semanticTreeRequestIdRef.current = requestId;
       setIsSemanticTreeLoading(true);
       setSemanticTreeStatus('ready');
       setSemanticTreeMessage('');
 
       try {
         const response = await api.get(`/api/matching/rooms/${roomId}/semantic-tree/`);
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           applySemanticTreePayload(response.data);
         }
       } catch (error) {
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           setSemanticTreeStatus(error?.response?.data?.analysisStatus || 'load_failed');
           setSemanticTreeMessage(
             error?.response?.data?.message ||
@@ -939,29 +1211,28 @@ function TopicChat({ user, issues, issuesLoaded }) {
     }
 
     if (!sessionId) {
-      setSemanticTreePayload(null);
-      setSemanticTreeStatus('ready');
-      setSemanticTreeMessage('');
+      semanticTreeRequestIdRef.current += 1;
       setIsSemanticTreeLoading(false);
       setIsSemanticTreeAnalyzing(false);
-      semanticTreeAnalyzeSignatureRef.current = '';
       return undefined;
     }
 
     let cancelled = false;
 
     const fetchSemanticTree = async () => {
+      const requestId = semanticTreeRequestIdRef.current + 1;
+      semanticTreeRequestIdRef.current = requestId;
       setIsSemanticTreeLoading(true);
       setSemanticTreeStatus('ready');
       setSemanticTreeMessage('');
 
       try {
         const response = await api.get(`/api/dialogue/sessions/${sessionId}/semantic-tree/`);
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           applySemanticTreePayload(response.data);
         }
       } catch (error) {
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           setSemanticTreeStatus(error?.response?.data?.analysisStatus || 'load_failed');
           setSemanticTreeMessage(
             error?.response?.data?.message ||
@@ -1001,16 +1272,18 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
     let cancelled = false;
     const timer = window.setTimeout(async () => {
+      const requestId = semanticTreeRequestIdRef.current + 1;
+      semanticTreeRequestIdRef.current = requestId;
       setIsSemanticTreeAnalyzing(true);
 
       try {
         const response = await api.post(`/api/matching/rooms/${roomId}/semantic-tree/analyze/`);
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           applySemanticTreePayload(response.data);
           semanticTreeAnalyzeSignatureRef.current = signature;
         }
       } catch (error) {
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           setSemanticTreeStatus(error?.response?.data?.analysisStatus || 'analyze_failed');
           setSemanticTreeMessage(
             error?.response?.data?.message ||
@@ -1020,7 +1293,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
           semanticTreeAnalyzeSignatureRef.current = signature;
         }
       } finally {
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           setIsSemanticTreeAnalyzing(false);
         }
       }
@@ -1044,16 +1317,18 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
     let cancelled = false;
     const timer = window.setTimeout(async () => {
+      const requestId = semanticTreeRequestIdRef.current + 1;
+      semanticTreeRequestIdRef.current = requestId;
       setIsSemanticTreeAnalyzing(true);
 
       try {
         const response = await api.post(`/api/dialogue/sessions/${sessionId}/semantic-tree/analyze/`);
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           applySemanticTreePayload(response.data);
           semanticTreeAnalyzeSignatureRef.current = signature;
         }
       } catch (error) {
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           setSemanticTreeStatus(error?.response?.data?.analysisStatus || 'analyze_failed');
           setSemanticTreeMessage(
             error?.response?.data?.message ||
@@ -1063,7 +1338,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
           semanticTreeAnalyzeSignatureRef.current = signature;
         }
       } finally {
-        if (!cancelled) {
+        if (!cancelled && requestId === semanticTreeRequestIdRef.current) {
           setIsSemanticTreeAnalyzing(false);
         }
       }
@@ -1131,6 +1406,13 @@ function TopicChat({ user, issues, issuesLoaded }) {
     };
   }, [isMatchingMode, triggerAutoCancelMatchingQueue]);
 
+  const updatePendingAiReplyCount = (delta) => {
+    const nextCount = Math.max(0, pendingAiReplyCountRef.current + delta);
+    pendingAiReplyCountRef.current = nextCount;
+    setIsSending(nextCount > 0);
+    return nextCount;
+  };
+
   const connectDialogueWebSocket = (activeSessionId) => {
     const token = localStorage.getItem('access');
     if (!token) {
@@ -1176,10 +1458,21 @@ function TopicChat({ user, issues, issuesLoaded }) {
       }
 
       if (data.type === 'agent_stream_end') {
+        const streamedMessageId = currentAgentMsgIdRef.current;
+        const turnId = data.turn_id ?? null;
+        if (streamedMessageId && turnId) {
+          setMessages((previous) =>
+            previous.map((message) =>
+              message.id === streamedMessageId
+                ? { ...message, reactTarget: { type: 'ai', id: turnId } }
+                : message,
+            ),
+          );
+        }
         currentAgentMsgIdRef.current = null;
         setAiStanceDrift(extractStanceDrift(data));
         setIsAgentStreaming(false);
-        setIsSending(false);
+        updatePendingAiReplyCount(-1);
         return;
       }
 
@@ -1187,11 +1480,12 @@ function TopicChat({ user, issues, issuesLoaded }) {
         currentAgentMsgIdRef.current = null;
         setIsAgentStreaming(false);
         setChatError(data.content || 'AI 回應中斷，請重試。');
-        setIsSending(false);
+        updatePendingAiReplyCount(-1);
       }
     };
 
     socket.onerror = () => {
+      pendingAiReplyCountRef.current = 0;
       setIsAgentStreaming(false);
       setChatError('WebSocket 連線錯誤，請重新整理頁面。');
       setIsSending(false);
@@ -1204,6 +1498,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
       }
 
       if (isSendingRef.current) {
+        pendingAiReplyCountRef.current = 0;
         setIsAgentStreaming(false);
         setChatError('連線中斷，請重新整理頁面。');
         setIsSending(false);
@@ -1219,19 +1514,25 @@ function TopicChat({ user, issues, issuesLoaded }) {
       return sessionId;
     }
 
-    const response = await api.post('/api/dialogue/sessions/', {
-      topic_id: Number(id),
-      topic_title: currentIssue?.title || `議題 ${id}`,
-      topic_description: currentIssue?.description || '',
-      survey_answers: surveyAnswers,
-      survey_open_answers: surveyOpenAnswers,
-      user_initial_argument: surveyOpenAnswers.Q9 || '',
-    });
+    if (!sessionCreationPromiseRef.current) {
+      sessionCreationPromiseRef.current = api.post('/api/dialogue/sessions/', {
+        topic_id: Number(id),
+        topic_title: currentIssue?.title || `議題 ${id}`,
+        topic_description: currentIssue?.description || '',
+        survey_answers: surveyAnswers,
+        survey_open_answers: surveyOpenAnswers,
+        user_initial_argument: surveyOpenAnswers.Q9 || '',
+      }).then((response) => {
+        setSessionId(response.data.session_id);
+        setAiStanceMeta(extractAiStanceMeta(response.data));
+        setAiStanceDrift(extractStanceDrift(response.data));
+        return response.data.session_id;
+      }).finally(() => {
+        sessionCreationPromiseRef.current = null;
+      });
+    }
 
-    setSessionId(response.data.session_id);
-    setAiStanceMeta(extractAiStanceMeta(response.data));
-    setAiStanceDrift(extractStanceDrift(response.data));
-    return response.data.session_id;
+    return sessionCreationPromiseRef.current;
   };
 
   const requestRestDialogueReply = async (activeSessionId, text) => {
@@ -1312,6 +1613,62 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const handleSurveySubmit = async ({ answers, openAnswers }) => {
     setSurveyAnswers(answers);
     setSurveyOpenAnswers(openAnswers);
+    setStanceRedoConfirmed(false);
+    setSavedStanceProfile((prev) => ({
+      ...(prev || {}),
+      exists: true,
+      survey_answers: answers,
+      survey_open_answers: openAnswers,
+    }));
+
+    if (isMixedEntry) {
+      setMatchingError('');
+      // 使用者才剛送出問卷，「要不要沿用先前立場」已經沒有意義。上面的
+      // setSavedStanceProfile 會把 exists 設成 true，若不在 await 之前先
+      // 關掉，等待分流回應的那段時間會閃出重填問卷的對話框。
+      setStanceRedoConfirmed(true);
+      setIsMatchingActionLoading(true);
+      try {
+        const response = await api.post('/api/dialogue/entry/', {
+          topic_id: Number(id),
+          survey_answers: answers,
+          survey_open_answers: openAnswers,
+        });
+
+        if (!isChatPageMountedRef.current) return;
+
+        if (response.data.route === 'ai') {
+          setResolvedMode('ai');
+          // 分流端點已經把 session 建好了，直接收下 session_id——
+          // ensureSession() 之後會因為 sessionId 有值而短路，不會重建一場，
+          // 也不會去打被把關擋住的 /api/dialogue/sessions/。
+          setSessionId(response.data.session_id);
+          setAiStanceMeta(extractAiStanceMeta(response.data));
+          setAiStanceDrift(extractStanceDrift(response.data));
+          setMessages([]);
+          setSemanticTreePayload(null);
+          setSemanticTreeStatus('ready');
+          setSemanticTreeMessage('');
+          semanticTreeAnalyzeSignatureRef.current = '';
+          shouldAutoScrollAiRef.current = true;
+          setChatError('');
+        } else {
+          setResolvedMode('match');
+          setMatchingState(response.data);
+        }
+        setShowSurvey(false);
+      } catch (error) {
+        if (!isChatPageMountedRef.current) return;
+        setMatchingError(
+          error?.response?.data?.detail || '目前無法開始對話，請稍後再試。',
+        );
+      } finally {
+        if (isChatPageMountedRef.current) {
+          setIsMatchingActionLoading(false);
+        }
+      }
+      return;
+    }
 
     if (!isMatchingMode) {
       wsRef.current?.close();
@@ -1326,6 +1683,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
       setSemanticTreeStatus('ready');
       setSemanticTreeMessage('');
       semanticTreeAnalyzeSignatureRef.current = '';
+      shouldAutoScrollAiRef.current = true;
       setShowSurvey(false);
       setChatError('');
       return;
@@ -1368,6 +1726,36 @@ function TopicChat({ user, issues, issuesLoaded }) {
     }
   };
 
+  const [fallbackBusy, setFallbackBusy] = useState(false);
+  const fallbackOffer = matchingState?.fallback_offer;
+
+  const handleAcceptFallback = async () => {
+    if (fallbackBusy) return;
+    setFallbackBusy(true);
+    setMatchingError('');
+    try {
+      const response = await api.post('/api/dialogue/entry/fallback/', {
+        topic_id: Number(id),
+      });
+      if (!isChatPageMountedRef.current) return;
+      setResolvedMode('ai');
+      setMatchingState(null);
+      setSessionId(response.data.session_id);
+      setAiStanceMeta(extractAiStanceMeta(response.data));
+      setAiStanceDrift(extractStanceDrift(response.data));
+      setMessages([]);
+      shouldAutoScrollAiRef.current = true;
+      setChatError('');
+    } catch (error) {
+      if (!isChatPageMountedRef.current) return;
+      setMatchingError(
+        error?.response?.data?.detail || '目前無法改成 AI 對話，請稍後再試。',
+      );
+    } finally {
+      if (isChatPageMountedRef.current) setFallbackBusy(false);
+    }
+  };
+
   const handleSendMessage = async () => {
     const text = inputValue.trim();
     if (!text) return;
@@ -1385,8 +1773,6 @@ function TopicChat({ user, issues, issuesLoaded }) {
       setInputValue('');
       setMatchChatError('');
       setIsMatchSending(true);
-      shouldAutoScrollMatchRef.current = true;
-      setShowScrollToBottomButton(false);
 
       try {
         const socket = matchWsRef.current;
@@ -1441,9 +1827,19 @@ function TopicChat({ user, issues, issuesLoaded }) {
       return;
     }
 
-    if (isSending) {
+    const now = Date.now();
+    if (now - aiLastSendAtRef.current < 300) {
       return;
     }
+    aiLastSendAtRef.current = now;
+    setIsAiSendCoolingDown(true);
+    if (aiSendCooldownTimerRef.current) {
+      window.clearTimeout(aiSendCooldownTimerRef.current);
+    }
+    aiSendCooldownTimerRef.current = window.setTimeout(() => {
+      setIsAiSendCoolingDown(false);
+      aiSendCooldownTimerRef.current = null;
+    }, 300);
 
     setMessages((prev) => [
       ...prev,
@@ -1456,10 +1852,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
     ]);
     setInputValue('');
     setChatError('');
-    setIsAgentStreaming(false);
-    setIsSending(true);
 
     let activeSessionId = null;
+    let queuedReply = false;
 
     try {
       activeSessionId = await ensureSession();
@@ -1475,9 +1870,13 @@ function TopicChat({ user, issues, issuesLoaded }) {
         : existingSocket;
 
       await waitForSocketOpen(socket);
-      currentAgentMsgIdRef.current = null;
+      updatePendingAiReplyCount(1);
+      queuedReply = true;
       socket.send(JSON.stringify({ type: 'user_message', content: text }));
     } catch (socketError) {
+      if (queuedReply) {
+        updatePendingAiReplyCount(-1);
+      }
       wsRef.current?.close();
       wsRef.current = null;
       wsSessionIdRef.current = null;
@@ -1579,6 +1978,13 @@ function TopicChat({ user, issues, issuesLoaded }) {
       setMatchAssistNotice(null);
       setPendingMatchSuggestion(null);
       setMatchSuggestionDraft(null);
+      navigate('/post-questionnaire', {
+        state: {
+          topicId: Number(id),
+          roomId: matchingState.room_id,
+          condition: 'hh',
+        },
+      });
     } catch (error) {
       leaveRequestSentRef.current = false;
       setMatchChatError(
@@ -1598,7 +2004,23 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setMatchAssistNotice(null);
     setPendingMatchSuggestion(null);
     setMatchSuggestionDraft(null);
+    setStanceRedoConfirmed(false);
     setShowSurvey(true);
+  };
+
+  const handleRedoSurvey = () => {
+    setStanceRedoConfirmed(true);
+  };
+
+  const handleReuseStance = () => {
+    if (!savedStanceProfile?.exists) {
+      return;
+    }
+
+    void handleSurveySubmit({
+      answers: savedStanceProfile.survey_answers || {},
+      openAnswers: savedStanceProfile.survey_open_answers || {},
+    });
   };
 
   const renderMatchingCard = () => {
@@ -1683,6 +2105,31 @@ function TopicChat({ user, issues, issuesLoaded }) {
             <p className="matching-status-copy">
               你現在已經在等待佇列中。離開頁面會自動取消等待；配對成功後短暫重整頁面可以回到同一個聊天室。
             </p>
+            {fallbackOffer?.available && (
+              <div className="matching-fallback-offer">
+                <p>目前沒有找到合適的對談對象。要改成和 AI 代理人對話嗎？</p>
+                <div className="matching-status-actions">
+                  <button
+                    className="matching-status-btn"
+                    type="button"
+                    disabled={fallbackBusy}
+                    onClick={handleAcceptFallback}
+                  >
+                    改成 AI 對話
+                  </button>
+                  <button
+                    className="matching-status-btn secondary"
+                    type="button"
+                    disabled={fallbackBusy}
+                    onClick={() => setMatchingState((prev) => (
+                      prev ? { ...prev, fallback_offer: null } : prev
+                    ))}
+                  >
+                    繼續等待
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="matching-status-meta">
               <div className="matching-status-row">
                 <span className="matching-status-label">立場類型</span>
@@ -1838,10 +2285,15 @@ function TopicChat({ user, issues, issuesLoaded }) {
           {matchChatDisplayMessages.map((msg) => (
             <div key={msg.id} className={`message-row ${msg.type === 'user' ? 'user-message' : ''}`}>
               <div className="message-user-info">
-                <img src="/icon.jpg" alt="Avatar" className="message-avatar" />
+                <img src={msg.type === 'user' ? '/icon.jpg' : '/logo.png'} alt="Avatar" className="message-avatar" />
                 <span className="message-username">{msg.userName}</span>
               </div>
               <div className="message-bubble">{msg.text}</div>
+              <MessageReactions
+                target={msg.reactTarget}
+                value={msg.reactTarget ? reactions[reactionKey(msg.reactTarget)] || 0 : 0}
+                onReact={handleReact}
+              />
             </div>
           ))}
           {isMatchSending && (
@@ -1964,7 +2416,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
   const isInputDisabled = isMatchingMode
     ? !isMatchChatReady || isMatchSending
-    : showSurvey || isSending || isSessionRestoring || Boolean(pendingRestoredSession);
+    : showSurvey || isSessionRestoring || Boolean(pendingRestoredSession);
 
   const activeChatError = isMatchingMode && showSurvey
     ? ''
@@ -1997,7 +2449,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
     : 0;
   const metricMessageCount = isMatchingMode ? matchMessageCount : messages.length;
   const semanticTreeMessageCount = isMatchingMode ? matchMessageCount : aiUserMessageCount;
-  const isSemanticTreeActive = isMatchingMode ? isMatchChatReady : Boolean(sessionId);
+  const isSemanticTreeActive = isMatchingMode
+    ? isMatchChatReady || Boolean(semanticTreePayload)
+    : Boolean(sessionId) || Boolean(semanticTreePayload);
   const driftValueDisplay = isMatchingMode
     ? formatDriftValue(matchStanceDrift?.drift_value)
     : formatDriftValue(aiStanceDrift?.drift_value);
@@ -2009,15 +2463,27 @@ function TopicChat({ user, issues, issuesLoaded }) {
   return (
     <div className="chat-page-container">
       {showSurvey && (
-        <SurveyModal
-          isOpen={showSurvey}
-          survey={survey}
-          isLoading={isSurveyLoading}
-          error={surveyError}
-          isSubmitting={isMatchingMode ? isMatchingActionLoading : false}
-          submitError={isMatchingMode ? matchingError : ''}
-          onSubmit={handleSurveySubmit}
-        />
+        savedStanceProfile?.exists && !stanceRedoConfirmed ? (
+          <StanceReuseModal
+            isOpen
+            stanceScore={savedStanceProfile.stance_score}
+            stanceCategory={savedStanceProfile.stance_category}
+            updatedAt={savedStanceProfile.updated_at}
+            isBusy={isMatchingMode ? isMatchingActionLoading : false}
+            onRedo={handleRedoSurvey}
+            onReuse={handleReuseStance}
+          />
+        ) : (
+          <SurveyModal
+            isOpen={showSurvey}
+            survey={survey}
+            isLoading={isSurveyLoading}
+            error={surveyError}
+            isSubmitting={isMatchingMode ? isMatchingActionLoading : false}
+            submitError={isMatchingMode ? matchingError : ''}
+            onSubmit={handleSurveySubmit}
+          />
+        )
       )}
 
       {!isRightPanelOpen && (
@@ -2089,16 +2555,21 @@ function TopicChat({ user, issues, issuesLoaded }) {
               {messages.map((msg) => (
                 <div key={msg.id} className={`message-row ${msg.type === 'user' ? 'user-message' : ''}`}>
                   <div className="message-user-info">
-                    <img src="/icon.jpg" alt="Avatar" className="message-avatar" />
+                    <img src={msg.type === 'user' ? '/icon.jpg' : '/logo.png'} alt="Avatar" className="message-avatar" />
                     <span className="message-username">{msg.userName}</span>
                   </div>
                   <div className="message-bubble">{msg.text}</div>
+                  <MessageReactions
+                    target={msg.reactTarget}
+                    value={msg.reactTarget ? reactions[reactionKey(msg.reactTarget)] || 0 : 0}
+                    onReact={handleReact}
+                  />
                 </div>
               ))}
               {isSending && !isAgentStreaming && (
                 <div className="message-row">
                   <div className="message-user-info">
-                    <img src="/icon.jpg" alt="Avatar" className="message-avatar" />
+                    <img src="/logo.png" alt="Avatar" className="message-avatar" />
                     <span className="message-username">BridgeUs</span>
                   </div>
                   <div className="message-bubble">正在整理回應...</div>
@@ -2106,10 +2577,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
               )}
             </>
           )}
-          <div ref={messagesEndRef} />
         </div>
 
-        {isMatchingMode && isMatchChatReady && showScrollToBottomButton && (
+        {(isMatchingMode ? isMatchChatReady : Boolean(sessionId)) && showScrollToBottomButton && (
           <button
             className="scroll-to-bottom-btn"
             type="button"
@@ -2120,6 +2590,27 @@ function TopicChat({ user, issues, issuesLoaded }) {
           >
             回到底部
           </button>
+        )}
+
+        {!isMatchingMode && sessionId && messages.length > 0 && (
+          <div className="ai-end-dialogue-bar">
+            <button
+              className="ai-end-dialogue-btn"
+              type="button"
+              disabled={isSending || isAgentStreaming}
+              onClick={() =>
+                navigate('/post-questionnaire', {
+                  state: {
+                    topicId: Number(id),
+                    sessionId,
+                    condition: 'ai',
+                  },
+                })
+              }
+            >
+              結束對話 &amp; 填寫後測問卷
+            </button>
+          </div>
         )}
 
         <div className="chat-input-area">
@@ -2148,7 +2639,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
               onClick={() => {
                 void handleSendMessage();
               }}
-              disabled={isInputDisabled || !inputValue.trim()}
+              disabled={isInputDisabled || isAiSendCoolingDown || !inputValue.trim()}
               aria-label="發送訊息"
             >
               <img src="/arrow-right.png" alt="發送" className="send-icon" />
@@ -2180,7 +2671,20 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
         <div className="right-minor-feature-row" aria-label="對話即時指標">
           <div className="minor-feature-box metric-card">
-            <span className="metric-label">我的立場偏離度</span>
+            <span className="metric-label metric-label-with-info">
+              <span className="metric-label-text">我的論述移動</span>
+              <span
+                className="metric-info"
+                tabIndex={0}
+                role="note"
+                aria-label="論述移動說明：顯示你的發言與最初立場陳述的語意差距。數值上升代表你的論述正在展開、觸及新的角度——這反映討論的廣度，不代表你被說服或立場動搖。"
+              >
+                i
+                <span className="metric-info-tooltip" role="tooltip">
+                  顯示你的發言與最初立場陳述的語意差距。數值上升代表你的論述正在展開、觸及新的角度——這反映討論的廣度，不代表你被說服或立場動搖。
+                </span>
+              </span>
+            </span>
             <strong className="metric-value">
               {driftValueDisplay}
             </strong>

@@ -61,6 +61,11 @@ elif not DEBUG and len(SECRET_KEY) < 32:
     )
 
 JWT_SIGNING_KEY = os.getenv("JWT_SIGNING_KEY", SECRET_KEY)
+
+# 給 Godot 常駐 headless server 呼叫 /api/godot/match-rooms/ 用的共用密鑰
+# （不是 user JWT）。空字串 = 該端點永遠拒絕（fail closed）。見
+# godot-web-deployment-spec.md §4「服務金鑰建房契約」。
+GODOT_SERVICE_TOKEN = os.getenv("GODOT_SERVICE_TOKEN", "")
 if not DEBUG and len(JWT_SIGNING_KEY) < 32:
     raise ImproperlyConfigured(
         "JWT_SIGNING_KEY must be at least 32 characters when "

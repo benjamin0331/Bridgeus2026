@@ -35,6 +35,13 @@ class FakeStreamingDialogueAgent:
         yield f"AI reply to: {session.history[-1].content}"
 
 
+class SlowStreamingDialogueAgent:
+    async def astream_respond(self, session):
+        content = session.history[-1].content
+        yield f"AI reply to: {content}"
+        await asyncio.sleep(0.05)
+
+
 async def _access_token_for(user):
     return await sync_to_async(lambda: str(AccessToken.for_user(user)))()
 
@@ -109,10 +116,80 @@ async def test_dialogue_websocket_persists_completed_turn():
     assert end_message["stance_drift"]["measured_at"]
 
     saved_turn = await AIConversation.objects.aget(session_id=session_id)
+    assert end_message["turn_id"] == saved_turn.id
     assert saved_turn.user_id == user.id
     assert saved_turn.topic_id == 102
     assert saved_turn.user_prompt == "核能真的比較穩定嗎？"
     assert saved_turn.ai_response == "AI reply to: 核能真的比較穩定嗎？"
+
+    await communicator.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_dialogue_websocket_queues_messages_and_replies_in_order():
+    from BridgeUs_Django.asgi import application
+    from apps.matching.services.ai_agent import DialogueSession
+
+    user = await create_user(username="ai_ws_queue_user", password="secret123")
+    session_id = uuid4().hex
+    session = DialogueSession(
+        topic="女性義務兵役討論",
+        topic_description="討論女性是否應納入義務兵役。",
+        agent_stance="提出相反觀點",
+        agent_stance_summary="",
+        user_stance_label="立場尚未明確",
+        user_stance_score=4.0,
+    )
+    await sync_to_async(cache.set)(
+        f"dialogue_session:{session_id}",
+        {
+            "user_id": user.id,
+            "session_id": session_id,
+            "topic_id": 103,
+            "topic_title": "女性義務兵役討論",
+            "collection_name": "military_service_women_news",
+            "survey_context": {},
+            "session": session.to_dict(),
+        },
+    )
+
+    communicator = WebsocketCommunicator(
+        application,
+        f"/ws/dialogue/{session_id}/?token={await _access_token_for(user)}",
+    )
+    with (
+        patch("api.views.get_dialogue_agent", return_value=SlowStreamingDialogueAgent()),
+        patch("api.consumers.aget_embedding", new=AsyncMock(return_value=make_test_embedding(1))),
+    ):
+        assert (await communicator.connect())[0]
+        await communicator.send_json_to({"type": "user_message", "content": "第一則"})
+        await communicator.send_json_to({"type": "user_message", "content": "第二則"})
+
+        replies = [await communicator.receive_json_from(timeout=3) for _ in range(4)]
+
+    assert [item["type"] for item in replies] == [
+        "agent_stream",
+        "agent_stream_end",
+        "agent_stream",
+        "agent_stream_end",
+    ]
+    assert replies[0]["content"] == "AI reply to: 第一則"
+    assert replies[2]["content"] == "AI reply to: 第二則"
+    saved = [
+        turn
+        async for turn in AIConversation.objects.filter(session_id=session_id).order_by("id")
+    ]
+    assert [turn.user_prompt for turn in saved] == ["第一則", "第二則"]
+    assert [turn.ai_response for turn in saved] == [
+        "AI reply to: 第一則",
+        "AI reply to: 第二則",
+    ]
+    assert [replies[1]["turn_id"], replies[3]["turn_id"]] == [
+        saved[0].id,
+        saved[1].id,
+    ]
 
     await communicator.disconnect()
 
@@ -438,3 +515,54 @@ async def test_match_room_ai_assist_rephrase_fallback_disallows_accept():
     assert suggestion["actions"] == ["modify", "ignore"]
 
     await comm_a.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_match_room_pushes_sender_drift_after_each_message():
+    """Each user message recomputes and pushes that speaker's own drift (mirrors the
+    H-AI per-turn cadence, no 200-char throttle) and only to the sender."""
+    from BridgeUs_Django.asgi import application
+
+    alice = await create_user(username="drift_alice", password="secret123")
+    bob = await create_user(username="drift_bob", password="secret123")
+    match = await _make_active_match(alice, bob)
+
+    alice_token = await _access_token_for(alice)
+    bob_token = await _access_token_for(bob)
+    comm_a = WebsocketCommunicator(application, f"/ws/matching/rooms/{match.room_id}/?token={alice_token}")
+    comm_b = WebsocketCommunicator(application, f"/ws/matching/rooms/{match.room_id}/?token={bob_token}")
+    assert (await comm_a.connect())[0]
+    assert (await comm_b.connect())[0]
+
+    low_emotion = {"score": 0.1, "label": "neutral", "is_over_threshold": False}
+    drift_mock = AsyncMock(return_value={"drift_value": 0.42, "direction": "approaching"})
+    with patch("api.consumers.hh_ai_assist_enabled", return_value=True), \
+         patch("api.consumers.aget_analyze_emotion", new=AsyncMock(return_value=low_emotion)), \
+         patch("api.consumers.aget_embedding", new=AsyncMock(return_value=make_test_embedding(1))), \
+         patch("api.consumers.aget_topic_anchor_embedding", new=AsyncMock(return_value=make_test_embedding(0.5))), \
+         patch("api.consumers.acheck_match_topic_relevance", new=AsyncMock(return_value={"is_off_topic": False, "relevance_score": 0.9})), \
+         patch("api.consumers.adetect_match_stalemate", new=AsyncMock(return_value={"is_stalemate": False})), \
+         patch("api.consumers.acalculate_match_stance_drift", new=drift_mock):
+        # A short (<200 char) message must still trigger a drift recompute.
+        await comm_a.send_json_to({"type": "match_message", "content": "短短一句話。"})
+
+        msg_a = await comm_a.receive_json_from(timeout=3)
+        msg_b = await comm_b.receive_json_from(timeout=3)
+        assert msg_a["type"] == "match_message"
+        assert msg_b["type"] == "match_message"
+
+        drift_a = await comm_a.receive_json_from(timeout=3)
+        assert drift_a["type"] == "match_stance_drift"
+        assert drift_a["stance_drift"]["drift_value"] == 0.42
+        assert drift_a["stance_drift"]["measured_at"]
+
+        # The other user is not sent a drift push for the sender's message.
+        assert await comm_b.receive_nothing(timeout=1)
+
+    # Drift was recomputed for the sender only.
+    drift_mock.assert_awaited_once_with(match_id=match.id, user_id=alice.id)
+
+    await comm_a.disconnect()
+    await comm_b.disconnect()

@@ -1,3 +1,4 @@
+import logging
 import os
 from dataclasses import dataclass
 from datetime import timedelta
@@ -10,6 +11,8 @@ from django.utils.dateparse import parse_datetime
 from django.utils import timezone
 
 from api.models import DialogueMatch, MatchMessage, MatchQueueEntry, UserStanceProfile
+
+logger = logging.getLogger(__name__)
 
 from .matching_algorithm import (
     MATCHING_ALGORITHM_VERSION,
@@ -63,6 +66,16 @@ def _as_metric_decimal(score: float | Decimal) -> Decimal:
 
 def _can_enter_human_matching(stance_category: str) -> bool:
     return bool(candidate_categories_for(stance_category))
+
+
+def can_enter_human_matching(stance_category: str) -> bool:
+    """公開版本，給混合入口決定分流方向用。
+
+    刻意包一層而不是直接把 _can_enter_human_matching 改名：佇列內部已有
+    多處呼叫，而分流規則必須只有一份定義——兩邊分歧的話，會出現「入口說
+    你該配對、佇列說你不能配對」的死路。
+    """
+    return _can_enter_human_matching(stance_category)
 
 
 def _active_match_queryset(*, user_id: int, topic_id: int):
@@ -206,6 +219,25 @@ def _absence_deadline(match: DialogueMatch, *, now=None):
     return min(deadlines)
 
 
+def _trigger_m6_pipeline_for_closed_match(match_id: int) -> None:
+    """對話雙方結束對話（配對房轉為 CLOSED）後觸發 M6 觀點知識庫 pipeline。
+
+    只註冊在 transaction.on_commit()，確保配對房關閉真的落地、鎖也釋放之後才
+    跑（pipeline 會呼叫 embedding 模型、寫 DB，不該佔著關房當下的行鎖）。
+    pipeline 本身失敗絕對不能讓配對房關不掉，所以這裡整個包住吃掉例外，只記
+    log；呼叫端（_close_locked_match）不需要、也不應該知道 M6 這邊的結果。
+    """
+    try:
+        from apps.summary.pipeline.assemble import run_pipeline_for_match
+
+        run_pipeline_for_match(match_id)
+    except Exception:
+        logger.exception(
+            "M6 觀點知識庫 pipeline 觸發失敗 match_id=%s（不影響配對房關閉）",
+            match_id,
+        )
+
+
 def _close_locked_match(locked_match: DialogueMatch, *, now=None) -> DialogueMatch:
     if locked_match.status != DialogueMatch.Status.ACTIVE:
         return locked_match
@@ -214,6 +246,9 @@ def _close_locked_match(locked_match: DialogueMatch, *, now=None) -> DialogueMat
     locked_match.status = DialogueMatch.Status.CLOSED
     locked_match.closed_at = current_time
     locked_match.save(update_fields=["status", "closed_at"])
+    transaction.on_commit(
+        lambda: _trigger_m6_pipeline_for_closed_match(locked_match.id)
+    )
     return locked_match
 
 
@@ -453,9 +488,10 @@ def enqueue_for_matching(
                 )
 
         if active_match and restart_existing_match:
-            active_match.status = DialogueMatch.Status.CLOSED
-            active_match.closed_at = now
-            active_match.save(update_fields=["status", "closed_at"])
+            # 一定要走 _close_locked_match()，不能自己 set status 存檔——
+            # 否則不會註冊 transaction.on_commit() 觸發 M6 觀點知識庫 pipeline，
+            # 這場被放棄重配的對話就永遠不會產生 DialogueSummary/ViewpointNode。
+            _close_locked_match(active_match, now=now)
             active_match = None
 
         if active_match:

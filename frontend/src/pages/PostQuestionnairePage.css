@@ -1,0 +1,583 @@
+/* Page wrapper — fills the content-area exactly, no page-level scroll */
+.pq-page {
+  height: 100%;
+  overflow: hidden;
+  background-color: #ede8e3;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 32px 16px;
+  box-sizing: border-box;
+}
+
+/* --- Result card -------------------------------------------------------- */
+
+/* Game-clear settlement */
+.pq-clear {
+  align-items: stretch;
+  text-align: center;
+  overflow-y: auto;
+}
+
+.pq-clear-banner {
+  flex-shrink: 0;
+  margin-bottom: 8px;
+  font-size: 30px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  color: #b8860b;
+  text-shadow: 0 2px 0 rgba(184, 134, 11, 0.15);
+  animation: pq-pop-in 0.5s cubic-bezier(0.18, 0.9, 0.32, 1.4) both;
+}
+
+.pq-clear-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.pq-grade {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 20px;
+}
+
+.pq-grade-label {
+  color: #9a8f82;
+  font-size: 12px;
+  letter-spacing: 0.16em;
+}
+
+.pq-grade-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 108px;
+  height: 108px;
+  border-radius: 50%;
+  font-size: 60px;
+  font-weight: 900;
+  color: #fff;
+  background: linear-gradient(145deg, #e8c15a, #c9962a);
+  box-shadow:
+    0 10px 26px rgba(201, 150, 42, 0.4),
+    inset 0 2px 6px rgba(255, 255, 255, 0.5);
+  animation: pq-badge-in 0.6s cubic-bezier(0.18, 0.9, 0.32, 1.5) 0.15s both;
+}
+
+.pq-grade-S .pq-grade-badge { background: linear-gradient(145deg, #f4d16b, #d4a017); box-shadow: 0 10px 30px rgba(212, 160, 23, 0.5), inset 0 2px 6px rgba(255, 255, 255, 0.6); }
+.pq-grade-A .pq-grade-badge { background: linear-gradient(145deg, #7cb85f, #4c7a3c); box-shadow: 0 10px 26px rgba(76, 122, 60, 0.4), inset 0 2px 6px rgba(255, 255, 255, 0.4); }
+.pq-grade-B .pq-grade-badge { background: linear-gradient(145deg, #6bb0bd, #3f7a86); box-shadow: 0 10px 26px rgba(63, 122, 134, 0.4), inset 0 2px 6px rgba(255, 255, 255, 0.4); }
+.pq-grade-C .pq-grade-badge { background: linear-gradient(145deg, #c2a986, #9a7b5c); box-shadow: 0 10px 26px rgba(154, 123, 92, 0.4), inset 0 2px 6px rgba(255, 255, 255, 0.4); }
+
+.pq-grade-title {
+  color: #5c5449;
+  font-size: 20px;
+  font-weight: 800;
+  animation: pq-pop-in 0.5s ease 0.5s both;
+}
+
+.pq-clear-section-label {
+  align-self: stretch;
+  margin: 4px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(141, 112, 88, 0.2);
+  color: #9a8f82;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.pq-clear .pq-result-scores,
+.pq-clear .pq-result-metrics {
+  width: 100%;
+}
+
+@keyframes pq-pop-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.94); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes pq-badge-in {
+  0% { opacity: 0; transform: scale(0.3) rotate(-25deg); }
+  60% { opacity: 1; transform: scale(1.12) rotate(6deg); }
+  100% { opacity: 1; transform: scale(1) rotate(0); }
+}
+
+.pq-result-note {
+  margin-bottom: 20px;
+  padding: 12px 16px;
+  border: 1px solid #e8dcc0;
+  border-radius: 14px;
+  background-color: #fdf6e3;
+  color: #7a6a45;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.pq-result-scores {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin: 12px 0 24px;
+}
+
+.pq-score-box {
+  flex: 1;
+  padding: 18px 12px;
+  border-radius: 18px;
+  background-color: #efe9e2;
+  text-align: center;
+}
+
+.pq-score-label {
+  display: block;
+  margin-bottom: 8px;
+  color: #888;
+  font-size: 12px;
+}
+
+.pq-score-value {
+  display: block;
+  color: #2c2c2c;
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.pq-score-arrow {
+  flex-shrink: 0;
+  color: #b3a794;
+  font-size: 24px;
+}
+
+.pq-result-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.pq-metric {
+  padding: 14px 18px;
+  border-left: 5px solid #c7bdb0;
+  border-radius: 16px;
+  background-color: #f0ebe4;
+}
+
+.pq-metric-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.pq-metric-name {
+  color: #444;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.pq-metric-num {
+  color: #2c2c2c;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.pq-metric-desc {
+  margin: 0;
+  color: #666;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.pq-metric-good {
+  border-left-color: #3a5a3a;
+  background-color: #eaf1ea;
+}
+
+.pq-metric-good .pq-metric-num {
+  color: #3a5a3a;
+}
+
+.pq-metric-warn {
+  border-left-color: #b4801f;
+  background-color: #f7efdf;
+}
+
+.pq-metric-warn .pq-metric-num {
+  color: #a9761c;
+}
+
+.pq-metric-up {
+  border-left-color: #2f6f8f;
+  background-color: #e6f0f4;
+}
+
+.pq-metric-down {
+  border-left-color: #8f5a2f;
+  background-color: #f4ece4;
+}
+
+.pq-metric-flat {
+  border-left-color: #b0a794;
+}
+
+.pq-result-hint {
+  margin: 0;
+  color: #999;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* Card — takes full available height so footer is always visible */
+.pq-container {
+  width: 100%;
+  max-width: 580px;
+  height: 100%;
+  background-color: #f7f3f0;
+  border-radius: 40px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+  padding: 40px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Header — fixed inside the card */
+.pq-header {
+  flex-shrink: 0;
+  margin-bottom: 20px;
+}
+
+.pq-header h2 {
+  font-size: 26px;
+  font-weight: bold;
+  margin-bottom: 6px;
+  color: #1a1a1a;
+}
+
+.pq-subtitle {
+  color: #888;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.pq-step-badge {
+  display: inline-block;
+  background-color: #e0d8cf;
+  color: #555;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 14px;
+  border-radius: 20px;
+  margin-bottom: 12px;
+}
+
+/* Step indicator */
+.pq-step-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pq-step-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: #ddd;
+  transition: background-color 0.2s;
+}
+
+.pq-step-dot.done {
+  background-color: #aaa;
+}
+
+.pq-step-dot.active {
+  background-color: #555;
+}
+
+.pq-step-label {
+  font-size: 12px;
+  color: #999;
+  margin-left: 4px;
+}
+
+/* Body — scrollable, fills remaining card height */
+.pq-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 10px;
+  margin-right: -10px;
+}
+
+.pq-body::-webkit-scrollbar {
+  width: 5px;
+}
+
+.pq-body::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 10px;
+}
+
+.pq-step-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 4px;
+}
+
+.pq-part-header {
+  margin-bottom: 4px;
+}
+
+.pq-part-header h3 {
+  font-size: 18px;
+  font-weight: bold;
+  color: #1a1a1a;
+  margin-bottom: 6px;
+}
+
+.pq-part-header p {
+  color: #666;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Survey item */
+.pq-survey-item {
+  background-color: #eeeeee;
+  padding: 20px;
+  border-radius: 12px;
+  flex-shrink: 0;
+}
+
+.pq-survey-item h4 {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: #1a1a1a;
+}
+
+.pq-survey-item p {
+  font-size: 13px;
+  color: #555;
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+
+.pq-tag {
+  margin-left: 8px;
+  font-size: 11px;
+  color: #999;
+  font-weight: 400;
+}
+
+/* Likert */
+.pq-likert-scale {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: relative;
+  padding: 0 10px;
+}
+
+.pq-likert-line {
+  position: absolute;
+  top: 50%;
+  left: 10px;
+  right: 10px;
+  height: 2px;
+  background-color: #ccc;
+  z-index: 1;
+}
+
+.pq-likert-dot {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #333;
+  border-radius: 50%;
+  background-color: white;
+  z-index: 2;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.pq-likert-dot.selected {
+  background-color: #676767;
+}
+
+.pq-likert-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 10px;
+  font-size: 11px;
+  color: #999;
+}
+
+/* Radio group */
+.pq-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pq-radio-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: #333;
+  cursor: pointer;
+}
+
+.pq-radio-label input[type='radio'] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  accent-color: #555;
+}
+
+/* Open textarea */
+.pq-survey-item-open {
+  display: flex;
+  flex-direction: column;
+}
+
+.pq-open-textarea {
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid #d1c9c0;
+  border-radius: 12px;
+  background-color: #fbfaf8;
+  color: #2d2d2d;
+  font-size: 14px;
+  line-height: 1.6;
+  resize: vertical;
+  box-sizing: border-box;
+  font-family: inherit;
+  transition: border-color 0.15s;
+}
+
+.pq-open-textarea:focus {
+  outline: none;
+  border-color: #9c8f81;
+  box-shadow: 0 0 0 3px rgba(156, 143, 129, 0.18);
+}
+
+.pq-open-textarea.invalid {
+  border-color: #b42318;
+}
+
+.pq-char-count {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.pq-char-count.ok {
+  color: #3a7a3a;
+}
+
+.pq-char-count.warn {
+  color: #b42318;
+}
+
+/* Discomfort detail */
+.pq-discomfort-detail {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pq-discomfort-hint {
+  font-size: 13px;
+  color: #666;
+  margin-bottom: 4px;
+}
+
+/* Footer — fixed at bottom of card, never scrolls away */
+.pq-footer {
+  flex-shrink: 0;
+  padding-top: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pq-nav-buttons {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.pq-btn {
+  padding: 13px 32px;
+  border-radius: 30px;
+  border: none;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.pq-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.pq-btn-secondary {
+  background-color: #e8e2d9;
+  color: #555;
+}
+
+.pq-btn-primary {
+  background-color: #676767;
+  color: white;
+}
+
+.pq-btn-submit {
+  background-color: #3a5a3a;
+  color: white;
+}
+
+.pq-error {
+  color: #b42318;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+@media (max-width: 640px) {
+  .pq-page {
+    padding: 0;
+    align-items: flex-end;
+  }
+
+  .pq-container {
+    border-radius: 28px 28px 0 0;
+    padding: 28px 20px 20px 20px;
+  }
+
+  .pq-header h2 {
+    font-size: 22px;
+  }
+
+  .pq-btn {
+    padding: 13px 20px;
+    font-size: 14px;
+  }
+
+  .pq-nav-buttons {
+    flex-direction: column-reverse;
+  }
+
+  .pq-btn {
+    width: 100%;
+    text-align: center;
+  }
+}

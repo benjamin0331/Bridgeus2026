@@ -1,4 +1,3 @@
-from copy import deepcopy
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -12,14 +11,32 @@ from rest_framework.test import APIClient, APITestCase
 from api.dialogue_topics import SURVEY_CONFIGS, TOPIC_CONFIGS
 from api.models import (
     AIConversation,
+    CCNDTimelineUnlock,
     DialogueMatch,
     DialogueSessionRecord,
     MatchMessage,
     MatchQueueEntry,
     MatchStanceDrift,
+    PlatformFeedback,
+    PostDialogueResponse,
     UserStanceProfile,
 )
-from api.views import _resolve_stance_category
+from api.display_settings import resolve_stance_category
+
+
+def unlock_timeline(user, kind, conversation_id):
+    """The CCND timeline is gated until the participant finishes the M6 flow
+    (see api.timeline_access — it would otherwise leak the measured construct
+    before they answer C3/F4). The tests below exercise the tree-reconstruction
+    logic rather than the gate, so grant them the researcher override.
+    Gate behaviour itself is covered in api/tests_ccnd_timeline_gate.py.
+    """
+    CCNDTimelineUnlock.objects.create(
+        user=user,
+        kind=kind,
+        conversation_id=conversation_id,
+        reason="test fixture",
+    )
 
 
 def fake_waste_items_response():
@@ -381,19 +398,19 @@ class DialogueSessionApiTests(APITestCase):
 
     def test_stance_thresholds_classify_support_oppose_and_neutral(self):
         self.assertEqual(
-            _resolve_stance_category(topic_id=102, user_stance_score=4.51),
+            resolve_stance_category(topic_id=102, user_stance_score=4.51),
             "support",
         )
         self.assertEqual(
-            _resolve_stance_category(topic_id=102, user_stance_score=3.49),
+            resolve_stance_category(topic_id=102, user_stance_score=3.49),
             "oppose",
         )
         self.assertEqual(
-            _resolve_stance_category(topic_id=102, user_stance_score=3.5),
+            resolve_stance_category(topic_id=102, user_stance_score=3.5),
             "neutral",
         )
         self.assertEqual(
-            _resolve_stance_category(topic_id=102, user_stance_score=4.5),
+            resolve_stance_category(topic_id=102, user_stance_score=4.5),
             "neutral",
         )
 
@@ -499,6 +516,10 @@ class DialogueSessionApiTests(APITestCase):
         self.assertEqual(saved_turn.topic_id, 102)
         self.assertEqual(saved_turn.user_prompt, "核能真的比其他方案更穩定嗎？")
         self.assertEqual(saved_turn.ai_response, "AI reply to: 核能真的比其他方案更穩定嗎？")
+        self.assertEqual(
+            reply_response.data["history"][1]["turn_id"],
+            saved_turn.id,
+        )
         mocked_get_agent.assert_called_once_with("nuclear_energy_all")
 
     @patch("chat.services.embedding.get_embedding", return_value=make_test_embedding(-1))
@@ -584,8 +605,64 @@ class DialogueSessionApiTests(APITestCase):
             restore_response.data["history"][1]["content"],
             "AI reply to: 核電能不能補足再生能源不穩定？",
         )
+        self.assertIn("turn_id", restore_response.data["history"][1])
         self.assertIsNotNone(cache.get(f"dialogue_session:{session_id}"))
         mocked_get_agent.assert_called_once_with("nuclear_energy_all")
+
+    def test_restore_preserves_session_messages_without_database_turn(self):
+        session_id = "partial-persistence-session"
+        DialogueSessionRecord.objects.create(
+            user=self.user,
+            session_id=session_id,
+            topic_id=102,
+            topic_title="核能發電在減碳中的角色",
+            collection_name="nuclear_energy_all",
+            session_state={
+                "topic": "核能發電在減碳中的角色",
+                "dialogue_phase": "engagement",
+                "user_stance_score": 4.0,
+                "history": [
+                    {"role": "user", "content": "已成功保存的訊息"},
+                    {"role": "agent", "content": "已成功保存的回覆"},
+                    {"role": "user", "content": "只有 session 保存的訊息"},
+                    {"role": "agent", "content": "這一輪沒有 AIConversation"},
+                ],
+            },
+            last_activity_at=timezone.now(),
+        )
+        saved_turn = AIConversation.objects.create(
+            user=self.user,
+            session_id=session_id,
+            topic_id=102,
+            user_prompt="已成功保存的訊息",
+            ai_response="已成功保存的回覆",
+            dialogue_phase="engagement",
+        )
+        database_only_turn = AIConversation.objects.create(
+            user=self.user,
+            session_id=session_id,
+            topic_id=102,
+            user_prompt="只有 AIConversation 保存的訊息",
+            ai_response="這一輪沒有寫回 session record",
+            dialogue_phase="engagement",
+        )
+        cache.clear()
+
+        restored = self.client.get(f"/api/dialogue/sessions/{session_id}/")
+
+        self.assertEqual(restored.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(restored.data["history"]), 6)
+        self.assertEqual(restored.data["history"][1]["turn_id"], saved_turn.id)
+        self.assertNotIn("turn_id", restored.data["history"][2])
+        self.assertNotIn("turn_id", restored.data["history"][3])
+        self.assertEqual(
+            restored.data["history"][4]["turn_id"],
+            database_only_turn.id,
+        )
+        self.assertEqual(
+            restored.data["history"][5]["turn_id"],
+            database_only_turn.id,
+        )
 
     def test_session_restore_forbids_other_users(self):
         create_response = self.client.post(
@@ -630,13 +707,15 @@ class DialogueSessionApiTests(APITestCase):
 
         analyzed_texts = []
 
-        def fake_analyze(*, text, tree, anchors=None, anchor_descriptions=None, api_key=None, model=None):
+        def fake_classify(text, anchors=None):
             analyzed_texts.append(text)
-            return fake_energy_items_response()
+            return fake_energy_items_response()["items"]
 
-        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}), patch(
-            "apps.matching.services.semantic_tree.analyze_with_openai",
-            side_effect=fake_analyze,
+        # topic 102 (核能) routes through the local classifier, not
+        # analyze_with_openai — see semantic_tree.uses_local_classifier().
+        with patch(
+            "apps.matching.services.nuclear_node_classifier.build_candidate_items",
+            side_effect=fake_classify,
         ):
             response = self.client.post(
                 f"/api/dialogue/sessions/{session_id}/semantic-tree/analyze/"
@@ -649,7 +728,9 @@ class DialogueSessionApiTests(APITestCase):
         self.assertEqual(response.data["trees"][0]["analyzedSourceIds"], [str(AIConversation.objects.get().id)])
         self.assertNotIn("核廢料", str(response.data["treeData"]))
 
-    def test_ai_semantic_tree_requires_openai_key_without_blocking_session(self):
+    def test_ai_semantic_tree_topic_102_does_not_require_openai_key(self):
+        # topic 102 (核能) routes through the local classifier, so unlike
+        # every other topic it must keep working with no OPENAI_API_KEY set.
         create_response = self.client.post(
             "/api/dialogue/sessions/",
             {
@@ -668,14 +749,226 @@ class DialogueSessionApiTests(APITestCase):
             ai_response="AI 回覆",
         )
 
-        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}):
+        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}), patch(
+            "apps.matching.services.nuclear_node_classifier.build_candidate_items",
+            return_value=[],
+        ):
             response = self.client.post(
                 f"/api/dialogue/sessions/{session_id}/semantic-tree/analyze/"
             )
 
-        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
-        self.assertEqual(response.data["error"], "missing_openai_api_key")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIsNotNone(cache.get(f"dialogue_session:{session_id}"))
+
+
+class SingleActiveDialogueSessionTests(APITestCase):
+    """一位使用者在同一個議題下，最多只該有一個「可恢復」的 AI 對話 session。
+
+    沒有這個不變量的話，每按一次「開始新對話」就會殘留一筆 status=active 的
+    舊紀錄，/api/dialogue/sessions/latest/ 會一直撈到它們，使用者就算填完後測
+    問卷也永遠跳不出「要繼續上次，還是開始新對話？」——等於對話結束不掉，也
+    永遠看不到沿用上次立場的彈窗（那個彈窗只在 showSurvey 為 true 時才出現）。
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.user = get_user_model().objects.create_user(
+            username="serial_dialoguer",
+            password="secret123",
+        )
+        self.client.force_authenticate(user=self.user)
+
+    def _create_session(self, topic_id=102):
+        response = self.client.post(
+            "/api/dialogue/sessions/",
+            {"topic_id": topic_id, "topic_title": "核能發電在減碳中的角色"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        return response.data["session_id"]
+
+    def test_new_session_closes_previous_active_session(self):
+        first = self._create_session()
+        second = self._create_session()
+
+        self.assertEqual(
+            DialogueSessionRecord.objects.get(session_id=first).status,
+            DialogueSessionRecord.Status.CLOSED,
+        )
+        self.assertEqual(
+            DialogueSessionRecord.objects.get(session_id=second).status,
+            DialogueSessionRecord.Status.ACTIVE,
+        )
+
+    def test_only_newest_session_is_offered_for_restore(self):
+        self._create_session()
+        newest = self._create_session()
+
+        response = self.client.get("/api/dialogue/sessions/latest/?topic_id=102")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["session_id"], newest)
+
+    def test_superseded_session_cannot_be_restored_directly(self):
+        first = self._create_session()
+        self._create_session()
+        cache.clear()  # 強迫走 DB 而非快取
+
+        response = self.client.get(f"/api/dialogue/sessions/{first}/")
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_other_topics_are_not_closed(self):
+        other_topic = self._create_session(topic_id=103)
+        self._create_session(topic_id=102)
+
+        self.assertEqual(
+            DialogueSessionRecord.objects.get(session_id=other_topic).status,
+            DialogueSessionRecord.Status.ACTIVE,
+        )
+
+    def test_other_users_sessions_are_not_closed(self):
+        stranger = get_user_model().objects.create_user(
+            username="stranger", password="secret123"
+        )
+        stranger_client = APIClient()
+        stranger_client.force_authenticate(user=stranger)
+        stranger_response = stranger_client.post(
+            "/api/dialogue/sessions/",
+            {"topic_id": 102, "topic_title": "核能發電在減碳中的角色"},
+            format="json",
+        )
+        stranger_session = stranger_response.data["session_id"]
+
+        self._create_session()
+
+        self.assertEqual(
+            DialogueSessionRecord.objects.get(session_id=stranger_session).status,
+            DialogueSessionRecord.Status.ACTIVE,
+        )
+
+
+class StanceProfileReuseApiTests(APITestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = get_user_model().objects.create_user(
+            username="alice",
+            password="secret123",
+        )
+        self.client.force_authenticate(user=self.user)
+
+    def test_stance_profile_reports_not_existing_before_any_survey(self):
+        response = self.client.get("/api/dialogue/topics/102/stance-profile/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, {"exists": False, "topic_id": 102})
+
+    def test_stance_profile_unknown_topic_returns_404(self):
+        response = self.client.get("/api/dialogue/topics/999/stance-profile/")
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_stance_profile_requires_authentication(self):
+        self.client.force_authenticate(user=None)
+
+        response = self.client.get("/api/dialogue/topics/102/stance-profile/")
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_ai_session_creation_persists_reusable_stance_profile(self):
+        with patch(
+            "api.views.build_q9_embedding",
+            return_value=make_test_embedding(1),
+        ):
+            create_response = self.client.post(
+                "/api/dialogue/sessions/",
+                {
+                    "topic_id": 102,
+                    "topic_title": "核能發電在減碳中的角色",
+                    "survey_answers": build_supporting_answers(),
+                    "survey_open_answers": {
+                        "Q9": "我支持核電，因為它能穩定供電並協助減碳。",
+                        "Q10": "反對者最強的論點是核安與核廢料風險。",
+                    },
+                },
+                format="json",
+            )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+
+        profile = UserStanceProfile.objects.get(user=self.user, topic_id=102)
+        self.assertEqual(profile.stance_category, "support")
+        self.assertEqual(float(profile.stance_score), 7.0)
+        self.assertEqual(profile.survey_answers, build_supporting_answers())
+        self.assertEqual(profile.survey_open_answers["Q9"], "我支持核電，因為它能穩定供電並協助減碳。")
+
+        profile_response = self.client.get(
+            "/api/dialogue/topics/102/stance-profile/"
+        )
+        self.assertEqual(profile_response.status_code, status.HTTP_200_OK)
+        self.assertTrue(profile_response.data["exists"])
+        self.assertEqual(profile_response.data["stance_category"], "support")
+        self.assertEqual(
+            profile_response.data["survey_answers"],
+            build_supporting_answers(),
+        )
+
+    def test_empty_survey_does_not_persist_stance_profile(self):
+        create_response = self.client.post(
+            "/api/dialogue/sessions/",
+            {
+                "topic_id": 102,
+                "topic_title": "核能發電在減碳中的角色",
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        self.assertFalse(
+            UserStanceProfile.objects.filter(user=self.user, topic_id=102).exists()
+        )
+
+    def test_reusing_saved_answers_creates_new_session(self):
+        with patch(
+            "api.views.build_q9_embedding",
+            return_value=make_test_embedding(1),
+        ):
+            self.client.post(
+                "/api/dialogue/sessions/",
+                {
+                    "topic_id": 102,
+                    "topic_title": "核能發電在減碳中的角色",
+                    "survey_answers": build_supporting_answers(),
+                    "survey_open_answers": {"Q9": "我支持核電。"},
+                },
+                format="json",
+            )
+
+        saved = self.client.get("/api/dialogue/topics/102/stance-profile/").data
+
+        # Simulate the frontend "reuse previous stance" path: resubmit the saved
+        # answers through the normal session-create flow.
+        with patch(
+            "api.views.build_q9_embedding",
+            return_value=make_test_embedding(1),
+        ):
+            reuse_response = self.client.post(
+                "/api/dialogue/sessions/",
+                {
+                    "topic_id": 102,
+                    "topic_title": "核能發電在減碳中的角色",
+                    "survey_answers": saved["survey_answers"],
+                    "survey_open_answers": saved["survey_open_answers"],
+                },
+                format="json",
+            )
+
+        self.assertEqual(reuse_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(reuse_response.data["stance_score"], 7.0)
+        self.assertEqual(reuse_response.data["stance_category"], "support")
+        # Still one canonical profile per user+topic.
+        self.assertEqual(
+            UserStanceProfile.objects.filter(user=self.user, topic_id=102).count(),
+            1,
+        )
 
 
 class HistoryApiTests(APITestCase):
@@ -816,15 +1109,15 @@ class HistoryApiTests(APITestCase):
         match, own_message, partner_message = self._create_match_history()
         analyzed_texts = []
 
-        def fake_analyze(*, text, tree, anchors=None, anchor_descriptions=None, api_key=None, model=None):
+        def fake_classify(text, anchors=None):
             analyzed_texts.append(text)
             if "核廢料" in text:
-                return fake_waste_items_response()
-            return fake_economy_items_response()
+                return fake_waste_items_response()["items"]
+            return fake_economy_items_response()["items"]
 
-        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}), patch(
-            "apps.matching.services.semantic_tree.analyze_with_openai",
-            side_effect=fake_analyze,
+        with patch(
+            "apps.matching.services.nuclear_node_classifier.build_candidate_items",
+            side_effect=fake_classify,
         ):
             response = self.client.post(
                 f"/api/history/conversations/match/{match.room_id}/semantic-tree/analyze/"
@@ -839,22 +1132,94 @@ class HistoryApiTests(APITestCase):
         self.assertIn("核廢長期負擔", str(tree["treeData"]))
         self.assertNotIn("除役維護成本", str(tree["treeData"]))
 
-    def test_history_analyze_missing_key_does_not_block_detail(self):
+    def test_history_analyze_topic_102_does_not_require_openai_key(self):
+        # topic 102 (核能) routes through the local classifier, so unlike
+        # every other topic it must keep working with no OPENAI_API_KEY set.
         ai_record, _ = self._create_ai_history()
 
-        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}):
+        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}), patch(
+            "apps.matching.services.nuclear_node_classifier.build_candidate_items",
+            return_value=[],
+        ):
             response = self.client.post(
                 f"/api/history/conversations/ai/{ai_record.session_id}/semantic-tree/analyze/"
             )
 
-        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
-        self.assertEqual(response.data["error"], "missing_openai_api_key")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
 
         detail_response = self.client.get(
             f"/api/history/conversations/ai/{ai_record.session_id}/"
         )
         self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(detail_response.data["messages"]), 2)
+
+    def test_history_ai_summary_includes_room_id_alias_of_session_id(self):
+        ai_record, _ = self._create_ai_history()
+
+        response = self.client.get("/api/history/conversations/?type=ai")
+
+        item = response.data["results"][0]
+        self.assertEqual(item["room_id"], ai_record.session_id)
+
+    def test_ai_timeline_shows_only_nodes_analyzed_by_the_given_turn(self):
+        ai_record, first_turn = self._create_ai_history()
+        unlock_timeline(self.user, "ai", ai_record.session_id)
+
+        with patch(
+            "apps.matching.services.nuclear_node_classifier.build_candidate_items",
+            return_value=fake_waste_items_response()["items"],
+        ):
+            analyze_response = self.client.post(
+                f"/api/history/conversations/ai/{ai_record.session_id}/semantic-tree/analyze/"
+            )
+        self.assertEqual(analyze_response.status_code, status.HTTP_200_OK)
+
+        second_turn = AIConversation.objects.create(
+            user=self.user,
+            session_id=ai_record.session_id,
+            topic_id=102,
+            user_prompt="這則故意不分析,測試還沒分析的畫面行為",
+            ai_response="AI 回覆",
+        )
+
+        timeline_response = self.client.get(
+            f"/api/history/conversations/ai/{ai_record.session_id}/semantic-tree/timeline/",
+            {"as_of_message_id": str(first_turn.id)},
+        )
+
+        self.assertEqual(timeline_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(timeline_response.data["room_id"], ai_record.session_id)
+        self.assertEqual(timeline_response.data["session_id"], ai_record.session_id)
+        waste_anchor = next(
+            child for child in timeline_response.data["treeData"]["children"]
+            if child["id"] == "anchor_waste"
+        )
+        self.assertEqual(waste_anchor["children"][0]["name"], "長期處置")
+
+        unanalyzed_response = self.client.get(
+            f"/api/history/conversations/ai/{ai_record.session_id}/semantic-tree/timeline/",
+            {"as_of_message_id": str(second_turn.id)},
+        )
+        self.assertEqual(unanalyzed_response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_ai_timeline_requires_as_of_message_id(self):
+        ai_record, _ = self._create_ai_history()
+
+        response = self.client.get(
+            f"/api/history/conversations/ai/{ai_record.session_id}/semantic-tree/timeline/"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_ai_timeline_404s_for_other_users_session(self):
+        ai_record, first_turn = self._create_ai_history()
+
+        response = self.other_client.get(
+            f"/api/history/conversations/ai/{ai_record.session_id}/semantic-tree/timeline/",
+            {"as_of_message_id": str(first_turn.id)},
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
 
 class MatchingApiTests(APITestCase):
@@ -1343,7 +1708,9 @@ class MatchingApiTests(APITestCase):
         self.assertTrue(response.data["trees"][0]["isCurrentUser"])
         self.assertNotIn("匿名對話者", str(response.data))
 
-    def test_semantic_tree_analyze_requires_openai_key_without_blocking_messages(self):
+    def test_semantic_tree_analyze_topic_102_does_not_require_openai_key(self):
+        # topic 102 (核能) routes through the local classifier, so unlike
+        # every other topic it must keep working with no OPENAI_API_KEY set.
         match, room_id = self._create_match()
         MatchMessage.objects.create(
             match=match,
@@ -1351,11 +1718,13 @@ class MatchingApiTests(APITestCase):
             content="核廢料處理會帶來長期負擔",
         )
 
-        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}):
+        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}), patch(
+            "apps.matching.services.nuclear_node_classifier.build_candidate_items",
+            return_value=[],
+        ):
             response = self.client.post(f"/api/matching/rooms/{room_id}/semantic-tree/analyze/")
 
-        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
-        self.assertEqual(response.data["error"], "missing_openai_api_key")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
         messages_response = self.client.get(f"/api/matching/rooms/{room_id}/messages/")
         self.assertEqual(messages_response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(messages_response.data["messages"]), 1)
@@ -1368,9 +1737,9 @@ class MatchingApiTests(APITestCase):
             content="核廢料處理會帶來長期負擔",
         )
 
-        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}), patch(
-            "apps.matching.services.semantic_tree.analyze_with_openai",
-            return_value=fake_waste_items_response(),
+        with patch(
+            "apps.matching.services.nuclear_node_classifier.build_candidate_items",
+            return_value=fake_waste_items_response()["items"],
         ) as mocked_analyze:
             first_response = self.client.post(
                 f"/api/matching/rooms/{room_id}/semantic-tree/analyze/"
@@ -1392,6 +1761,7 @@ class MatchingApiTests(APITestCase):
 
     def test_semantic_tree_timeline_shows_only_nodes_born_by_the_given_message(self):
         match, room_id = self._create_match()
+        unlock_timeline(self.user, "match", room_id)
         first_message = MatchMessage.objects.create(
             match=match,
             sender=self.user,
@@ -1403,9 +1773,12 @@ class MatchingApiTests(APITestCase):
             content="核能可以補足再生能源不穩定",
         )
 
-        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}), patch(
-            "apps.matching.services.semantic_tree.analyze_with_openai",
-            side_effect=[fake_waste_items_response(), fake_energy_items_response()],
+        with patch(
+            "apps.matching.services.nuclear_node_classifier.build_candidate_items",
+            side_effect=[
+                fake_waste_items_response()["items"],
+                fake_energy_items_response()["items"],
+            ],
         ):
             self.client.post(f"/api/matching/rooms/{room_id}/semantic-tree/analyze/")
 
@@ -1444,6 +1817,7 @@ class MatchingApiTests(APITestCase):
 
     def test_semantic_tree_timeline_returns_404_for_unanalyzed_message(self):
         _, room_id = self._create_match()
+        unlock_timeline(self.user, "match", room_id)
 
         response = self.client.get(
             f"/api/matching/rooms/{room_id}/semantic-tree/timeline/",
@@ -1464,17 +1838,14 @@ class MatchingApiTests(APITestCase):
             sender=self.other_user,
             content="核電除役與維護成本會增加負擔",
         )
-        tree_snapshots = []
-
-        def fake_analyze(*, text, tree, anchors=None, anchor_descriptions=None, api_key=None, model=None):
-            tree_snapshots.append(deepcopy(tree))
+        def fake_classify(text, anchors=None):
             if "核廢料" in text:
-                return fake_waste_items_response()
-            return fake_economy_items_response()
+                return fake_waste_items_response()["items"]
+            return fake_economy_items_response()["items"]
 
-        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}), patch(
-            "apps.matching.services.semantic_tree.analyze_with_openai",
-            side_effect=fake_analyze,
+        with patch(
+            "apps.matching.services.nuclear_node_classifier.build_candidate_items",
+            side_effect=fake_classify,
         ) as mocked_analyze:
             response = self.client.post(f"/api/matching/rooms/{room_id}/semantic-tree/analyze/")
             partner_response = self.other_client.post(
@@ -1484,7 +1855,6 @@ class MatchingApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(partner_response.status_code, status.HTTP_200_OK)
         self.assertEqual(mocked_analyze.call_count, 2)
-        self.assertNotIn("核廢長期負擔", str(tree_snapshots[1]))
         self.assertEqual(response.data["analyzedCount"], 1)
         self.assertEqual(partner_response.data["analyzedCount"], 1)
         self.assertEqual(len(response.data["trees"]), 1)
@@ -1721,3 +2091,108 @@ class MatchingApiTests(APITestCase):
         )
         self.assertNotIn("anthropic invalid key", reply_response.data["detail"])
         mocked_get_agent.assert_called_once_with("nuclear_energy_all")
+
+
+class PlatformFeedbackApiTests(APITestCase):
+    """Part F — platform experience feedback endpoint."""
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="feedback_user",
+            password="secret123",
+        )
+        self.client.force_authenticate(user=self.user)
+        self.response_obj = self._create_post_response(self.user)
+
+    def _create_post_response(self, user):
+        return PostDialogueResponse.objects.create(
+            user=user,
+            topic_id=102,
+            session_id="sess-partf",
+            experiment_condition=PostDialogueResponse.ExperimentCondition.AI,
+            post_likert_1=4, post_likert_2=4, post_likert_3=4, post_likert_4=4,
+            post_likert_5=4, post_likert_6=4, post_likert_7=4, post_likert_8=4,
+            exp_stance_change_1=4, exp_stance_change_2=4,
+            exp_quality_1=4, exp_quality_2=4,
+            exp_reflection_1=4, exp_reflection_2=4,
+            ccnd_attention=4, ccnd_awareness=4, ccnd_influence=4,
+            opponent_judgment=2,
+            post_open_comprehension="x" * 60,
+        )
+
+    def _valid_payload(self, **overrides):
+        payload = {
+            "response_id": self.response_obj.id,
+            "ux_matching": 6,
+            "ux_chatroom": 7,
+            "ux_nlp_intervention": 5,
+            "ux_ccnd": 4,
+            "ux_overall": 6,
+            "nps_score": 9,
+            "ux_improvement": "希望配對更快一點。",
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_platform_feedback_requires_authentication(self):
+        self.client.force_authenticate(user=None)
+        response = self.client.post(
+            "/api/platform-feedback/", self._valid_payload(), format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_submit_platform_feedback_persists_and_computes_metrics(self):
+        response = self.client.post(
+            "/api/platform-feedback/", self._valid_payload(), format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["mean_ux"], 5.6)
+        self.assertEqual(response.data["nps_category"], "promoter")
+
+        feedback = PlatformFeedback.objects.get(response=self.response_obj)
+        self.assertEqual(feedback.nps_score, 9)
+        self.assertEqual(feedback.ux_improvement, "希望配對更快一點。")
+
+    def test_optional_improvement_can_be_blank(self):
+        response = self.client.post(
+            "/api/platform-feedback/",
+            self._valid_payload(ux_improvement=""),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_resubmit_updates_existing_feedback(self):
+        self.client.post(
+            "/api/platform-feedback/", self._valid_payload(), format="json"
+        )
+        self.client.post(
+            "/api/platform-feedback/",
+            self._valid_payload(nps_score=3),
+            format="json",
+        )
+        self.assertEqual(
+            PlatformFeedback.objects.filter(response=self.response_obj).count(), 1
+        )
+        feedback = PlatformFeedback.objects.get(response=self.response_obj)
+        self.assertEqual(feedback.nps_score, 3)
+        self.assertEqual(feedback.nps_category(), "detractor")
+
+    def test_nps_out_of_range_is_rejected(self):
+        response = self.client.post(
+            "/api/platform-feedback/",
+            self._valid_payload(nps_score=11),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_cannot_submit_feedback_for_other_users_response(self):
+        other = get_user_model().objects.create_user(
+            username="intruder", password="secret123"
+        )
+        other_response = self._create_post_response(other)
+        response = self.client.post(
+            "/api/platform-feedback/",
+            self._valid_payload(response_id=other_response.id),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)

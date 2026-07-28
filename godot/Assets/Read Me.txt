@@ -1,0 +1,17 @@
+DEMO VERSION
+
+- Tileset (16x16)
+- 1 Players (32x32) Dwarf.
+
+CHARACTER ANIMATIONS
+
+- Players: Idle/Run/Attack/Death
+
+PNG image format. Original size and x2/x3/x4. Information on cell dimensions are included in the download.
+
+LICENCE: This asset pack can be used in both free and commercial projects. You can modify it to suit your own needs. You may not redistribute or resell it.
+
+If you come across issues or need help, please contact me. Thanks! :)
+
+trevor-pupkin@protonmail.com
+https://trevor-pupkin.itch.io/

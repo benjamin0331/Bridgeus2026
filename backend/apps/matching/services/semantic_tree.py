@@ -375,6 +375,29 @@ def find_nodes_born_from_message(
     return born
 
 
+def born_nodes_payload(
+    tree: dict[str, Any] | None,
+    source_message_id: str,
+) -> list[dict[str, Any]]:
+    """Light, UI-facing shape of the nodes a given message created.
+
+    Note the time axis: this is keyed on `sourceMessageId` (a property of the
+    message itself), NOT on recordedAt/analyzedAt. The timeline reconstructs the
+    tree using the analysis clock (`recordedAt`), but "which nodes did this
+    message give birth to" must never be derived from that clock — keeping the
+    two axes apart is what stops batch-analysis timing from distorting the
+    figure.
+    """
+    return [
+        {
+            "id": clean_text(node.get("id")),
+            "name": clean_text(node.get("name")),
+            "stance": clean_text(node.get("stance")),
+        }
+        for node in find_nodes_born_from_message(tree, source_message_id)
+    ]
+
+
 def resolve_cutoff_for_message(
     analysis_history: list[dict[str, Any]] | None,
     source_message_id: str,
@@ -677,6 +700,8 @@ def validate_analysis_items(
     payload: dict[str, Any],
     tree: dict[str, Any],
     anchors: list[dict[str, str]] | None = None,
+    *,
+    min_confidence: float = MIN_CONFIDENCE,
 ) -> dict[str, list[dict[str, Any]]]:
     resolved_anchors = anchors or FIXED_ANCHORS
     anchor_map = {anchor["id"]: anchor for anchor in resolved_anchors}
@@ -714,8 +739,8 @@ def validate_analysis_items(
         if confidence != confidence:
             invalid_items.append(_item_error(raw_item, "missing confidence"))
             continue
-        if confidence < MIN_CONFIDENCE:
-            invalid_items.append(_item_error(raw_item, f"confidence below {MIN_CONFIDENCE}"))
+        if confidence < min_confidence:
+            invalid_items.append(_item_error(raw_item, f"confidence below {min_confidence}"))
             continue
         if confidence > 1:
             invalid_items.append(_item_error(raw_item, "confidence must be 1 or lower"))
@@ -1015,6 +1040,55 @@ def analyze_with_openai(
     }
 
 
+LOCAL_CLASSIFIER_TOPIC_IDS = {102}
+
+# MIN_CONFIDENCE (0.55) was tuned for an LLM's self-reported meta-confidence,
+# which tends to run high. The local classifier's confidence is a raw softmax
+# argmax probability over a 36-way cluster space, where even a correct call
+# often lands around 0.5 — reusing MIN_CONFIDENCE would silently drop most of
+# its output. Tune this independently as real traffic comes in.
+LOCAL_CLASSIFIER_MIN_CONFIDENCE = 0.35
+
+
+def uses_local_classifier(topic_id: int | None) -> bool:
+    return topic_id in LOCAL_CLASSIFIER_TOPIC_IDS
+
+
+def analyze_text_for_tree(
+    *,
+    topic_id: int | None,
+    text: str,
+    tree: dict[str, Any],
+    anchors: list[dict[str, str]] | None = None,
+    anchor_descriptions: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Dispatch node analysis by topic: topic 102 (nuclear energy) uses the
+    locally fine-tuned classifier pipeline; every other topic keeps using the
+    generative OpenAI path.
+    """
+    resolved_anchors = anchors or FIXED_ANCHORS
+    if uses_local_classifier(topic_id):
+        from apps.matching.services import nuclear_node_classifier
+
+        candidate_items = nuclear_node_classifier.build_candidate_items(text, resolved_anchors)
+        return {
+            **validate_analysis_items(
+                {"items": candidate_items},
+                tree,
+                resolved_anchors,
+                min_confidence=LOCAL_CLASSIFIER_MIN_CONFIDENCE,
+            ),
+            "model": "local-bert-pipeline",
+        }
+
+    return analyze_with_openai(
+        text=text,
+        tree=tree,
+        anchors=resolved_anchors,
+        anchor_descriptions=anchor_descriptions,
+    )
+
+
 def _message_to_source(message) -> dict[str, Any]:
     return {
         "source": "match_message",
@@ -1050,6 +1124,70 @@ def _owner_key_for_message(match: DialogueMatch, sender_id: int | None) -> str |
         return OWNER_USER_A
     if sender_id == match.user_b_id:
         return OWNER_USER_B
+    return None
+
+
+def get_lit_node_count(
+    match: DialogueMatch,
+    *,
+    owner_key: str,
+    source_message_id: str,
+    root_name: str = "核電",
+) -> int:
+    """回傳某位參與者在 source_message_id 那則訊息當下，累積點亮過幾個不重複的
+    CCND micro node。
+
+    給 M6 觀點知識庫 pipeline（apps/summary/pipeline/quality_filter.py 的
+    ccnd_stance_shift）用來取得逐則的「點亮節點數」：先用 resolve_cutoff_for_message
+    找出該訊息被分析當下的時間點，reconstruct_tree_as_of 還原當時的樹快照，
+    再用 ccnd_snapshot_analysis.flatten_tree 攤平、以 (owner_key, node_id) 去重計數
+    ——同一顆節點被同一人多次點亮只算一次。
+
+    root_name 只影響空狀態（尚無任何分析紀錄）時的預設樹名稱，不影響既有樹內容。
+    找不到該訊息的分析紀錄（尚未分析過）時回傳 0。
+    """
+    from apps.matching.services.ccnd_snapshot_analysis import flatten_tree
+
+    state = get_semantic_tree_state(match, root_name=root_name)
+    owner_state = state["participants"].get(owner_key)
+    if not owner_state:
+        return 0
+
+    cutoff = resolve_cutoff_for_message(owner_state["analysisHistory"], source_message_id)
+    if cutoff is None:
+        return 0
+
+    snapshot = reconstruct_tree_as_of(owner_state["treeData"], cutoff)
+    hits = flatten_tree(snapshot, owner_key=owner_key)
+    return len({hit["_node_key"] for hit in hits})
+
+
+def get_message_dimension(
+    match: DialogueMatch,
+    *,
+    owner_key: str,
+    source_message_id: str,
+) -> str | None:
+    """回傳某位參與者在 source_message_id 那則訊息命中的第一個 CCND anchor id。
+
+    給 M6 觀點知識庫 pipeline（apps/summary/pipeline/assemble.py 的
+    run_pipeline_for_match）用來決定 ViewpointNode.dimension：一則訊息最多對到
+    MAX_ANALYSIS_ITEMS=2 個 anchor，這裡只取第一個命中的；訊息沒有任何 CCND
+    分析紀錄（不曾命中任何節點）時回傳 None，呼叫端應該視為「無法分類」而跳過
+    寫入，不要自己亂猜一個 anchor。
+    """
+    from apps.matching.services.ccnd_snapshot_analysis import flatten_tree
+
+    state = get_semantic_tree_state(match, root_name="核電")
+    owner_state = state["participants"].get(owner_key)
+    if not owner_state:
+        return None
+
+    target_id = clean_text(source_message_id)
+    hits = flatten_tree(owner_state["treeData"], owner_key=owner_key)
+    for hit in hits:
+        if clean_text(hit.get("source_message_id")) == target_id:
+            return hit.get("parent_anchor_id")
     return None
 
 
@@ -1152,6 +1290,43 @@ def semantic_tree_timeline_payload(
         "asOfTimestamp": cutoff,
         "treeData": snapshot,
         "anchors": state["anchors"],
+        "bornNodes": born_nodes_payload(snapshot, source_message_id),
+    }
+
+
+def semantic_tree_session_timeline_payload(
+    *,
+    session_record: dict[str, Any],
+    session_id: str,
+    root_name: str,
+    source_message_id: str,
+) -> dict[str, Any] | None:
+    """AI-session equivalent of semantic_tree_timeline_payload(): reconstruct
+    the tree as it looked right after `source_message_id` (an AIConversation
+    turn id) was analyzed. Returns None if that turn hasn't been analyzed
+    yet, so the caller can turn that into a 404.
+
+    `room_id` mirrors `session_id` here — AI sessions don't have a real
+    room, but exposing the same key lets the frontend/serializer treat both
+    conversation kinds uniformly instead of branching on kind everywhere.
+    """
+    state = get_ai_semantic_tree_state(session_record, root_name=root_name)
+    owner_state = state["participants"][OWNER_AI_USER]
+
+    cutoff = resolve_cutoff_for_message(owner_state["analysisHistory"], source_message_id)
+    if cutoff is None:
+        return None
+
+    snapshot = reconstruct_tree_as_of(owner_state["treeData"], cutoff)
+    return {
+        "session_id": session_id,
+        "room_id": session_id,
+        "topic_id": session_record.get("topic_id"),
+        "asOfMessageId": clean_text(source_message_id),
+        "asOfTimestamp": cutoff,
+        "treeData": snapshot,
+        "anchors": state["anchors"],
+        "bornNodes": born_nodes_payload(snapshot, source_message_id),
     }
 
 
@@ -1217,14 +1392,19 @@ def analyze_pending_room_messages(
             not in set(state["participants"][owner_key]["analyzedSourceIds"])
         ][: semantic_tree_batch_size()]
 
-        if pending_messages and not get_openai_api_key():
+        if (
+            pending_messages
+            and not uses_local_classifier(locked_match.topic_id)
+            and not get_openai_api_key()
+        ):
             raise MissingOpenAIApiKey("server 缺少 OPENAI_API_KEY，無法呼叫 OpenAI。")
 
         analyzed_count = 0
         for message, owner_key in pending_messages:
             owner_state = state["participants"][owner_key]
             source_message = _message_to_source(message)
-            result = analyze_with_openai(
+            result = analyze_text_for_tree(
+                topic_id=locked_match.topic_id,
                 text=message.content,
                 tree=owner_state["treeData"],
                 anchors=state["anchors"],
@@ -1279,13 +1459,18 @@ def analyze_pending_ai_conversations(
         if clean_text(turn.user_prompt) and clean_text(turn.id) not in analyzed_ids
     ][: semantic_tree_batch_size()]
 
-    if pending_turns and not get_openai_api_key():
+    if (
+        pending_turns
+        and not uses_local_classifier(session_record.get("topic_id"))
+        and not get_openai_api_key()
+    ):
         raise MissingOpenAIApiKey("server 缺少 OPENAI_API_KEY，無法呼叫 OpenAI。")
 
     analyzed_count = 0
     for turn in pending_turns:
         source_message = _ai_turn_to_source(turn)
-        result = analyze_with_openai(
+        result = analyze_text_for_tree(
+            topic_id=session_record.get("topic_id"),
             text=turn.user_prompt,
             tree=owner_state["treeData"],
             anchors=state["anchors"],
