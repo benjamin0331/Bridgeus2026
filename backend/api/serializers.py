@@ -138,6 +138,14 @@ class AIConversationSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
+class MessageReactionSerializer(serializers.Serializer):
+    """Like/dislike an opponent message; value=0 removes the reaction."""
+
+    target_type = serializers.ChoiceField(choices=["ai", "match"])
+    target_id = serializers.IntegerField(min_value=1)
+    value = serializers.ChoiceField(choices=[1, -1, 0])
+
+
 class DialogueSessionCreateSerializer(serializers.Serializer):
     topic_id = serializers.IntegerField()
     topic_title = serializers.CharField(max_length=255)
@@ -451,9 +459,21 @@ class PostDialogueResponseSerializer(serializers.Serializer):
                 {"discomfort_detail": "選擇「是」時請描述不適情況。"}
             )
 
-        if not attrs.get("session_id") and not attrs.get("room_id"):
+        session_id = attrs.get("session_id")
+        room_id = attrs.get("room_id")
+        if condition == "ai" and (not session_id or room_id):
             raise serializers.ValidationError(
-                "session_id 與 room_id 至少需提供其中一個。"
+                {
+                    "session_id": "H-AI 組必須只提供 session_id。",
+                    "room_id": "H-AI 組不可提供 room_id。",
+                }
+            )
+        if condition == "hh" and (not room_id or session_id):
+            raise serializers.ValidationError(
+                {
+                    "room_id": "H-H 組必須只提供 room_id。",
+                    "session_id": "H-H 組不可提供 session_id。",
+                }
             )
 
         return attrs
@@ -514,6 +534,11 @@ class PlatformFeedbackOutputSerializer(serializers.ModelSerializer):
 
 class PostDialogueResponseOutputSerializer(serializers.ModelSerializer):
     s_post = serializers.SerializerMethodField()
+    delta_s = serializers.FloatField(source="delta_s_value", read_only=True)
+    stance_centrism = serializers.FloatField(
+        source="stance_centrism_value",
+        read_only=True,
+    )
     pre_question_map = serializers.SerializerMethodField()
 
     def get_s_post(self, obj):
@@ -537,7 +562,8 @@ class PostDialogueResponseOutputSerializer(serializers.ModelSerializer):
             "opponent_judgment",
             "post_open_comprehension", "post_open_feedback",
             "discomfort_flag", "consent_confirmed",
-            "s_post", "pre_question_map",
+            "s_pre", "s_post", "delta_s", "stance_centrism",
+            "pre_question_map",
             "created_at",
         ]
         read_only_fields = fields

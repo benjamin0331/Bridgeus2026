@@ -266,6 +266,57 @@ class MatchMessage(models.Model):
         return f"match={self.match_id} sender={self.sender_id}"
 
 
+class MessageReaction(models.Model):
+    """A participant's like/dislike reaction to an opponent message."""
+
+    class TargetType(models.TextChoices):
+        AI = "ai", "AI 回應"
+        MATCH = "match", "配對訊息"
+
+    class Value(models.IntegerChoices):
+        LIKE = 1, "讚"
+        DISLIKE = -1, "倒讚"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="message_reactions",
+    )
+    target_type = models.CharField(max_length=8, choices=TargetType.choices)
+    # target_type=ai -> AIConversation.id; target_type=match -> MatchMessage.id
+    target_id = models.BigIntegerField()
+    value = models.SmallIntegerField(choices=Value.choices)
+    topic_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    # session_id for AI, room_id for human matching
+    conversation_id = models.CharField(max_length=64, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "target_type", "target_id"],
+                name="uniq_message_reaction_user_target",
+            ),
+            models.CheckConstraint(
+                condition=Q(value__in=[1, -1]),
+                name="message_reaction_value_like_dislike",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["target_type", "conversation_id"],
+                name="msg_reaction_conv_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"reaction user={self.user_id} {self.target_type}={self.target_id} "
+            f"value={self.value}"
+        )
+
+
 class MatchAISuggestion(models.Model):
     class Category(models.TextChoices):
         REPHRASE = "rephrase", "改述"
@@ -446,6 +497,23 @@ class PostDialogueResponse(models.Model):
     # Debriefing consent: NULL=pending, True=consent, False=withdrawn
     consent_confirmed = models.BooleanField(null=True, blank=True)
 
+    # Snapshot of the pre-dialogue score used by this exact conversation.
+    s_pre = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="該場對話的前測立場分數快照（1–7）",
+    )
+    delta_s_value = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="立場移動量 s_post − s_pre；正=偏支持、負=偏反對",
+    )
+    stance_centrism_value = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="去極化指標 |s_post−4|−|s_pre−4|；< 0 = 去極化",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -483,6 +551,18 @@ class PostDialogueResponse(models.Model):
     def stance_centrism(self, s_pre: float) -> float:
         """< 0 = depolarized, > 0 = polarized further, = 0 = unchanged."""
         return round(abs(self.s_post() - 4) - abs(float(s_pre) - 4), 4)
+
+    def fill_stance_metrics(self, s_pre) -> None:
+        if s_pre is None:
+            self.s_pre = None
+            self.delta_s_value = None
+            self.stance_centrism_value = None
+            return
+
+        normalized_s_pre = float(s_pre)
+        self.s_pre = round(normalized_s_pre, 4)
+        self.delta_s_value = self.delta_s(normalized_s_pre)
+        self.stance_centrism_value = self.stance_centrism(normalized_s_pre)
 
     def __str__(self):
         return (

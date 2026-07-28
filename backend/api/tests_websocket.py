@@ -116,6 +116,7 @@ async def test_dialogue_websocket_persists_completed_turn():
     assert end_message["stance_drift"]["measured_at"]
 
     saved_turn = await AIConversation.objects.aget(session_id=session_id)
+    assert end_message["turn_id"] == saved_turn.id
     assert saved_turn.user_id == user.id
     assert saved_turn.topic_id == 102
     assert saved_turn.user_prompt == "核能真的比較穩定嗎？"
@@ -184,6 +185,10 @@ async def test_dialogue_websocket_queues_messages_and_replies_in_order():
     assert [turn.ai_response for turn in saved] == [
         "AI reply to: 第一則",
         "AI reply to: 第二則",
+    ]
+    assert [replies[1]["turn_id"], replies[3]["turn_id"]] == [
+        saved[0].id,
+        saved[1].id,
     ]
 
     await communicator.disconnect()

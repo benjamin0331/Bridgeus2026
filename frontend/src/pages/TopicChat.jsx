@@ -89,13 +89,22 @@ function semanticTreePayloadKey(payload) {
   return '';
 }
 
+function reactionKey(target) {
+  return target ? `${target.type}:${target.id}` : null;
+}
+
 function mapHistoryToMessages(history, userName) {
-  return history.map((message, index) => ({
-    id: `${message.role}-${index}`,
-    type: message.role === 'agent' ? 'agent' : 'user',
-    userName: message.role === 'agent' ? 'BridgeUs' : userName,
-    text: message.content,
-  }));
+  return history.map((message, index) => {
+    const isAgent = message.role === 'agent';
+    const turnId = message.turn_id ?? null;
+    return {
+      id: `${message.role}-${index}`,
+      type: isAgent ? 'agent' : 'user',
+      userName: isAgent ? 'BridgeUs' : userName,
+      text: message.content,
+      reactTarget: isAgent && turnId ? { type: 'ai', id: turnId } : null,
+    };
+  });
 }
 
 function formatTimestamp(value) {
@@ -201,8 +210,40 @@ function mapMatchMessagesToDisplay(messages, userId) {
       userName: isCurrentUser ? MATCH_SELF_NAME : MATCH_PARTNER_NAME,
       text: message.content,
       timestamp: message.created_at,
+      reactTarget: isCurrentUser
+        ? null
+        : { type: 'match', id: Number(message.id) },
     };
   });
+}
+
+function MessageReactions({ target, value, onReact }) {
+  if (!target) {
+    return null;
+  }
+
+  return (
+    <div className="message-reactions">
+      <button
+        type="button"
+        className={`reaction-btn ${value === 1 ? 'active like' : ''}`}
+        onClick={() => onReact(target, 1)}
+        aria-label="讚"
+        aria-pressed={value === 1}
+      >
+        <span className="reaction-icon">👍</span>
+      </button>
+      <button
+        type="button"
+        className={`reaction-btn ${value === -1 ? 'active dislike' : ''}`}
+        onClick={() => onReact(target, -1)}
+        aria-label="倒讚"
+        aria-pressed={value === -1}
+      >
+        <span className="reaction-icon">👎</span>
+      </button>
+    </div>
+  );
 }
 
 function TopicChat({ user, issues, issuesLoaded }) {
@@ -267,8 +308,10 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const [showScrollToBottomButton, setShowScrollToBottomButton] = useState(false);
 
   const [isRightPanelOpen, setIsRightPanelOpen] = useState(false);
+  const [reactions, setReactions] = useState({});
 
   const messagesContainerRef = useRef(null);
+  const reactionsRef = useRef({});
   const isComposingRef = useRef(false);
   const textareaRef = useRef(null);
   const wsRef = useRef(null);
@@ -342,6 +385,57 @@ function TopicChat({ user, issues, issuesLoaded }) {
     });
   }, []);
 
+  const mergeFetchedReactions = useCallback((list, type) => {
+    if (!Array.isArray(list)) {
+      return;
+    }
+    setReactions((previous) => {
+      const next = { ...previous };
+      list.forEach((item) => {
+        if (item?.target_id != null) {
+          next[`${type}:${item.target_id}`] = item.value;
+        }
+      });
+      reactionsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const handleReact = useCallback(async (target, clickedValue) => {
+    if (!target) {
+      return;
+    }
+
+    const key = reactionKey(target);
+    const previousValue = reactionsRef.current[key] || 0;
+    const nextValue = previousValue === clickedValue ? 0 : clickedValue;
+    const optimistic = { ...reactionsRef.current };
+    if (nextValue === 0) {
+      delete optimistic[key];
+    } else {
+      optimistic[key] = nextValue;
+    }
+    reactionsRef.current = optimistic;
+    setReactions(optimistic);
+
+    try {
+      await api.post('/api/message-reactions/', {
+        target_type: target.type,
+        target_id: target.id,
+        value: nextValue,
+      });
+    } catch {
+      const reverted = { ...reactionsRef.current };
+      if (previousValue === 0) {
+        delete reverted[key];
+      } else {
+        reverted[key] = previousValue;
+      }
+      reactionsRef.current = reverted;
+      setReactions(reverted);
+    }
+  }, []);
+
   const resetAiSemanticTreeState = useCallback(() => {
     semanticTreeRequestIdRef.current += 1;
     setSemanticTreePayload(null);
@@ -389,6 +483,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setPendingRestoredSession(null);
     setSessionId(null);
     setMessages([]);
+    reactionsRef.current = {};
+    setReactions({});
     setAiStanceMeta(null);
     setAiStanceDrift(null);
     setSurveyAnswers({});
@@ -630,6 +726,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setSessionId(null);
     setInputValue('');
     setMessages([]);
+    reactionsRef.current = {};
+    setReactions({});
     setAiStanceMeta(null);
     setAiStanceDrift(null);
     setIsSending(false);
@@ -846,6 +944,57 @@ function TopicChat({ user, issues, issuesLoaded }) {
       cancelled = true;
     };
   }, [currentIssue, displayUserName, id, isMatchingMode, sessionId]);
+
+  useEffect(() => {
+    if (isMatchingMode || !sessionId) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const fetchReactions = async () => {
+      try {
+        const response = await api.get(
+          `/api/message-reactions/?target_type=ai&conversation_id=${encodeURIComponent(sessionId)}`,
+        );
+        if (!cancelled) {
+          mergeFetchedReactions(response.data?.reactions, 'ai');
+        }
+      } catch {
+        // Reactions are optional UI state; chat remains usable if loading fails.
+      }
+    };
+    void fetchReactions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isMatchingMode, mergeFetchedReactions, sessionId]);
+
+  useEffect(() => {
+    if (!isMatchChatReady || !matchingState?.room_id) {
+      return undefined;
+    }
+
+    const roomId = matchingState.room_id;
+    let cancelled = false;
+    const fetchReactions = async () => {
+      try {
+        const response = await api.get(
+          `/api/message-reactions/?target_type=match&conversation_id=${encodeURIComponent(roomId)}`,
+        );
+        if (!cancelled) {
+          mergeFetchedReactions(response.data?.reactions, 'match');
+        }
+      } catch {
+        // Reactions are optional UI state; chat remains usable if loading fails.
+      }
+    };
+    void fetchReactions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isMatchChatReady, matchingState?.room_id, mergeFetchedReactions]);
 
   useEffect(() => {
     if (!isMatchChatReady || !matchingState?.room_id) {
@@ -1292,6 +1441,17 @@ function TopicChat({ user, issues, issuesLoaded }) {
       }
 
       if (data.type === 'agent_stream_end') {
+        const streamedMessageId = currentAgentMsgIdRef.current;
+        const turnId = data.turn_id ?? null;
+        if (streamedMessageId && turnId) {
+          setMessages((previous) =>
+            previous.map((message) =>
+              message.id === streamedMessageId
+                ? { ...message, reactTarget: { type: 'ai', id: turnId } }
+                : message,
+            ),
+          );
+        }
         currentAgentMsgIdRef.current = null;
         setAiStanceDrift(extractStanceDrift(data));
         setIsAgentStreaming(false);
@@ -2112,6 +2272,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
                 <span className="message-username">{msg.userName}</span>
               </div>
               <div className="message-bubble">{msg.text}</div>
+              <MessageReactions
+                target={msg.reactTarget}
+                value={msg.reactTarget ? reactions[reactionKey(msg.reactTarget)] || 0 : 0}
+                onReact={handleReact}
+              />
             </div>
           ))}
           {isMatchSending && (
@@ -2377,6 +2542,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
                     <span className="message-username">{msg.userName}</span>
                   </div>
                   <div className="message-bubble">{msg.text}</div>
+                  <MessageReactions
+                    target={msg.reactTarget}
+                    value={msg.reactTarget ? reactions[reactionKey(msg.reactTarget)] || 0 : 0}
+                    onReact={handleReact}
+                  />
                 </div>
               ))}
               {isSending && !isAgentStreaming && (

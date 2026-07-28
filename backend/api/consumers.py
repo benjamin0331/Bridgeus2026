@@ -215,7 +215,15 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
         )
         await self._persist_session_record(session_record)
 
-        await self.send(json.dumps({"type": "agent_stream_end", "stance_drift": stance_drift}))
+        await self.send(
+            json.dumps(
+                {
+                    "type": "agent_stream_end",
+                    "stance_drift": stance_drift,
+                    "turn_id": saved_turn.id if saved_turn is not None else None,
+                }
+            )
+        )
 
     async def _get_session_record(self):
         from api.views import _restore_dialogue_session_record_for_user

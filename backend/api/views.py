@@ -3,6 +3,7 @@ import os
 import re
 import uuid as _uuid_mod
 from decimal import Decimal
+from difflib import SequenceMatcher
 from functools import lru_cache
 from uuid import uuid4
 
@@ -39,8 +40,10 @@ from .models import (
     DiscomfortReport,
     Issue,
     IssueReaction,
+    MatchMessage,
     MatchQueueEntry,
     MatchStanceDrift,
+    MessageReaction,
     PlatformDisplaySetting,
     PlatformFeedback,
     PostDialogueResponse,
@@ -83,6 +86,7 @@ from .serializers import (
     MatchingRoomSemanticTreeTimelineSerializer,
     MatchingStateSerializer,
     MatchingTopicSerializer,
+    MessageReactionSerializer,
     PlatformDisplaySettingSerializer,
     PlatformFeedbackSerializer,
     PlatformFeedbackOutputSerializer,
@@ -121,6 +125,87 @@ def _session_cache_key(session_id: str) -> str:
     return f"dialogue_session:{session_id}"
 
 
+def _history_with_turn_ids(history: list[dict], turns) -> list[dict]:
+    """Preserve session history and attach persisted AIConversation ids.
+
+    AIConversation persistence is fail-open in the WebSocket consumer. The
+    session record can therefore contain messages that have no database turn;
+    those messages must remain visible even though they cannot be reacted to.
+    """
+    persisted_messages = []
+    for turn in turns:
+        if turn.user_prompt:
+            persisted_messages.append(
+                {
+                    "role": "user",
+                    "content": turn.user_prompt,
+                    "turn_id": turn.id,
+                }
+            )
+        if turn.ai_response:
+            persisted_messages.append(
+                {
+                    "role": "agent",
+                    "content": turn.ai_response,
+                    "turn_id": turn.id,
+                }
+            )
+
+    session_messages = [dict(message) for message in history]
+    session_keys = [
+        (message.get("role"), message.get("content"))
+        for message in session_messages
+    ]
+    persisted_keys = [
+        (message["role"], message["content"])
+        for message in persisted_messages
+    ]
+    matcher = SequenceMatcher(
+        a=session_keys,
+        b=persisted_keys,
+        autojunk=False,
+    )
+
+    merged_history = []
+    for (
+        tag,
+        session_start,
+        session_end,
+        persisted_start,
+        persisted_end,
+    ) in matcher.get_opcodes():
+        if tag == "equal":
+            for offset, message in enumerate(
+                session_messages[session_start:session_end]
+            ):
+                annotated = dict(message)
+                annotated["turn_id"] = persisted_messages[
+                    persisted_start + offset
+                ]["turn_id"]
+                merged_history.append(annotated)
+            continue
+
+        if tag in {"replace", "delete"}:
+            merged_history.extend(session_messages[session_start:session_end])
+        if tag in {"replace", "insert"}:
+            merged_history.extend(persisted_messages[persisted_start:persisted_end])
+
+    return merged_history
+
+
+def _live_dialogue_history(
+    *,
+    session_id: str,
+    user_id: int,
+    history: list[dict],
+) -> list[dict]:
+    turns = AIConversation.objects.filter(
+        user_id=user_id,
+        session_id=session_id,
+    ).order_by("created_at", "id")
+    return _history_with_turn_ids(history, turns)
+
+
 def _cache_dialogue_session_record(session_record: dict) -> None:
     cache.set(
         _session_cache_key(session_record["session_id"]),
@@ -131,21 +216,19 @@ def _cache_dialogue_session_record(session_record: dict) -> None:
 
 def _rebuild_session_state_from_turns(record: DialogueSessionRecord) -> dict:
     session_state = (record.session_state or {}).copy()
-    turns = AIConversation.objects.filter(
-        user=record.user,
-        session_id=record.session_id,
-    ).order_by("created_at", "id")
-    history = []
+    turns = list(
+        AIConversation.objects.filter(
+            user=record.user,
+            session_id=record.session_id,
+        ).order_by("created_at", "id")
+    )
     latest_phase = session_state.get("dialogue_phase") or "engagement"
 
     for turn in turns:
-        if turn.user_prompt:
-            history.append({"role": "user", "content": turn.user_prompt})
-        if turn.ai_response:
-            history.append({"role": "agent", "content": turn.ai_response})
         if turn.dialogue_phase:
             latest_phase = turn.dialogue_phase
 
+    history = _history_with_turn_ids(session_state.get("history") or [], turns)
     if history:
         session_state["history"] = history
     session_state["dialogue_phase"] = latest_phase
@@ -271,6 +354,12 @@ def _dialogue_session_response_payload(
 ) -> dict:
     session_state = session_record.get("session") or {}
     history = session_state.get("history") or []
+    if user_id is not None:
+        history = _live_dialogue_history(
+            session_id=session_record["session_id"],
+            user_id=user_id,
+            history=history,
+        )
     stance_drift = session_state.get("stance_drift")
     stance_score = session_state.get("user_stance_score")
     stance_category = _display_stance_category(
@@ -1590,7 +1679,11 @@ class DialogueSessionReplyView(APIView):
                 ),
                 "stance_label": session.user_stance_label,
                 "stance_drift": stance_drift,
-                "history": session_record["session"]["history"],
+                "history": _live_dialogue_history(
+                    session_id=session_id,
+                    user_id=request.user.id,
+                    history=session_record["session"]["history"],
+                ),
             }
         )
 
@@ -2857,6 +2950,159 @@ class MatchingRoomLeaveView(APIView):
         )
 
 
+class MessageReactionView(APIView):
+    """Create, change, remove, or list the caller's message reactions."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        target_type = request.query_params.get("target_type")
+        conversation_id = request.query_params.get("conversation_id")
+        if target_type not in {
+            MessageReaction.TargetType.AI,
+            MessageReaction.TargetType.MATCH,
+        }:
+            return Response(
+                {"detail": "target_type 必須是 ai 或 match。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not conversation_id:
+            return Response(
+                {"detail": "conversation_id 為必填。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        reactions = MessageReaction.objects.filter(
+            user=request.user,
+            target_type=target_type,
+            conversation_id=conversation_id,
+        ).only("target_id", "value")
+        return Response(
+            {
+                "reactions": [
+                    {"target_id": reaction.target_id, "value": reaction.value}
+                    for reaction in reactions
+                ]
+            }
+        )
+
+    def post(self, request):
+        serializer = MessageReactionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        target_type = serializer.validated_data["target_type"]
+        target_id = serializer.validated_data["target_id"]
+        value = serializer.validated_data["value"]
+
+        if target_type == MessageReaction.TargetType.AI:
+            context = self._resolve_ai_target(request.user, target_id)
+        else:
+            context = self._resolve_match_target(request.user, target_id)
+        if context is None:
+            return Response(
+                {"detail": "找不到可回應的對方發言，或你無權對其反應。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if value == 0:
+            MessageReaction.objects.filter(
+                user=request.user,
+                target_type=target_type,
+                target_id=target_id,
+            ).delete()
+            return Response(
+                {
+                    "target_type": target_type,
+                    "target_id": target_id,
+                    "value": None,
+                }
+            )
+
+        MessageReaction.objects.update_or_create(
+            user=request.user,
+            target_type=target_type,
+            target_id=target_id,
+            defaults={
+                "value": value,
+                "topic_id": context["topic_id"],
+                "conversation_id": context["conversation_id"],
+            },
+        )
+        return Response(
+            {
+                "target_type": target_type,
+                "target_id": target_id,
+                "value": value,
+            }
+        )
+
+    @staticmethod
+    def _resolve_ai_target(user, target_id):
+        turn = (
+            AIConversation.objects.filter(id=target_id, user=user)
+            .exclude(ai_response__isnull=True)
+            .exclude(ai_response="")
+            .first()
+        )
+        if turn is None:
+            return None
+        return {
+            "topic_id": turn.topic_id,
+            "conversation_id": turn.session_id,
+        }
+
+    @staticmethod
+    def _resolve_match_target(user, target_id):
+        message = (
+            MatchMessage.objects.select_related("match")
+            .filter(id=target_id)
+            .first()
+        )
+        if message is None:
+            return None
+
+        match = message.match
+        if user.id not in {match.user_a_id, match.user_b_id}:
+            return None
+        if message.sender_id == user.id:
+            return None
+        return {
+            "topic_id": match.topic_id,
+            "conversation_id": match.room_id,
+        }
+
+
+def _post_dialogue_stance_snapshot(*, user, validated: dict):
+    """Resolve s_pre from the exact conversation named by the submission."""
+    topic_id = validated["topic_id"]
+    condition = validated["experiment_condition"]
+
+    if condition == PostDialogueResponse.ExperimentCondition.AI:
+        record = DialogueSessionRecord.objects.filter(
+            user=user,
+            session_id=validated["session_id"],
+            topic_id=topic_id,
+        ).first()
+        if record is None:
+            raise exceptions.ValidationError(
+                {"session_id": "找不到屬於你的同議題 AI 對話 session。"}
+            )
+        return (record.session_state or {}).get("user_stance_score")
+
+    match = (
+        DialogueMatch.objects.filter(
+            room_id=validated["room_id"],
+            topic_id=topic_id,
+        )
+        .filter(Q(user_a=user) | Q(user_b=user))
+        .first()
+    )
+    if match is None:
+        raise exceptions.ValidationError(
+            {"room_id": "找不到屬於你的同議題配對房間。"}
+        )
+    return match.user_a_score if match.user_a_id == user.id else match.user_b_score
+
+
 class PostDialogueResponseView(APIView):
     """POST /api/post-questionnaire/ — submit post-dialogue questionnaire."""
 
@@ -2868,8 +3114,12 @@ class PostDialogueResponseView(APIView):
         validated = serializer.validated_data
 
         discomfort_detail = validated.pop("discomfort_detail", "") or ""
+        s_pre = _post_dialogue_stance_snapshot(
+            user=request.user,
+            validated=validated,
+        )
 
-        response_obj = PostDialogueResponse.objects.create(
+        response_obj = PostDialogueResponse(
             user=request.user,
             topic_id=validated["topic_id"],
             session_id=validated.get("session_id") or None,
@@ -2897,17 +3147,21 @@ class PostDialogueResponseView(APIView):
             post_open_feedback=validated.get("post_open_feedback", ""),
             discomfort_flag=validated.get("discomfort_flag", False),
         )
+        response_obj.fill_stance_metrics(s_pre)
 
-        if response_obj.session_id:
-            _close_dialogue_session_record(
-                session_id=response_obj.session_id, user_id=request.user.id
-            )
+        with transaction.atomic():
+            response_obj.save()
+            if response_obj.session_id:
+                _close_dialogue_session_record(
+                    session_id=response_obj.session_id,
+                    user_id=request.user.id,
+                )
 
-        if response_obj.discomfort_flag and discomfort_detail.strip():
-            DiscomfortReport.objects.create(
-                response=response_obj,
-                detail=discomfort_detail.strip(),
-            )
+            if response_obj.discomfort_flag and discomfort_detail.strip():
+                DiscomfortReport.objects.create(
+                    response=response_obj,
+                    detail=discomfort_detail.strip(),
+                )
 
         out = PostDialogueResponseOutputSerializer(response_obj)
         return Response(out.data, status=status.HTTP_201_CREATED)

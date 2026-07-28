@@ -516,6 +516,10 @@ class DialogueSessionApiTests(APITestCase):
         self.assertEqual(saved_turn.topic_id, 102)
         self.assertEqual(saved_turn.user_prompt, "核能真的比其他方案更穩定嗎？")
         self.assertEqual(saved_turn.ai_response, "AI reply to: 核能真的比其他方案更穩定嗎？")
+        self.assertEqual(
+            reply_response.data["history"][1]["turn_id"],
+            saved_turn.id,
+        )
         mocked_get_agent.assert_called_once_with("nuclear_energy_all")
 
     @patch("chat.services.embedding.get_embedding", return_value=make_test_embedding(-1))
@@ -601,8 +605,64 @@ class DialogueSessionApiTests(APITestCase):
             restore_response.data["history"][1]["content"],
             "AI reply to: 核電能不能補足再生能源不穩定？",
         )
+        self.assertIn("turn_id", restore_response.data["history"][1])
         self.assertIsNotNone(cache.get(f"dialogue_session:{session_id}"))
         mocked_get_agent.assert_called_once_with("nuclear_energy_all")
+
+    def test_restore_preserves_session_messages_without_database_turn(self):
+        session_id = "partial-persistence-session"
+        DialogueSessionRecord.objects.create(
+            user=self.user,
+            session_id=session_id,
+            topic_id=102,
+            topic_title="核能發電在減碳中的角色",
+            collection_name="nuclear_energy_all",
+            session_state={
+                "topic": "核能發電在減碳中的角色",
+                "dialogue_phase": "engagement",
+                "user_stance_score": 4.0,
+                "history": [
+                    {"role": "user", "content": "已成功保存的訊息"},
+                    {"role": "agent", "content": "已成功保存的回覆"},
+                    {"role": "user", "content": "只有 session 保存的訊息"},
+                    {"role": "agent", "content": "這一輪沒有 AIConversation"},
+                ],
+            },
+            last_activity_at=timezone.now(),
+        )
+        saved_turn = AIConversation.objects.create(
+            user=self.user,
+            session_id=session_id,
+            topic_id=102,
+            user_prompt="已成功保存的訊息",
+            ai_response="已成功保存的回覆",
+            dialogue_phase="engagement",
+        )
+        database_only_turn = AIConversation.objects.create(
+            user=self.user,
+            session_id=session_id,
+            topic_id=102,
+            user_prompt="只有 AIConversation 保存的訊息",
+            ai_response="這一輪沒有寫回 session record",
+            dialogue_phase="engagement",
+        )
+        cache.clear()
+
+        restored = self.client.get(f"/api/dialogue/sessions/{session_id}/")
+
+        self.assertEqual(restored.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(restored.data["history"]), 6)
+        self.assertEqual(restored.data["history"][1]["turn_id"], saved_turn.id)
+        self.assertNotIn("turn_id", restored.data["history"][2])
+        self.assertNotIn("turn_id", restored.data["history"][3])
+        self.assertEqual(
+            restored.data["history"][4]["turn_id"],
+            database_only_turn.id,
+        )
+        self.assertEqual(
+            restored.data["history"][5]["turn_id"],
+            database_only_turn.id,
+        )
 
     def test_session_restore_forbids_other_users(self):
         create_response = self.client.post(
