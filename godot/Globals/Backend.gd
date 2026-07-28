@@ -5,8 +5,7 @@ extends Node
 # 桌面開發預設值；Web 版於 _ready() 依同源拓樸改寫（見 godot-web-deployment-spec.md §3）。
 var BASE_URL := "http://localhost:8005/api"
 
-var access_token := ""   # 二擇一來源：acquire_token_from_host()（正式）或 guest_login()（本機測試 fallback）
-var user_id := 0         # 主功能後端 user id，隨 host token 一併交接；guest_login 沒有對應 id，維持 0
+var access_token := ""   # 來自 acquire_token_from_host()：主功能頁交接的真登入 JWT
 
 # 只在常駐 headless server 從環境變數讀到才會有值；web client 一律空字串，
 # 不會/不該呼叫需要它的方法（金鑰絕不可流向瀏覽器，見部署規格 §4「服務金鑰建房契約」）。
@@ -22,11 +21,11 @@ func _ready() -> void:
 	else:
 		service_token = OS.get_environment("GODOT_SERVICE_TOKEN")
 
-# --- 認證：正式交接（優先）-------------------------------------------------
-# 由主功能頁面把這個場景嵌進 <iframe> 前，設定 window.bridgeus_token /
-# window.bridgeus_user_id 交給 Godot（見 docs/godot-backend-integration.md §1）。
-# 只有 Web 匯出才讀得到 window；桌面開發直接回 false，呼叫端可退回 guest_login 測試。
-# 回 true 代表已經拿到主功能的真登入 token，access_token/user_id 就緒可直接打其他 API。
+# --- 認證：正式交接（唯一途徑）----------------------------------------------
+# 由主功能頁面把這個場景嵌進 <iframe> 前，設定 window.bridgeus_token
+# 交給 Godot（見 docs/godot-backend-integration.md §1）。
+# 只有 Web 匯出才讀得到 window；桌面開發直接回 false。
+# 回 true 代表已經拿到主功能的真登入 token，access_token 就緒可直接打其他 API。
 func acquire_token_from_host() -> bool:
 	if not OS.has_feature("web"):
 		return false
@@ -34,23 +33,28 @@ func acquire_token_from_host() -> bool:
 	if typeof(token) != TYPE_STRING or token == "":
 		return false
 	access_token = token
-	var uid = JavaScriptBridge.eval("window.bridgeus_user_id || 0", true)
-	if typeof(uid) == TYPE_FLOAT or typeof(uid) == TYPE_INT:
-		user_id = int(uid)
 	return true
 
-# --- 認證：訪客登入（本機測試 fallback，非正式使用者）----------------------
-# ponytail: 純粹方便沒有主功能可交接 token 時（桌面開發、多開測試）也能跑通議題流程。
-# 正式環境一律先呼叫 acquire_token_from_host()，拿到 host token 就不會走這條。
-# 成功（code 201）後把 access_token 存起來。callback 形如 func(code: int, data: Dictionary)。
-func guest_login(nickname: String, callback := Callable()) -> void:
-	var payload := {"nickname": nickname}
-	_post("/guest/", payload, false, func(code, data):
-		if code == 201:
-			access_token = data.get("access", "")
-		if callback.is_valid():
-			callback.call(code, data)
-	)
+# --- 入場券：client 端拉券（Web 專用）---------------------------------------
+# 每次要連線前呼叫。向宿主頁（GodotLobby.jsx）要一張一次性入場券，輪詢等結果。
+# 「拉」而不是 iframe 載入時「推」：券 60 秒到期且一次性，撐不過 WASM 冷啟動，
+# 重連時更會拿著已兌換的券被踢（見 spec §5.1）。
+# 回空字串代表要不到：未嵌在主功能頁（直開 export）、未登入、或後端故障。
+func request_entry_ticket() -> String:
+	if not OS.has_feature("web"):
+		return ""
+	# 直開 export（沒有宿主頁）快速失敗，不空等 5 秒。
+	var has_fn = JavaScriptBridge.eval(
+		"typeof window.bridgeus_request_ticket == 'function'", true)
+	if not has_fn:
+		return ""
+	JavaScriptBridge.eval("window.bridgeus_request_ticket()", true)
+	for i in 50:   # 最多等 5 秒（fetch 正常 <1 秒；'ERROR' 是宿主頁報的失敗）
+		await get_tree().create_timer(0.1).timeout
+		var t = JavaScriptBridge.eval("window.bridgeus_ticket || ''", true)
+		if typeof(t) == TYPE_STRING and t != "":
+			return "" if t == "ERROR" else t
+	return ""
 
 # --- 議題 -----------------------------------------------------------------
 # 送出議題。需先登入（header 帶 Authorization: Bearer <access_token>）。
@@ -171,6 +175,18 @@ func request_topic_match(topic: String, user_ids: Array, callback := Callable())
 	_post_with_service_token("/godot/match-rooms/", payload, func(code, data):
 		if callback.is_valid():
 			callback.call(code, data)
+	)
+
+# --- 入場券：server 端兌換（僅 headless dedicated server 呼叫）---------------
+# 把 client 遞來的券換成後端 user_id。成功 callback(user_id > 0)；
+# 任何失敗（券無效/已用過/逾期/網路錯）一律 callback(0)——呼叫端的處置只有
+# 「踢掉這個 peer」一種，不需要區分原因（後端 log 有記，見階段一 spec §5.3）。
+func redeem_ticket(ticket: String, callback: Callable) -> void:
+	if service_token == "":
+		callback.call(0)
+		return
+	_post_with_service_token("/godot/tickets/redeem/", {"ticket": ticket}, func(code, data):
+		callback.call(int(data.get("user_id", 0)) if code == 200 else 0)
 	)
 
 # --- 內部：帶服務金鑰的 POST（配對建房專用，不帶 user JWT）-------------------
