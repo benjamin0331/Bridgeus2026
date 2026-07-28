@@ -1,4 +1,5 @@
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '../api/client';
 import './GodotLobby.css';
 
@@ -9,6 +10,7 @@ import './GodotLobby.css';
 // window.bridgeus_request_ticket()（見身份層設計文件 §5.1、§9.1）。
 export default function GodotLobby() {
   const iframeRef = useRef(null);
+  const navigate = useNavigate();
 
   const handleLoad = () => {
     const frameWindow = iframeRef.current?.contentWindow;
@@ -54,6 +56,23 @@ export default function GodotLobby() {
     const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
     frameWindow.bridgeus_ws_url = `${wsProto}://${location.host}/godot-ws`;
   };
+
+  // Godot 端配對成功時會 postMessage 通知跳轉（見 game.gd match_found）。
+  // 兩個來源檢查都必要：只驗 origin 擋不掉同源的其他 frame，只驗 source
+  // 擋不掉惡意站台開的視窗。topic_id 再驗一次型別，路由參數不能信任外部輸入。
+  useEffect(() => {
+    const handleMessage = (event) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.source !== iframeRef.current?.contentWindow) return;
+      const data = event.data;
+      if (data?.type !== 'bridgeus_match') return;
+      const topicId = Number(data.topic_id);
+      if (!Number.isInteger(topicId) || topicId <= 0) return;
+      navigate(`/topic/${topicId}?mode=match&from=godot`);
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [navigate]);
 
   return (
     <div className="godot-lobby">
