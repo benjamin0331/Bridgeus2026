@@ -3517,6 +3517,7 @@ class GodotMatchRoomView(APIView):
             return Response(
                 {
                     "room_id": existing.room_id,
+                    "topic_id": topic_id,
                     "redirect_url": f"/topic/{topic_id}?mode=match",
                 },
                 status=status.HTTP_200_OK,
@@ -3540,6 +3541,7 @@ class GodotMatchRoomView(APIView):
         return Response(
             {
                 "room_id": match.room_id,
+                "topic_id": topic_id,
                 # 前端沒有獨立的 /dialogue/room/<id> 路由——配對聊天室其實是
                 # TopicChat.jsx 掛在 /topic/<topic_id>?mode=match，內部再用
                 # GET /api/matching/status/?topic_id= 找到這筆 DialogueMatch。

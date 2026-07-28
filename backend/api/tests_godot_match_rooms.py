@@ -30,6 +30,7 @@ def test_match_room_creates_active_dialogue_match():
 
     assert response.status_code == 201
     assert response.data["redirect_url"] == "/topic/102?mode=match"
+    assert response.data["topic_id"] == 102
     match = DialogueMatch.objects.get(room_id=response.data["room_id"])
     assert match.status == DialogueMatch.Status.ACTIVE
     assert match.matching_algorithm_version == "godot_manual"
@@ -230,6 +231,7 @@ def test_repeat_call_reuses_existing_room_instead_of_duplicating():
     assert first.status_code == 201
     assert second.status_code == 200          # 200 = 沿用既有，不是新建
     assert second.data["room_id"] == first.data["room_id"]
+    assert second.data["topic_id"] == 102            # 200 冪等路徑
     assert DialogueMatch.objects.filter(status=DialogueMatch.Status.ACTIVE).count() == 1
 
 
