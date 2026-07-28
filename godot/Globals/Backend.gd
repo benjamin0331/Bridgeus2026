@@ -179,6 +179,9 @@ func get_issue_reactions(issue_id: int, callback := Callable()) -> void:
 # done 形如 func(code: int, data)——data 可能是 Dictionary 或 Array（/issues/ 回陣列）。
 func _request(method: int, path: String, payload, with_auth: bool, done: Callable) -> void:
 	var http := HTTPRequest.new()
+	http.timeout = 10.0   # 沒有 timeout 的話，卡住的連線永遠不會回呼——呼叫端
+	                      # 若有在途狀態（例如 game.gd 的 _matching_topics）就會
+	                      # 永久卡死。逾時會以 result=TIMEOUT、code=0 走正常回呼路徑。
 	add_child(http)
 	var headers := []
 	if payload != null:
@@ -263,6 +266,9 @@ func redeem_ticket(ticket: String, callback: Callable) -> void:
 # --- 內部：帶服務金鑰的 POST（配對建房專用，不帶 user JWT）-------------------
 func _post_with_service_token(path: String, payload: Dictionary, done: Callable) -> void:
 	var http := HTTPRequest.new()
+	http.timeout = 10.0   # 沒有 timeout 的話，卡住的連線永遠不會回呼——呼叫端
+	                      # 若有在途狀態（例如 game.gd 的 _matching_topics）就會
+	                      # 永久卡死。逾時會以 result=TIMEOUT、code=0 走正常回呼路徑。
 	add_child(http)
 	var headers := [
 		"Content-Type: application/json",

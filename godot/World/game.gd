@@ -542,8 +542,11 @@ func _try_start_match(topic: String, occupants: Array) -> void:
 # 所以 request_topic_match 呼叫 callback.call(code, data) 之後，簽名是
 # (code, data, topic, occupants)。
 func _on_match_room_created(code: int, data: Dictionary, topic: String, occupants: Array) -> void:
-	_matching_topics.erase(topic)
+	# 注意：旗標不在這裡統一放掉。失敗路徑各自放，成功路徑要一路押到
+	# _finish_match 的 1.5 秒善後做完為止——那段期間座位還佔著，提早放掉
+	# 等於留一個窄版的同一個競態（有人斷線 → 第三人坐上 → 又觸發一次配對）。
 	if code != 200 and code != 201:
+		_matching_topics.erase(topic)
 		push_error("配對建房失敗 code=%d" % code)
 		for pid in occupants:
 			_seat_deny_and_unseat(pid, "配對建立失敗，請稍後再試")
@@ -553,6 +556,7 @@ func _on_match_room_created(code: int, data: Dictionary, topic: String, occupant
 	if room_id == "" or topic_id <= 0:
 		# 2xx 但沒有房間資訊（舊版部署、代理攔截、契約改動）。不能往下走：
 		# _finish_match 會刪掉兩位的身體，玩家又回到沒有身體的空世界。
+		_matching_topics.erase(topic)
 		push_error("配對建房回應缺少 room_id/topic_id，視為失敗：%s" % [data])
 		for pid in occupants:
 			_seat_deny_and_unseat(pid, "配對建立失敗，請稍後再試")
@@ -566,6 +570,7 @@ func _on_match_room_created(code: int, data: Dictionary, topic: String, occupant
 	for pid in occupants:
 		if not seated.has(pid):
 			# 這一對已經不成立。還坐著的那位退座重來，不要把他單方面送進房間。
+			_matching_topics.erase(topic)
 			for other in occupants:
 				if seated.has(other):
 					_seat_deny_and_unseat(other, "對方已取消配對，請重新選擇")
@@ -576,7 +581,8 @@ func _on_match_room_created(code: int, data: Dictionary, topic: String, occupant
 			match_found(topic_id, room_id)
 		elif pid in multiplayer.get_peers():
 			match_found.rpc_id(pid, topic_id, room_id)
-	# 配對成功、交給後端導去網頁聊天室後，把這兩位的人物清掉、還原木樁。
+	# 配對成功、交給後端導去網頁聊天室後，把這兩位的人物清掉、還原木樁——旗標要
+	# 撐到那邊做完才放（見上方註解），所以這裡不 erase。
 	_finish_match(topic, occupants)
 
 # server-only：釋放該 peer 的座位。
@@ -617,6 +623,9 @@ func _finish_match(topic: String, peer_ids: Array) -> void:
 		var p = get_node_or_null(str(pid))
 		if p:
 			p.queue_free()   # server free → MultiplayerSpawner 複製移除給所有 peer
+	# 善後做完才解除在途旗標——從建房 HTTP 送出到這裡，這個議題的座位一直
+	# 處於「已配對、待清理」的狀態，不該讓新的人插進來。
+	_matching_topics.erase(topic)
 
 @rpc("authority", "call_local", "reliable")
 func clear_trunk(trunk_path: String) -> void:
