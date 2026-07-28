@@ -57,9 +57,13 @@ Godot 大廳（`/chat` 內嵌的 2D 世界）目前可以讓兩位玩家坐上�
 **不納入**
 
 - code review 其餘項目：語音頻寬（每幀原始 PCM ≈ 2.8 Mbps）、`receive_voice`/`receive_chat`/
-  `receive_invite` 的發話者驗證、`HTTPRequest` timeout、`game_ui.gd` 硬編碼版面、
+  `receive_invite` 的發話者驗證、`game_ui.gd` 硬編碼版面、
   `player_00.gd` 拆檔、`_TOPIC_ID_MAP` 與 `_TOPIC_TRUNKS` 兩份議題真值來源。這些另案處理。
 - Godot 端自動化測試框架（GUT）導入。
+
+> `HTTPRequest` timeout 原本列在這裡，但階段三實作時發現它不再是純整潔問題：加了
+> `_matching_topics` 在途旗標之後，卡住的連線會讓那個議題**永久無法配對**（回呼永遠不來、
+> 旗標永遠不解除）。已於 `61653d8` 在 `Backend.gd` 兩處 `HTTPRequest` 建立點補上 10 秒 timeout。
 - 配對房本身的對話功能（已存在，不動）。
 - `godot/CLAUDE.md` 的文件漂移修正（port 8080/8085、export_presets、語音子系統缺漏）——
   實作完成後順手更新，不列為設計項目。
