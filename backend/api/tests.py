@@ -94,13 +94,28 @@ def fake_economy_items_response():
 
 
 class FakeDialogueAgent:
+    """Contract-compliant fake, in the real response shape (no prefill, so the
+    <judgment> open tag is present)."""
+
     def respond(self, session):
-        return f"AI reply to: {session.history[-1].content}"
+        return (
+            "<judgment>開啟新方向。結構 A。使用者提出新的事實問題。</judgment>"
+            f"<reply>AI reply to: {session.history[-1].content}</reply>"
+        )
 
 
 class FakeExplodingDialogueAgent:
     def respond(self, session):
         raise RuntimeError("anthropic invalid key")
+
+
+class FakeContractViolatingDialogueAgent:
+    """Never emits <reply> — the REST path must fail closed, not return raw."""
+
+    RAW = "<judgment>判定為「收斂」,強制使用承接深化型(E)。核電的優勢是低碳穩定。"
+
+    def respond(self, session):
+        return self.RAW
 
 
 def build_supporting_answers():
@@ -516,7 +531,52 @@ class DialogueSessionApiTests(APITestCase):
         self.assertEqual(saved_turn.topic_id, 102)
         self.assertEqual(saved_turn.user_prompt, "核能真的比其他方案更穩定嗎？")
         self.assertEqual(saved_turn.ai_response, "AI reply to: 核能真的比其他方案更穩定嗎？")
+        self.assertFalse(saved_turn.contract_violated)
+        self.assertIn("結構 A", saved_turn.internal_judgment)
         mocked_get_agent.assert_called_once_with("nuclear_energy_all")
+
+    @patch(
+        "api.views.get_dialogue_agent",
+        return_value=FakeContractViolatingDialogueAgent(),
+    )
+    def test_reply_fails_closed_when_output_contract_violated(self, mocked_get_agent):
+        """No <reply> block → 503 with the generic message; the raw body with the
+        judgment text must never reach the client or ai_response."""
+        create_response = self.client.post(
+            "/api/dialogue/sessions/",
+            {
+                "topic_id": 102,
+                "topic_title": "核能發電在減碳中的角色",
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        session_id = create_response.data["session_id"]
+
+        reply_response = self.client.post(
+            f"/api/dialogue/sessions/{session_id}/reply/",
+            {"message": "所以優勢就是比較便宜嗎"},
+            format="json",
+        )
+
+        self.assertEqual(
+            reply_response.status_code,
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+        self.assertEqual(
+            reply_response.data["detail"],
+            "目前無法取得 AI 回覆，請稍後再試。",
+        )
+        self.assertNotIn("reply", reply_response.data)
+        self.assertNotIn(
+            "判定為",
+            str(reply_response.data),
+        )
+
+        saved_turn = AIConversation.objects.get(session_id=session_id)
+        self.assertTrue(saved_turn.contract_violated)
+        self.assertFalse(saved_turn.ai_response)
+        self.assertIn("判定為", saved_turn.internal_judgment)
 
     @patch("chat.services.embedding.get_embedding", return_value=make_test_embedding(-1))
     @patch("api.views.build_q9_embedding", return_value=make_test_embedding(1), create=True)
