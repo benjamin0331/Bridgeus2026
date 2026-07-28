@@ -14,10 +14,16 @@ var service_token := ""
 func _ready() -> void:
 	if OS.has_feature("web"):
 		var override = JavaScriptBridge.eval("window.bridgeus_api_base || ''", true)
+		# HTTPRequest 是 Godot 原生網路層，不是瀏覽器的 fetch——不會自動幫相對
+		# 路徑補上目前頁面的 origin，餵它「/api」這種缺 scheme/host 的路徑會在
+		# _parse_url 直接失敗（err=31，實測踩過）。宿主頁交接的 bridgeus_api_base
+		# 是相對路徑（同源拓樸，前端不必自己組 origin），所以補 origin 的責任
+		# 落在這裡。
+		var origin = JavaScriptBridge.eval("window.location.origin", true)
 		if typeof(override) == TYPE_STRING and override != "":
-			BASE_URL = override
+			BASE_URL = str(origin) + override if override.begins_with("/") else override
 		else:
-			BASE_URL = "/api"   # 同源拓樸預設：相對路徑，瀏覽器自動補目前 origin
+			BASE_URL = str(origin) + "/api"   # 同源拓樸預設
 	else:
 		service_token = OS.get_environment("GODOT_SERVICE_TOKEN")
 
@@ -87,7 +93,13 @@ func _request_entry_ticket_inner() -> String:
 	# 直開 export（沒有宿主頁）快速失敗，不空等。
 	var has_fn = JavaScriptBridge.eval(
 		"typeof window.bridgeus_request_ticket == 'function'", true)
-	if has_fn != true:
+	# 實測發現 JavaScriptBridge.eval() 在 Web 匯出把 JS 布林值轉回來時，
+	# 有時是 GDScript 的 int（0/1）而不是 bool；int != bool 這個組合在
+	# GDScript 是不合法運算，會直接丟 SCRIPT ERROR 中止整個函式（曾經在這裡
+	# 寫成 `has_fn != true` 求跟其他 eval 檢查風格一致，結果每次呼叫都炸掉，
+	# 且錯誤不會往外傳播，症狀只會是「入場券要不到」，很難聯想到這裡）。
+	# `not` 走真值判斷（truthy coercion），int 跟 bool 都吃得下，才是安全的寫法。
+	if not has_fn:
 		last_ticket_error = "no_host"
 		return ""
 	JavaScriptBridge.eval("window.bridgeus_request_ticket()", true)
