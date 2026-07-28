@@ -1633,10 +1633,13 @@ class DialogueSessionReplyView(APIView):
             embedding=prompt_embedding,
         )
 
+        # Neither this path nor the WebSocket path gets assistant prefill (the
+        # model rejects it); DialogueAgent logs that once at construction. The
+        # output contract is enforced below by ReplyStreamGate, which fails closed.
+        agent = get_dialogue_agent(session_record["collection_name"])
+
         try:
-            reply = get_dialogue_agent(session_record["collection_name"]).respond(
-                session
-            )
+            raw_reply = agent.respond(session)
         except Exception:
             logger.exception(
                 "Dialogue reply failed for session %s with collection %s.",
@@ -1650,14 +1653,55 @@ class DialogueSessionReplyView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        from apps.matching.services.ai_agent import split_into_chunks
+        from apps.matching.services.ai_agent import ReplyStreamGate, split_into_chunks
 
+        # respond() is non-streaming, so the gate parses the whole body in one feed.
+        gate = ReplyStreamGate()
+        gate.feed(raw_reply)
+        _, contract_ok = gate.finish()
+
+        if not contract_ok:
+            # Fail closed: never hand the raw body back to the client.
+            logger.error(
+                "Output contract violated on REST reply session=%s turn=%s "
+                "buffer[:200]=%r",
+                session_id,
+                saved_turn.id,
+                gate.buffered_preview[:200],
+            )
+            saved_turn.internal_judgment = gate.buffered_preview
+            saved_turn.contract_violated = True
+            saved_turn.dialogue_phase = session.dialogue_phase.value
+            saved_turn.save(
+                update_fields=[
+                    "internal_judgment",
+                    "contract_violated",
+                    "dialogue_phase",
+                ]
+            )
+            return Response(
+                {
+                    "detail": "目前無法取得 AI 回覆，請稍後再試。"
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        reply = gate.reply
         chunks = split_into_chunks(reply)
         session.add_agent_message(reply)
         session_record["session"] = session.to_dict()
         saved_turn.ai_response = reply
+        saved_turn.internal_judgment = gate.judgment
+        saved_turn.contract_violated = False
         saved_turn.dialogue_phase = session.dialogue_phase.value
-        saved_turn.save(update_fields=["ai_response", "dialogue_phase"])
+        saved_turn.save(
+            update_fields=[
+                "ai_response",
+                "internal_judgment",
+                "contract_violated",
+                "dialogue_phase",
+            ]
+        )
         stance_drift = _update_ai_session_stance_drift(
             session_record=session_record,
             session_id=session_id,

@@ -62,6 +62,10 @@ class ViewpointNode(models.Model):
     )
     stance_direction = models.CharField(max_length=32, blank=True)
     user_input_text = models.TextField()
+    # ⚠️ 只能寫入 AIConversation.ai_response（已由 ReplyStreamGate 剝離
+    # <judgment> 判定段的 <reply> 內容）。絕不可寫入 LLM 的原始串流輸出，
+    # 否則模型的內部判定推理會沉澱進觀點知識庫並污染品質評分。
+    # 對應的原始判定段另存於 AIConversation.internal_judgment，僅供研究分析。
     ai_response_text = models.TextField(blank=True)
     viewpoint_summary = models.TextField(blank=True)
     source_message_ids = ArrayField(

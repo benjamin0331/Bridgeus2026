@@ -16,7 +16,16 @@ class AIConversation(models.Model):
     session_id = models.CharField(max_length=64, blank=True, db_index=True)
     topic_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
     user_prompt = models.TextField(help_text="使用者的提問")
-    ai_response = models.TextField(blank=True, null=True, help_text="AI 的回覆")
+    ai_response = models.TextField(
+        blank=True,
+        null=True,
+        help_text="AI 的回覆（僅 <reply> 區塊，已由 ReplyStreamGate 剝離判定段）",
+    )
+    # 模型的 <judgment> 區塊：僅供研究分析與除錯，永不推送給受試者。
+    # 與 ai_response 分欄存放，避免判定段污染歷史回灌、CCND 與知識庫下游。
+    internal_judgment = models.TextField(blank=True, default="")
+    # True 表示該輪輸出未滿足 <reply> 輸出契約（gate 從未開閘）。
+    contract_violated = models.BooleanField(default=False)
     dialogue_phase = models.CharField(max_length=32, blank=True)
     # 384-dim embedding of user_prompt (paraphrase-multilingual-MiniLM-L12-v2);
     # populated at write time so stance-drift can read it instead of re-encoding

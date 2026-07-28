@@ -39,6 +39,10 @@ from chat.services.filter import check_content_sync
 User = get_user_model()
 SESSION_TTL_SECONDS = 60 * 60 * 12
 DEFAULT_AI_ASSIST_TIMEOUT_SECONDS = 2.0
+# Shown when the model fails the <reply> output contract twice in a row. Failing
+# closed costs the participant one retry prompt; failing open would leak the
+# model's internal judgment block and burn an experimental sample.
+CONTRACT_FALLBACK_TEXT = "系統忙碌中，請再說一次。"
 logger = logging.getLogger(__name__)
 
 # Emotion interception only fires when the message is aimed at the other person.
@@ -178,19 +182,29 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
         )
 
         agent = get_dialogue_agent(session_record["collection_name"])
-        full_response = ""
+        turn_id = saved_turn.id if saved_turn is not None else None
 
         try:
-            async for chunk in agent.astream_respond(session):
-                full_response += chunk
-                await self.send(
-                    json.dumps(
-                        {
-                            "type": "agent_stream",
-                            "content": chunk,
-                        }
-                    )
+            gate, contract_ok = await self._stream_gated_response(agent, session)
+            if not contract_ok:
+                # Fail closed: the gate never opened, so nothing reached the client.
+                # Retry the whole call once with a fresh gate before giving up.
+                logger.error(
+                    "Output contract violated (attempt 1) session=%s turn=%s "
+                    "buffer[:200]=%r",
+                    self.session_id,
+                    turn_id,
+                    gate.buffered_preview[:200],
                 )
+                gate, contract_ok = await self._stream_gated_response(agent, session)
+                if not contract_ok:
+                    logger.error(
+                        "Output contract violated after retry session=%s turn=%s "
+                        "buffer[:200]=%r",
+                        self.session_id,
+                        turn_id,
+                        gate.buffered_preview[:200],
+                    )
         except Exception:
             logger.exception(
                 "Dialogue stream failed for session %s with collection %s.",
@@ -200,11 +214,31 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
             await self._send_error("AI 回應中斷，請重試。")
             return
 
-        session.add_agent_message(full_response)
+        if contract_ok:
+            visible_reply = gate.reply
+            # judgment 區塊只進 DB 供研究分析，永不推送、永不回灌歷史。
+            judgment = gate.judgment
+        else:
+            # 絕不推送未開閘的緩衝內容；改推固定文案。
+            visible_reply = CONTRACT_FALLBACK_TEXT
+            await self.send(
+                json.dumps(
+                    {
+                        "type": "agent_stream",
+                        "content": visible_reply,
+                    }
+                )
+            )
+            # 原始輸出只留在這個非使用者可見的欄位，供事後檢視違約樣本。
+            judgment = gate.buffered_preview
+
+        session.add_agent_message(visible_reply)
         session_record["session"] = session.to_dict()
         await self._update_ai_conversation(
             saved_turn=saved_turn,
-            ai_response=full_response,
+            ai_response=visible_reply,
+            internal_judgment=judgment,
+            contract_violated=not contract_ok,
             dialogue_phase=session.dialogue_phase.value,
         )
         stance_drift = await self._update_session_stance_drift(session_record)
@@ -220,10 +254,45 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
                 {
                     "type": "agent_stream_end",
                     "stance_drift": stance_drift,
-                    "turn_id": saved_turn.id if saved_turn is not None else None,
+                    "turn_id": turn_id,
                 }
             )
         )
+
+    async def _stream_gated_response(self, agent, session):
+        """Run one API call through ReplyStreamGate.
+
+        Returns (gate, contract_ok). Only gate-approved text is ever sent to the
+        client: everything before <reply> and after </reply> is suppressed at
+        stream time, because the frontend renders each chunk as it arrives and
+        post-hoc stripping would be too late.
+        """
+        from apps.matching.services.ai_agent import ReplyStreamGate
+
+        gate = ReplyStreamGate()
+        async for chunk in agent.astream_respond(session):
+            visible = gate.feed(chunk)
+            if visible:
+                await self.send(
+                    json.dumps(
+                        {
+                            "type": "agent_stream",
+                            "content": visible,
+                        }
+                    )
+                )
+
+        tail, contract_ok = gate.finish()
+        if tail:
+            await self.send(
+                json.dumps(
+                    {
+                        "type": "agent_stream",
+                        "content": tail,
+                    }
+                )
+            )
+        return gate, contract_ok
 
     async def _get_session_record(self):
         from api.views import _restore_dialogue_session_record_for_user
@@ -301,14 +370,25 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
         saved_turn,
         ai_response: str,
         dialogue_phase: str,
+        internal_judgment: str = "",
+        contract_violated: bool = False,
     ):
         if saved_turn is None:
             return
 
         saved_turn.ai_response = ai_response
+        saved_turn.internal_judgment = internal_judgment
+        saved_turn.contract_violated = contract_violated
         saved_turn.dialogue_phase = dialogue_phase
         try:
-            await saved_turn.asave(update_fields=["ai_response", "dialogue_phase"])
+            await saved_turn.asave(
+                update_fields=[
+                    "ai_response",
+                    "internal_judgment",
+                    "contract_violated",
+                    "dialogue_phase",
+                ]
+            )
         except Exception:
             logger.exception(
                 "Failed to persist AI dialogue response session=%s user=%s.",
