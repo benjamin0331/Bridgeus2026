@@ -21,7 +21,7 @@ from api.models import (
     PostDialogueResponse,
     UserStanceProfile,
 )
-from api.views import _resolve_stance_category
+from api.display_settings import resolve_stance_category
 
 
 def unlock_timeline(user, kind, conversation_id):
@@ -398,19 +398,19 @@ class DialogueSessionApiTests(APITestCase):
 
     def test_stance_thresholds_classify_support_oppose_and_neutral(self):
         self.assertEqual(
-            _resolve_stance_category(topic_id=102, user_stance_score=4.51),
+            resolve_stance_category(topic_id=102, user_stance_score=4.51),
             "support",
         )
         self.assertEqual(
-            _resolve_stance_category(topic_id=102, user_stance_score=3.49),
+            resolve_stance_category(topic_id=102, user_stance_score=3.49),
             "oppose",
         )
         self.assertEqual(
-            _resolve_stance_category(topic_id=102, user_stance_score=3.5),
+            resolve_stance_category(topic_id=102, user_stance_score=3.5),
             "neutral",
         )
         self.assertEqual(
-            _resolve_stance_category(topic_id=102, user_stance_score=4.5),
+            resolve_stance_category(topic_id=102, user_stance_score=4.5),
             "neutral",
         )
 

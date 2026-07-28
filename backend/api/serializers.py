@@ -6,7 +6,7 @@ from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.contrib.auth.password_validation import validate_password as dj_validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 
-from apps.summary.models import ViewpointNode
+from apps.summary.models import VideoRecommendation, ViewpointNode
 
 from .dialogue_topics import get_dialogue_survey
 from .models import (
@@ -59,6 +59,7 @@ class ViewpointNodeReviewSerializer(serializers.ModelSerializer):
             "dialogue_id",
             "topic_id",
             "dimension",
+            "speaker_side",
             "stance_direction",
             "user_input_text",
             "ai_response_text",
@@ -78,6 +79,57 @@ class ViewpointNodeReviewSerializer(serializers.ModelSerializer):
 class ViewpointNodeReviewDecisionSerializer(serializers.Serializer):
     action = serializers.ChoiceField(choices=["approve", "reject"])
     notes = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class ViewpointHighlightSerializer(serializers.Serializer):
+    """知識庫首頁「熱門對話」卡片、以及「觀看更多」清單用的公開唯讀欄位——
+    只允許已通過人工審核（review_status=approved）的 ViewpointNode 走這條
+    序列化，見 views.KnowledgeBaseHighlightsView / KnowledgeBaseViewpointBrowseView。
+    不重用 ViewpointNodeReviewSerializer，因為那個是研究者審核用，會帶
+    user_input_text 等未經篩選的原始逐字稿。"""
+
+    id = serializers.IntegerField()
+    topic_id = serializers.IntegerField()
+    topic_title = serializers.CharField()
+    dimension = serializers.CharField()
+    dimension_name = serializers.CharField()
+    speaker_side = serializers.CharField(allow_blank=True)
+    stance_direction = serializers.CharField(allow_blank=True)
+    viewpoint_summary = serializers.CharField(allow_blank=True)
+    citation_count = serializers.IntegerField()
+    composite_score = serializers.FloatField(allow_null=True)
+    created_at = serializers.DateTimeField()
+
+
+class DialogueSummaryDetailSerializer(serializers.Serializer):
+    """知識庫「熱門對話」卡片點進去的對話紀錄——只回傳 DialogueSummary 已沉澱
+    的摘要欄位，不帶 ViewpointNode.user_input_text/ai_response_text 原始逐字
+    稿，避免把真實參與者的對話內容直接開放給任何登入使用者看。"""
+
+    dialogue_summary_id = serializers.IntegerField()
+    topic_id = serializers.IntegerField()
+    topic_title = serializers.CharField()
+    summary_text = serializers.CharField(allow_blank=True)
+    side_a_stance = serializers.CharField(allow_blank=True)
+    side_b_stance = serializers.CharField(allow_blank=True)
+    quality_score = serializers.FloatField(allow_null=True)
+    stance_shift_magnitude = serializers.FloatField(allow_null=True)
+    created_at = serializers.DateTimeField()
+    viewpoints = ViewpointHighlightSerializer(many=True)
+
+
+class VideoRecommendationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VideoRecommendation
+        fields = [
+            "id",
+            "title",
+            "url",
+            "thumbnail_url",
+            "description",
+            "topic_id",
+            "created_at",
+        ]
 
 
 class AIConversationSerializer(serializers.ModelSerializer):
@@ -118,6 +170,12 @@ class DialogueTopicSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=255)
     description = serializers.CharField(max_length=500)
     date = serializers.CharField(max_length=20)
+
+
+class DialogueTopicTrendingSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    title = serializers.CharField(max_length=255)
+    hits = serializers.IntegerField()
 
 
 class DialogueSurveyQuestionSerializer(serializers.Serializer):

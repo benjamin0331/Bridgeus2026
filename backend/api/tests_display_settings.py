@@ -278,47 +278,47 @@ class ThresholdOverrideAffectsStanceCategoryTests(TestCase):
     """
 
     def test_default_boundaries(self):
-        from api.views import _resolve_stance_category
+        from api.display_settings import resolve_stance_category
 
         self.assertEqual(
-            _resolve_stance_category(topic_id=102, user_stance_score=4.6), "support"
+            resolve_stance_category(topic_id=102, user_stance_score=4.6), "support"
         )
         self.assertEqual(
-            _resolve_stance_category(topic_id=102, user_stance_score=3.4), "oppose"
+            resolve_stance_category(topic_id=102, user_stance_score=3.4), "oppose"
         )
 
     def test_override_moves_boundaries(self):
-        from api.views import _resolve_stance_category
+        from api.display_settings import resolve_stance_category
 
         TopicDisplayOverride.objects.create(
             topic_id=102, support_threshold=5.5, oppose_threshold=2.5
         )
 
         self.assertEqual(
-            _resolve_stance_category(topic_id=102, user_stance_score=4.6), "neutral"
+            resolve_stance_category(topic_id=102, user_stance_score=4.6), "neutral"
         )
         self.assertEqual(
-            _resolve_stance_category(topic_id=102, user_stance_score=3.4), "neutral"
+            resolve_stance_category(topic_id=102, user_stance_score=3.4), "neutral"
         )
         self.assertEqual(
-            _resolve_stance_category(topic_id=102, user_stance_score=5.6), "support"
+            resolve_stance_category(topic_id=102, user_stance_score=5.6), "support"
         )
         self.assertEqual(
-            _resolve_stance_category(topic_id=102, user_stance_score=2.4), "oppose"
+            resolve_stance_category(topic_id=102, user_stance_score=2.4), "oppose"
         )
 
     def test_override_takes_effect_without_restart(self):
-        """_get_survey_scoring_config 不能加快取，否則改設定要重啟才生效。"""
-        from api.views import _resolve_stance_category
+        """get_survey_scoring_config 不能加快取，否則改設定要重啟才生效。"""
+        from api.display_settings import resolve_stance_category
 
         self.assertEqual(
-            _resolve_stance_category(topic_id=102, user_stance_score=4.6), "support"
+            resolve_stance_category(topic_id=102, user_stance_score=4.6), "support"
         )
 
         TopicDisplayOverride.objects.create(topic_id=102, support_threshold=5.5)
 
         self.assertEqual(
-            _resolve_stance_category(topic_id=102, user_stance_score=4.6), "neutral"
+            resolve_stance_category(topic_id=102, user_stance_score=4.6), "neutral"
         )
 
 

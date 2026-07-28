@@ -36,6 +36,14 @@ urlpatterns = [
         'summary/viewpoints/<int:pk>/review/',
         views.ViewpointReviewDecisionView.as_view(),
     ),
+    # 知識庫首頁：所有登入使用者都能看的公開內容
+    path('summary/viewpoints/highlights/', views.KnowledgeBaseHighlightsView.as_view()),
+    path('summary/viewpoints/browse/', views.KnowledgeBaseViewpointBrowseView.as_view()),
+    path(
+        'summary/viewpoints/<int:pk>/conversation/',
+        views.KnowledgeBaseConversationDetailView.as_view(),
+    ),
+    path('summary/videos/', views.VideoRecommendationListView.as_view()),
     path('accounts/', views.AccountListCreateView.as_view()),
     path('accounts/<int:pk>/', views.AccountDetailView.as_view()),
     path('accounts/<int:pk>/reset-password/', views.AccountPasswordResetView.as_view()),
@@ -45,6 +53,7 @@ urlpatterns = [
         views.DisplaySettingsTopicView.as_view(),
     ),
     path('dialogue/topics/', views.DialogueTopicListView.as_view()),
+    path('dialogue/topics/trending/', views.DialogueTopicTrendingView.as_view()),
     path(
         'dialogue/topics/<int:topic_id>/survey/',
         views.DialogueSurveyView.as_view(),

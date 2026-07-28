@@ -42,7 +42,15 @@ function Sidebar({ navigate, isTopicPage = false, isResearcher = false }) {
           >
             <img src="/Achievement.png" alt="" className="utility-icon" />
           </button>
-          <img src="/star.png" alt="Favorite" className="utility-icon" />
+          <button
+            className="sidebar-icon-btn"
+            type="button"
+            onClick={() => handleNavigate('/kb')}
+            aria-label="觀點知識庫"
+            title="觀點知識庫"
+          >
+            <img src="/star.png" alt="" className="utility-icon" />
+          </button>
           <button
             className="sidebar-icon-btn"
             type="button"

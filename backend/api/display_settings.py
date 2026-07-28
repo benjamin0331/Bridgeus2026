@@ -88,6 +88,54 @@ def visible_topics(*, is_researcher: bool) -> list[dict]:
     return topics
 
 
+def get_survey_scoring_config(topic_id: int) -> dict:
+    survey_config = get_dialogue_survey(topic_id) or {}
+    scale_config = survey_config.get("scale", {})
+    stance_rules = survey_config.get("stance_rules", {})
+    likert_questions = survey_config.get("questions", [])
+    # 門檻走覆寫層：Supervisor 在設定頁調過的值優先於 SURVEY_CONFIGS。
+    # 這裡刻意不加快取，否則改設定要重啟服務才生效。
+    support_threshold, oppose_threshold = get_stance_thresholds(topic_id=topic_id)
+
+    return {
+        "scale_min": int(scale_config.get("min", 1)),
+        "scale_max": int(scale_config.get("max", 7)),
+        "reverse_question_ids": {
+            str(question_id)
+            for question_id in stance_rules.get("reverse_question_ids", [])
+        },
+        "support_threshold": support_threshold,
+        "oppose_threshold": oppose_threshold,
+        "neutral_score": float(
+            (
+                float(scale_config.get("min", 1))
+                + float(scale_config.get("max", 7))
+            )
+            / 2
+        ),
+        "likert_question_ids": {
+            str(question["id"]) for question in likert_questions
+        },
+        "open_question_mappings": [
+            {
+                "id": question["id"],
+                "code": question["code"],
+            }
+            for question in survey_config.get("open_questions", [])
+        ],
+    }
+
+
+def resolve_stance_category(*, topic_id: int, user_stance_score: float) -> str:
+    scoring_config = get_survey_scoring_config(topic_id)
+
+    if user_stance_score > scoring_config["support_threshold"]:
+        return "support"
+    if user_stance_score < scoring_config["oppose_threshold"]:
+        return "oppose"
+    return "neutral"
+
+
 def get_entry_mode(*, is_researcher: bool) -> str:
     """這個角色的對話入口形式，回傳 "mixed" 或 "split"。"""
     setting = PlatformDisplaySetting.load()
