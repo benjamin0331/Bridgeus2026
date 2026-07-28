@@ -150,7 +150,10 @@ def test_concurrent_redeem_only_one_succeeds():
         assert GodotEntryTicket.objects.get(pk=ticket.pk).redeemed_at is not None
 
 
-def _service_client(token="svc-token"):
+_SERVICE_TOKEN = "svc-token"
+
+
+def _service_client(token=_SERVICE_TOKEN):
     client = APIClient()
     client.credentials(HTTP_X_GODOT_SERVICE_TOKEN=token)
     return client
@@ -174,16 +177,17 @@ def test_issue_endpoint_returns_ticket_with_real_jwt():
     response = client.post("/api/godot/tickets/", {}, format="json")
 
     assert response.status_code == 201
-    assert response.data["expires_in"] == TICKET_TTL_SECONDS
+    # expires_in 是從 ticket.expires_at 動態算出來的（用另一個 timezone.now() 呼叫），
+    # 跟建立當下的 TICKET_TTL_SECONDS 之間必然有微小、非負的時間差，所以只能給
+    # 容許範圍、不能斷言完全相等。
+    assert TICKET_TTL_SECONDS - 5 <= response.data["expires_in"] <= TICKET_TTL_SECONDS
     assert GodotEntryTicket.objects.get(token=response.data["ticket"]).user_id == user.id
 
 
-@override_settings(GODOT_SERVICE_TOKEN="svc-token")
+@override_settings(GODOT_SERVICE_TOKEN=_SERVICE_TOKEN)
 @pytest.mark.django_db
 def test_redeem_endpoint_returns_user_id():
     user = User.objects.create_user(username="u1", password="pw")
-    user.first_name = "彩希"
-    user.save(update_fields=["first_name"])
     ticket = issue_ticket(user=user)
 
     response = _service_client().post(
@@ -191,23 +195,10 @@ def test_redeem_endpoint_returns_user_id():
     )
 
     assert response.status_code == 200
-    assert response.data == {"user_id": user.id, "nickname": "彩希"}
+    assert response.data == {"user_id": user.id}
 
 
-@override_settings(GODOT_SERVICE_TOKEN="svc-token")
-@pytest.mark.django_db
-def test_redeem_endpoint_falls_back_to_username_when_no_first_name():
-    user = User.objects.create_user(username="u1", password="pw")
-    ticket = issue_ticket(user=user)
-
-    response = _service_client().post(
-        "/api/godot/tickets/redeem/", {"ticket": ticket.token}, format="json"
-    )
-
-    assert response.data["nickname"] == "u1"
-
-
-@override_settings(GODOT_SERVICE_TOKEN="svc-token")
+@override_settings(GODOT_SERVICE_TOKEN=_SERVICE_TOKEN)
 @pytest.mark.django_db
 def test_redeem_endpoint_rejects_wrong_service_token():
     user = User.objects.create_user(username="u1", password="pw")
@@ -221,7 +212,7 @@ def test_redeem_endpoint_rejects_wrong_service_token():
     assert GodotEntryTicket.objects.get(pk=ticket.pk).redeemed_at is None
 
 
-@override_settings(GODOT_SERVICE_TOKEN="svc-token")
+@override_settings(GODOT_SERVICE_TOKEN=_SERVICE_TOKEN)
 @pytest.mark.django_db
 def test_redeem_endpoint_ignores_stale_authorization_header():
     """authentication_classes 必須清空：預設的 JWTAuthentication 遇到壞掉的
@@ -230,7 +221,7 @@ def test_redeem_endpoint_ignores_stale_authorization_header():
     ticket = issue_ticket(user=user)
     client = APIClient()
     client.credentials(
-        HTTP_X_GODOT_SERVICE_TOKEN="svc-token",
+        HTTP_X_GODOT_SERVICE_TOKEN=_SERVICE_TOKEN,
         HTTP_AUTHORIZATION="Bearer garbage.token.value",
     )
 
@@ -242,7 +233,7 @@ def test_redeem_endpoint_ignores_stale_authorization_header():
     assert response.data["user_id"] == user.id
 
 
-@override_settings(GODOT_SERVICE_TOKEN="svc-token")
+@override_settings(GODOT_SERVICE_TOKEN=_SERVICE_TOKEN)
 @pytest.mark.django_db
 def test_redeem_endpoint_rejects_used_ticket():
     user = User.objects.create_user(username="u1", password="pw")
@@ -257,12 +248,12 @@ def test_redeem_endpoint_rejects_used_ticket():
     assert response.data == {"detail": "入場券無效。"}
 
 
-@override_settings(GODOT_SERVICE_TOKEN="svc-token")
+@override_settings(GODOT_SERVICE_TOKEN=_SERVICE_TOKEN)
 @pytest.mark.django_db
-def test_redeem_endpoint_rejects_missing_and_non_string_ticket():
-    for payload in ({}, {"ticket": ""}, {"ticket": 123}, {"ticket": None}):
-        response = _service_client().post(
-            "/api/godot/tickets/redeem/", payload, format="json"
-        )
-        assert response.status_code == 400, payload
-        assert response.data == {"detail": "入場券無效。"}, payload
+@pytest.mark.parametrize("payload", [{}, {"ticket": ""}, {"ticket": 123}, {"ticket": None}])
+def test_redeem_endpoint_rejects_missing_and_non_string_ticket(payload):
+    response = _service_client().post(
+        "/api/godot/tickets/redeem/", payload, format="json"
+    )
+    assert response.status_code == 400
+    assert response.data == {"detail": "入場券無效。"}

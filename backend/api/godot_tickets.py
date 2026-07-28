@@ -64,7 +64,7 @@ def redeem_ticket(*, token: str, now=None):
     是 False），沒有鎖卻也不報錯，一次性保證就這樣悄悄消失。專案預設走 postgres，
     但沒設 .env 的環境會退回 sqlite，CAS 在所有後端行為一致，不依賴這個假設。
     """
-    if not token:
+    if not isinstance(token, str) or not token:
         return None
 
     current_time = now if now is not None else timezone.now()

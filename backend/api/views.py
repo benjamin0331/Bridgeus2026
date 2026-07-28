@@ -67,7 +67,7 @@ from .display_settings import (
     visible_topics,
 )
 from .timeline_access import LOCKED_DETAIL, timeline_unlock_state
-from api.godot_tickets import TICKET_TTL_SECONDS, issue_ticket, redeem_ticket
+from .godot_tickets import issue_ticket, redeem_ticket
 from .serializers import (
     AccountCreateSerializer,
     AccountListSerializer,
@@ -3431,14 +3431,18 @@ class GodotTicketIssueView(APIView):
 
     回傳的 ticket 由 GodotLobby.jsx 塞進 iframe 的 window.bridgeus_ticket，
     Godot client 再交給 headless server 兌換（見 integration spec §5）。
+
+    券不做回收：一次入場一列，~60 人的研究規模下可接受；若日後對外開放要補一支
+    清理指令。
     """
 
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
         ticket = issue_ticket(user=request.user)
+        expires_in = int((ticket.expires_at - timezone.now()).total_seconds())
         return Response(
-            {"ticket": ticket.token, "expires_in": TICKET_TTL_SECONDS},
+            {"ticket": ticket.token, "expires_in": expires_in},
             status=status.HTTP_201_CREATED,
         )
 
@@ -3450,22 +3454,25 @@ class GodotTicketRedeemView(APIView):
     呼叫者是 Godot server、不是使用者，沒有也不該有 JWT。清空 authentication_classes
     是必要的：預設的 JWTAuthentication 遇到過期/損壞的 Authorization header 會
     直接丟 401，根本輪不到底下的服務金鑰驗證跑（同 GodotMatchRoomView）。
+
+    回應只有 user_id，不含任何顯示用名稱：username 在這個研究規模下可能就是
+    研究對象自己選的真名或學號，對話室本身也刻意隱藏身份（見
+    ANONYMOUS_MATCH_USER_NAME、MatchMessageSerializer.get_sender_name），沒有
+    理由把登入帳號的識別字串交給遊戲端。大廳日後若需要顯示名稱，應該從稱號系統
+    （/api/titles/me/）另外取，而不是從這裡。
     """
 
     authentication_classes = []
     permission_classes = [IsGodotServiceToken]
 
     def post(self, request):
-        token = request.data.get("ticket")
-        user = redeem_ticket(token=token) if isinstance(token, str) else None
+        user = redeem_ticket(token=request.data.get("ticket"))
         if user is None:
             # 不區分「不存在／已用過／逾期」——呼叫端用不到，區分了等於給探測者 oracle。
             return Response(
                 {"detail": "入場券無效。"}, status=status.HTTP_400_BAD_REQUEST
             )
-        return Response(
-            {"user_id": user.id, "nickname": user.first_name or user.username}
-        )
+        return Response({"user_id": user.id})
 
 
 class GodotMatchRoomView(APIView):
