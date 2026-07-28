@@ -14,6 +14,12 @@ var _occupancy := {}   # trunk_path:String -> peer_id:int（僅 server 使用）
 var _peer_users := {}   # peer_id:int -> 後端 user_id:int（僅 server 使用，不同步——
                         # 身份的真值只能放 server；任何 client 可寫的同步屬性都可冒充）
 var _ticket := ""       # client 端：join 前向宿主頁拉到的入場券，連上後遞給 server
+var _redeem_pending := {}   # peer_id -> session 序號；兌換 HTTP 在途中。
+                            # 節點要等 HTTP 回來才生，光靠 get_node_or_null 擋不住
+                            # 同幀連發（後端允許一人同時持有多張有效券）。
+var _redeem_seq := 0        # 單調遞增；用來分辨「同一個 peer id 的不同連線階段」——
+                            # 斷線後新 peer 可能拿到同一個 id，沒有這個序號的話
+                            # 上一位的兌換結果會被寫成新來者的身份。
 var _title_ids: Array = []   # 頭銜下拉選單 index → 後端 title_id（0 = 假頭銜，不回寫後端）
 
 @onready var host_btn = $CanvasLayer/UI_Root/HostButton
@@ -29,6 +35,7 @@ var _title_ids: Array = []   # 頭銜下拉選單 index → 後端 title_id（0 
 func _ready():
 	_resolve_connection_settings()
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
+	multiplayer.connection_failed.connect(_on_connection_failed)
 
 	# 常駐 headless server（見 godot-web-deployment-spec.md §4）：只跑連線與配對邏輯，
 	# 不代表任何玩家、不生自己的身體、不叫身份交接（沒有 window 可讀、也沒有真人要登入）。
@@ -76,6 +83,13 @@ func _is_dedicated_server() -> bool:
 	return "--server" in OS.get_cmdline_args() or DisplayServer.get_name() == "headless"
 
 func _start_dedicated_server() -> void:
+	# 正式部署漏設金鑰要顯性失敗。否則玩家連得上、走得動，只有配對時被告知
+	# 「請從主功能頁面進入」——那句話指向使用者不指向 ops，設定錯誤會被誤判成
+	# 使用者問題。dedicated server 沒有金鑰就等於不能建房，沒有存在意義。
+	if Backend.service_token == "":
+		push_error("[dedicated server] 未設定 GODOT_SERVICE_TOKEN，無法建立配對房間，拒絕啟動")
+		get_tree().quit(1)
+		return
 	var error = peer.create_server(DEFAULT_PORT)
 	if error != OK:
 		push_error("[dedicated server] 無法啟動 WebSocket 伺服器，錯誤碼：%d" % error)
@@ -154,6 +168,7 @@ func _on_join_pressed() -> void:
 	var error = peer.create_client(_ws_url)
 	if error != OK:
 		print("無法連接 WebSocket，錯誤碼：", error)
+		_ticket = ""   # 用完即丟，跟流程其他地方一致——連不上就別留著半用的券
 		return
 
 	multiplayer.multiplayer_peer = peer
@@ -179,22 +194,31 @@ func _on_connected_to_server() -> void:
 # 3. 遞券申請生成（只有 server 會處理）。取代舊的 request_spawn(id)——那個版本
 #    信任 client 自報的 id，可以冒名或洗版；現在 id 一律取 get_remote_sender_id()，
 #    身份一律由券兌換而來，client 沒有任何可自報的欄位。
-@rpc("any_peer", "call_local", "reliable")
+@rpc("any_peer", "reliable")
 func submit_ticket(ticket: String) -> void:
 	if not multiplayer.is_server():
 		return
 	var id = multiplayer.get_remote_sender_id()
-	if id == 0:
-		id = multiplayer.get_unique_id()   # call_local：host 自己
-	if get_node_or_null(str(id)) != null:
-		return   # 已有身體，防重複（重送 RPC 不會生第二個）
+	if get_node_or_null(str(id)) != null or _redeem_pending.has(id):
+		return   # 已有身體或兌換在途中，防重複——同一幀連送兩張有效券不能兩次都通過
 	# 本機開發 host（沒有服務金鑰）：無身份 spawn，純本地遊玩。
 	# 建房需要真實 user_id，_peer_users 沒有這個 peer → 坐木樁會被拒，正確。
 	if Backend.service_token == "":
 		_spawn_player(id)
 		return
 	# 正式（dedicated server）：券兌換成功才有身體，失敗就踢。
+	# session 序號防兩種競態：(1) 同一 peer 連送多張券導致重複 spawn——已被
+	# 上面的 _redeem_pending 擋住；(2) peer 斷線後同一個 id 被新來者重用，
+	# 舊那張券的兌換結果晚回來時不能寫成新來者的身份（見欄位宣告處註解）。
+	_redeem_seq += 1
+	var my_seq = _redeem_seq
+	_redeem_pending[id] = my_seq
 	Backend.redeem_ticket(ticket, func(user_id):
+		# 這期間 peer 可能已斷線（項目被 _on_peer_disconnected 清掉），
+		# 或斷線後有新 peer 拿到同一個 id（序號已被換掉）——兩種都不能寫入。
+		if _redeem_pending.get(id) != my_seq:
+			return
+		_redeem_pending.erase(id)
 		if user_id <= 0:
 			if multiplayer.multiplayer_peer and id in multiplayer.get_peers():
 				multiplayer.multiplayer_peer.disconnect_peer(id)
@@ -240,6 +264,15 @@ func request_issue_sync():
 func hide_buttons():
 	host_btn.hide()
 	join_btn.hide()
+
+# 連不上時把入口還給玩家。沒有這段的話按鈕已經被 hide_buttons() 藏起來，
+# 玩家只剩重整一途——而重整要再付一次 WASM 冷啟動。
+func _on_connection_failed() -> void:
+	multiplayer.multiplayer_peer = null
+	_ticket = ""
+	host_btn.visible = not OS.has_feature("web")
+	join_btn.show()
+	_notify("無法連線到伺服器，請稍後再試")
 
 # 空心跳：內容不重要，重點是「有資料在傳」讓代理層（Cloudflare）不判定閒置。
 @rpc("any_peer", "unreliable")
@@ -445,8 +478,8 @@ func _do_seat(peer_id: int, topic: String) -> void:
 			occupants.append(_occupancy[t])
 	if occupants.size() == 2 and occupants[0] != occupants[1]:
 		# 後端只在 server 端呼叫一次（兩位都打會建兩間房）。user_id 一律取自
-		# server 端身份表 _peer_users——不再讀 player 節點上的同步屬性，那個
-		# 欄位已移除（client 可寫的同步屬性＝可冒充的身份，見 spec §D2）。
+		# server 端身份表 _peer_users——不再讀 player 節點上的同步屬性，該欄位
+		# 於下一個 commit 移除（client 可寫的同步屬性＝可冒充的身份，見 spec §D2）。
 		var user_ids := []
 		for pid in occupants:
 			user_ids.append(_peer_users.get(pid, 0))
@@ -485,6 +518,7 @@ func _do_unseat(peer_id: int) -> void:
 func _on_peer_disconnected(id: int) -> void:
 	if multiplayer.is_server():
 		_peer_users.erase(id)   # 身份表跟著 peer 走；殘留會讓下一個拿到同 id 的人冒名
+		_redeem_pending.erase(id)   # 未決兌換也要跟著清；序號機制另外擋住晚到的回呼寫錯身份
 		_do_unseat(id)   # 等待中玩家斷線 → 釋放位子，別卡死配對
 		# 斷線（含直接關分頁——WS 連線只是被動掉線，沒有任何「離開」訊號）不會
 		# 自動清掉這個人的角色：MultiplayerSpawner 只有 server 端 queue_free()

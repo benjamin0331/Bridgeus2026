@@ -82,9 +82,6 @@ func _ready():
 	var spawn = get_parent().get_node_or_null("SpawnPoint")
 	if spawn:
 		position = spawn.position
-	# 後端 user id：同理必須由 authority 自己設（見上方欄位註解），才能透過
-	# synchronizer 正確同步給其他 peer；guest 測試帳號沒有對應 id，維持 0。
-	backend_user_id = Backend.user_id
 	# 隨機外觀：數 SpriteFrames 裡有幾個 char_N_idle（加新角色不用改這裡），擲一個。
 	var count = 0
 	for n in $AnimatedSprite2D.sprite_frames.get_animation_names():
