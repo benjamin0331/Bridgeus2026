@@ -10,3 +10,27 @@
   border: 0;
   flex: 1;
 }
+
+.godot-lobby--empty {
+  align-items: center;
+  justify-content: center;
+}
+
+.godot-lobby-notice {
+  max-width: 460px;
+  margin: auto;
+  padding: 28px 32px;
+  border: 1px solid rgba(141, 112, 88, 0.2);
+  border-radius: 18px;
+  background: #fbf8f3;
+  color: #6f655a;
+  text-align: center;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.godot-lobby-notice h2 {
+  margin: 0 0 10px;
+  color: #8d7058;
+  font-size: 19px;
+}
