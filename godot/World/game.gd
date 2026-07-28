@@ -507,21 +507,44 @@ func _do_seat(peer_id: int, topic: String) -> void:
 		# 漏網情況——送出 [0, 0] 讓後端 400 之後無聲無息，不如明確拒絕並釋放座位。
 		if user_ids.has(0):
 			for pid in occupants:
-				if pid == multiplayer.get_unique_id():
-					seat_denied("配對需要正式登入身份，請從主功能頁面進入")
-				else:
-					seat_denied.rpc_id(pid, "配對需要正式登入身份，請從主功能頁面進入")
-				_do_unseat(pid)
+				_seat_deny_and_unseat(pid, "配對需要正式登入身份，請從主功能頁面進入")
 			return
-		Backend.request_topic_match(topic, user_ids)
-		for pid in occupants:
-			# rpc_id 對自己(host)不會本地執行 → 目標是自己時直接呼叫。
-			if pid == multiplayer.get_unique_id():
-				match_found()
-			else:
-				match_found.rpc_id(pid)
-		# 配對成功、交給後端導去網頁聊天室後，把這兩位的人物清掉、還原木樁。
-		_finish_match(topic, occupants)
+		# 同一位使用者開兩個分頁會兌換成兩個 peer、同一個 user_id。後端會 400
+		# （user_ids 相同的檢查），但在這裡先擋，訊息才說得清楚（見 spec §7.1.1）。
+		if user_ids[0] == user_ids[1]:
+			for pid in occupants:
+				_seat_deny_and_unseat(pid, "不能與自己配對，請關閉多餘的分頁")
+			return
+		# 建房是非同步 HTTP：成功才通知配對成立、清人還原木樁；失敗把兩位放回
+		# 可重試的狀態。原本「發完就不管」在後端失敗時照樣刪角色，玩家停在沒有
+		# 身體也沒有按鈕的空世界（code review 問題 3）。
+		# occupants 要複製一份給閉包：HTTP 回來之前 _occupancy 可能已被斷線改動。
+		var occupants_for_cb := occupants.duplicate()
+		Backend.request_topic_match(topic, user_ids, func(code, data):
+			if code != 200 and code != 201:
+				for pid in occupants_for_cb:
+					_seat_deny_and_unseat(pid, "配對建立失敗，請稍後再試")
+				return
+			var room_id: String = str(data.get("room_id", ""))
+			var topic_id: int = int(data.get("topic_id", 0))
+			for pid in occupants_for_cb:
+				# rpc_id 對自己(host)不會本地執行 → 目標是自己時直接呼叫。
+				if pid == multiplayer.get_unique_id():
+					match_found(topic_id, room_id)
+				else:
+					match_found.rpc_id(pid, topic_id, room_id)
+			# 配對成功、交給後端導去網頁聊天室後，把這兩位的人物清掉、還原木樁。
+			_finish_match(topic, occupants_for_cb)
+		)
+
+# server-only：拒絕並退座一位玩家（訊息 + 座位釋放）。配對的各種失敗路徑共用，
+# 免得「rpc_id 對自己不會本地執行」的分支寫三遍。
+func _seat_deny_and_unseat(pid: int, msg: String) -> void:
+	if pid == multiplayer.get_unique_id():
+		seat_denied(msg)
+	else:
+		seat_denied.rpc_id(pid, msg)
+	_do_unseat(pid)
 
 # server-only：釋放該 peer 的座位。
 func _do_unseat(peer_id: int) -> void:
@@ -588,11 +611,24 @@ func apply_unseat(peer_id: int, trunk_path: String) -> void:
 	if peer_id == multiplayer.get_unique_id():
 		_show_waiting(false)
 
-# 只有配對到的兩位收到：關等待視窗、提示（真正跳轉聊天室由後端接手）。
+# 只有配對到的兩位收到：關等待視窗、通知宿主頁跳轉到配對聊天室。
+# topic_id/room_id 來自後端建房回應（server 轉發，client 不能自己編）。
 @rpc("authority", "reliable")
-func match_found() -> void:
+func match_found(topic_id: int, room_id: String) -> void:
 	_show_waiting(false)
-	_notify("配對成功，準備進入聊天室…")
+	_notify("配對成功，正在前往聊天室…")
+	if OS.has_feature("web") and topic_id > 0:
+		# 用 JSON.stringify 組 payload：room_id 是後端 uuid4().hex（僅 [0-9a-f]），
+		# 但不靠這個假設——經過序列化就不存在字串拼接的跳脫問題。
+		# targetOrigin 用當前 origin：iframe 與宿主頁同源（部署拓樸如此），
+		# 不用 '*'，訊息不會漏給其他來源的視窗。
+		var payload := JSON.stringify({
+			"type": "bridgeus_match",
+			"topic_id": topic_id,
+			"room_id": room_id,
+		})
+		JavaScriptBridge.eval(
+			"window.parent.postMessage(%s, window.location.origin)" % payload, true)
 
 @rpc("authority", "reliable")
 func seat_denied(msg: String) -> void:
