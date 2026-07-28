@@ -20,12 +20,6 @@ var issue_body := ""
 # 因為新議題的後端 id 要等作者的 backend POST 回來才知道。0 = 未知/未存後端。
 var backend_issue_id: int = 0
 
-# 後端 user id（M3 配對建房需要，見 game.gd _do_seat 與 Backend.gd request_topic_match）。
-# 由 authority 在 _ready() 從 Backend.user_id 帶入；透過 MultiplayerSynchronizer 同步
-# （spawn=true，晚進的人也拿得到），這樣 server 端才查得到「這個 peer 對應哪個後端使用者」。
-# guest_login 測試帳號沒有對應 id，會是 0——只在本機測試情境出現，正式流程不會。
-var backend_user_id: int = 0
-
 # 頭上的表情回復（權威＝議題作者持有）。廣播與補送方式與議題相同：
 # apply_reactions() 廣播給連線中的人，request_issue_sync 補送給晚進者。
 # 公開（無底線）因為 game.gd 要讀它做補送，跟 issue_title/banner_text 一致。
