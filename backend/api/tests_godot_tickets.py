@@ -257,3 +257,12 @@ def test_redeem_endpoint_rejects_missing_and_non_string_ticket(payload):
     )
     assert response.status_code == 400
     assert response.data == {"detail": "入場券無效。"}
+
+
+@pytest.mark.django_db
+def test_guest_login_endpoint_is_gone():
+    """訪客登入會產生無主帳號（user_id 對不到真實受試者），已移除。
+    見 integration spec §5.4。"""
+    response = APIClient().post("/api/guest/", {"nickname": "訪客"}, format="json")
+
+    assert response.status_code == 404

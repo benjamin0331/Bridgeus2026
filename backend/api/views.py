@@ -1,7 +1,6 @@
 import logging
 import os
 import re
-import uuid as _uuid_mod
 from decimal import Decimal
 from difflib import SequenceMatcher
 from functools import lru_cache
@@ -18,7 +17,6 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTStatelessUserAuthentication
-from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from apps.matching.services.semantic import build_q9_embedding
@@ -3242,25 +3240,6 @@ class PlatformFeedbackView(APIView):
 
         out = PlatformFeedbackOutputSerializer(feedback)
         return Response(out.data, status=status.HTTP_201_CREATED)
-class GuestLoginView(APIView):
-    permission_classes = [permissions.AllowAny]
-
-    def post(self, request):
-        nickname = (request.data.get("nickname") or "Guest")[:30]
-        username = f"guest_{_uuid_mod.uuid4().hex[:8]}"
-        user = User.objects.create_user(username=username, password=None)
-        user.first_name = nickname
-        user.save(update_fields=["first_name"])
-        refresh = RefreshToken.for_user(user)
-        return Response(
-            {
-                "access": str(refresh.access_token),
-                "refresh": str(refresh),
-                "user_id": user.id,
-                "username": username,
-            },
-            status=status.HTTP_201_CREATED,
-        )
 
 
 class IssueListCreateView(APIView):
