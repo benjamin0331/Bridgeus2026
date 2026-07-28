@@ -5,6 +5,7 @@ Run from backend/:
     pytest api/tests_godot_tickets.py -v
 """
 import threading
+import uuid
 from datetime import timedelta
 
 import pytest
@@ -26,7 +27,7 @@ def test_issue_ticket_creates_unredeemed_ticket_with_ttl():
 
     assert ticket.user_id == user.id
     assert ticket.redeemed_at is None
-    assert len(ticket.token) >= 32
+    assert len(ticket.token) == 43  # token_urlsafe(32) 固定產出 43 字元；長度不等於熵，這裡只是釘住格式
     delta = ticket.expires_at - timezone.now()
     assert timedelta(seconds=TICKET_TTL_SECONDS - 5) < delta <= timedelta(
         seconds=TICKET_TTL_SECONDS
@@ -76,6 +77,25 @@ def test_redeem_expired_ticket_fails():
 
 
 @pytest.mark.django_db
+def test_redeem_with_now_before_expiry_succeeds():
+    """釘住 redeem_ticket 的 now 參數確實是過期判斷用的那個時間點。"""
+    user = User.objects.create_user(username="u1", password="pw")
+    ticket = issue_ticket(user=user)
+
+    past = ticket.expires_at - timedelta(seconds=1)
+    assert redeem_ticket(token=ticket.token, now=past) is not None
+
+
+@pytest.mark.django_db
+def test_redeem_with_now_after_expiry_fails():
+    user = User.objects.create_user(username="u1", password="pw")
+    ticket = issue_ticket(user=user)
+
+    future = ticket.expires_at + timedelta(seconds=1)
+    assert redeem_ticket(token=ticket.token, now=future) is None
+
+
+@pytest.mark.django_db
 def test_redeem_unknown_token_fails():
     assert redeem_ticket(token="does-not-exist") is None
 
@@ -89,27 +109,39 @@ def test_redeem_empty_token_fails():
 def test_concurrent_redeem_only_one_succeeds():
     """兩個 peer 同時送同一張券，只能有一個拿到身份。
 
-    一次性語意靠 select_for_update 的行鎖保證；沒有鎖的話兩邊都會讀到
-    redeemed_at is None 而同時成功。需要 transaction=True 才有真實的 commit 邊界。
+    一次性語意靠 filter().update() 的 compare-and-swap 保證原子性；沒有 CAS 的話
+    兩邊都可能讀到 redeemed_at is None 而同時成功。需要 transaction=True 才有真實的
+    commit 邊界。
+
+    barrier 只保證兩條執行緒同時「起跑」，不保證同時「執行到臨界區」——排程器仍然
+    可能讓其中一條先跑完，這樣即使原子性被拿掉，測試也可能因為運氣好而通過。用 20
+    次迭代把這個機率壓低，讓迴歸有很高機率被抓到。
     """
-    user = User.objects.create_user(username="u1", password="pw")
-    ticket = issue_ticket(user=user)
-    results = []
-    barrier = threading.Barrier(2)
+    for _ in range(20):
+        user = User.objects.create_user(username=f"u{uuid.uuid4().hex}", password="pw")
+        ticket = issue_ticket(user=user)
+        results = []
+        errors = []
+        barrier = threading.Barrier(2)
 
-    def worker():
-        try:
-            barrier.wait()
-            results.append(redeem_ticket(token=ticket.token))
-        finally:
-            connection.close()
+        def worker():
+            try:
+                barrier.wait(timeout=5)
+                results.append(redeem_ticket(token=ticket.token))
+            except Exception as exc:  # noqa: BLE001 - 蒐集起來在主執行緒重新拋出
+                errors.append(exc)
+            finally:
+                connection.close()
 
-    threads = [threading.Thread(target=worker) for _ in range(2)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
 
-    assert len(results) == 2
-    assert sum(1 for result in results if result is not None) == 1
-    assert GodotEntryTicket.objects.get(pk=ticket.pk).redeemed_at is not None
+        if errors:
+            raise errors[0]
+
+        assert len(results) == 2
+        assert sum(1 for result in results if result is not None) == 1
+        assert GodotEntryTicket.objects.get(pk=ticket.pk).redeemed_at is not None
