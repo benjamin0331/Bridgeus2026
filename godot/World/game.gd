@@ -11,6 +11,7 @@ const _TOPIC_TRUNKS := {
 	"women_soldier": ["Entities/R_1", "Entities/R_2"],
 }
 var _occupancy := {}   # trunk_path:String -> peer_id:int（僅 server 使用）
+var _matching_topics := {}   # topic:String -> true，建房 HTTP 在途中；防插隊與重入
 var _peer_users := {}   # peer_id:int -> 後端 user_id:int（僅 server 使用，不同步——
                         # 身份的真值只能放 server；任何 client 可寫的同步屬性都可冒充）
 var _ticket := ""       # client 端：join 前向宿主頁拉到的入場券，連上後遞給 server
@@ -468,14 +469,16 @@ func _do_seat(peer_id: int, topic: String) -> void:
 		return   # 沒有身體（沒走過 submit_ticket）就沒有坐的資格，靜默忽略
 	if Backend.service_token != "" and not _peer_users.has(peer_id):
 		# 正式模式下沒有已驗證身份 → 明確拒絕請求者本人，不動別人的座位。
-		if peer_id == multiplayer.get_unique_id():
-			seat_denied("配對需要正式登入身份，請從主功能頁面進入")
-		else:
-			seat_denied.rpc_id(peer_id, "配對需要正式登入身份，請從主功能頁面進入")
+		_seat_notify(peer_id, "配對需要正式登入身份，請從主功能頁面進入")
 		return
 	if _occupancy.values().has(peer_id):
 		return   # 不可同時佔兩個座位
 	var trunks: Array = _TOPIC_TRUNKS.get(topic, [])
+	if _matching_topics.has(topic):
+		# 這個議題正在建房（HTTP 在途）。此時讓人插隊坐上空出來的樁，會導致
+		# 回呼的座位驗證失敗、連帶把已經配對成功的另一位也退掉。擋在門口乾淨得多。
+		_seat_notify(peer_id, "這個議題正在配對中，請稍候再試")
+		return
 	var free_trunk := ""
 	for t in trunks:
 		if not _occupancy.has(t):
@@ -483,10 +486,7 @@ func _do_seat(peer_id: int, topic: String) -> void:
 			break
 	if free_trunk == "":
 		# rpc_id 對自己(host)不會本地執行 → 目標是自己時直接呼叫。
-		if peer_id == multiplayer.get_unique_id():
-			seat_denied("位置已滿")
-		else:
-			seat_denied.rpc_id(peer_id, "位置已滿")
+		_seat_notify(peer_id, "位置已滿")
 		return
 	_occupancy[free_trunk] = peer_id
 	apply_seat.rpc(peer_id, free_trunk)
@@ -496,55 +496,88 @@ func _do_seat(peer_id: int, topic: String) -> void:
 		if _occupancy.has(t):
 			occupants.append(_occupancy[t])
 	if occupants.size() == 2 and occupants[0] != occupants[1]:
-		# 後端只在 server 端呼叫一次（兩位都打會建兩間房）。user_id 一律取自
-		# server 端身份表 _peer_users——不再讀 player 節點上的同步屬性，該欄位
-		# 於下一個 commit 移除（client 可寫的同步屬性＝可冒充的身份，見 spec §D2）。
-		var user_ids := []
-		for pid in occupants:
-			user_ids.append(_peer_users.get(pid, 0))
-		# 縱深防禦第二道：主要防線已在 _do_seat 開頭擋掉沒身份的請求者，正常情況
-		# 不該走到這裡；留著是防本機開發模式（兩邊都沒身份仍會湊成一對）或任何
-		# 漏網情況——送出 [0, 0] 讓後端 400 之後無聲無息，不如明確拒絕並釋放座位。
-		if user_ids.has(0):
-			for pid in occupants:
-				_seat_deny_and_unseat(pid, "配對需要正式登入身份，請從主功能頁面進入")
-			return
-		# 同一位使用者開兩個分頁會兌換成兩個 peer、同一個 user_id。後端會 400
-		# （user_ids 相同的檢查），但在這裡先擋，訊息才說得清楚（見 spec §7.1.1）。
-		if user_ids[0] == user_ids[1]:
-			for pid in occupants:
-				_seat_deny_and_unseat(pid, "不能與自己配對，請關閉多餘的分頁")
-			return
-		# 建房是非同步 HTTP：成功才通知配對成立、清人還原木樁；失敗把兩位放回
-		# 可重試的狀態。原本「發完就不管」在後端失敗時照樣刪角色，玩家停在沒有
-		# 身體也沒有按鈕的空世界（code review 問題 3）。
-		# occupants 要複製一份給閉包：HTTP 回來之前 _occupancy 可能已被斷線改動。
-		var occupants_for_cb := occupants.duplicate()
-		Backend.request_topic_match(topic, user_ids, func(code, data):
-			if code != 200 and code != 201:
-				for pid in occupants_for_cb:
-					_seat_deny_and_unseat(pid, "配對建立失敗，請稍後再試")
-				return
-			var room_id: String = str(data.get("room_id", ""))
-			var topic_id: int = int(data.get("topic_id", 0))
-			for pid in occupants_for_cb:
-				# rpc_id 對自己(host)不會本地執行 → 目標是自己時直接呼叫。
-				if pid == multiplayer.get_unique_id():
-					match_found(topic_id, room_id)
-				else:
-					match_found.rpc_id(pid, topic_id, room_id)
-			# 配對成功、交給後端導去網頁聊天室後，把這兩位的人物清掉、還原木樁。
-			_finish_match(topic, occupants_for_cb)
-		)
+		_try_start_match(topic, occupants)
 
-# server-only：拒絕並退座一位玩家（訊息 + 座位釋放）。配對的各種失敗路徑共用，
-# 免得「rpc_id 對自己不會本地執行」的分支寫三遍。
-func _seat_deny_and_unseat(pid: int, msg: String) -> void:
+# server-only：只送拒絕訊息，不動座位（用於還沒坐上就被擋下的請求）。
+# 順手擋掉已離線的 peer——rpc_id 給不存在的 peer 會在 server log 噴錯。
+func _seat_notify(pid: int, msg: String) -> void:
 	if pid == multiplayer.get_unique_id():
 		seat_denied(msg)
-	else:
+	elif pid in multiplayer.get_peers():
 		seat_denied.rpc_id(pid, msg)
+
+# server-only：拒絕並退座一位玩家。配對的各種失敗路徑共用，
+# 免得「rpc_id 對自己不會本地執行」的分支寫三遍。
+func _seat_deny_and_unseat(pid: int, msg: String) -> void:
+	_seat_notify(pid, msg)
 	_do_unseat(pid)
+
+# server-only：兩根木樁都坐滿 → 驗證 → 標記在途 → 非同步建房。
+func _try_start_match(topic: String, occupants: Array) -> void:
+	# 後端只在 server 端呼叫一次（兩位都打會建兩間房）。user_id 一律取自
+	# server 端身份表 _peer_users——不讀 player 節點上的同步屬性（client 可寫
+	# 的同步屬性＝可冒充的身份，見 spec §D2）。
+	var user_ids := []
+	for pid in occupants:
+		user_ids.append(_peer_users.get(pid, 0))
+	# 縱深防禦第二道：主要防線已在 _do_seat 開頭擋掉沒身份的請求者，正常情況
+	# 不該走到這裡；留著是防本機開發模式（兩邊都沒身份仍會湊成一對）或任何漏網。
+	if user_ids.has(0):
+		# 正式環境走到這裡代表部署設定有問題（GODOT_SERVICE_TOKEN 未設或兌換失敗），
+		# 但玩家看到的訊息是「請重新登入」——會讓所有人白白重登。要留給 ops 一個信號。
+		push_warning("配對中止：peer 缺少已驗證身份 user_ids=%s" % [user_ids])
+		for pid in occupants:
+			_seat_deny_and_unseat(pid, "配對需要正式登入身份，請從主功能頁面進入")
+		return
+	# 同一位使用者開兩個分頁會兌換成兩個 peer、同一個 user_id。後端會 400
+	# （user_ids 相同的檢查），但在這裡先擋，訊息才說得清楚（見 spec §7.1.1）。
+	if user_ids[0] == user_ids[1]:
+		for pid in occupants:
+			_seat_deny_and_unseat(pid, "不能與自己配對，請關閉多餘的分頁")
+		return
+	_matching_topics[topic] = true
+	Backend.request_topic_match(topic, user_ids, _on_match_room_created.bind(topic, occupants))
+
+# server-only：建房 HTTP 回來。注意 Callable.bind() 是把參數接在**後面**，
+# 所以 request_topic_match 呼叫 callback.call(code, data) 之後，簽名是
+# (code, data, topic, occupants)。
+func _on_match_room_created(code: int, data: Dictionary, topic: String, occupants: Array) -> void:
+	_matching_topics.erase(topic)
+	if code != 200 and code != 201:
+		push_error("配對建房失敗 code=%d" % code)
+		for pid in occupants:
+			_seat_deny_and_unseat(pid, "配對建立失敗，請稍後再試")
+		return
+	var room_id: String = str(data.get("room_id", ""))
+	var topic_id: int = int(data.get("topic_id", 0))
+	if room_id == "" or topic_id <= 0:
+		# 2xx 但沒有房間資訊（舊版部署、代理攔截、契約改動）。不能往下走：
+		# _finish_match 會刪掉兩位的身體，玩家又回到沒有身體的空世界。
+		push_error("配對建房回應缺少 room_id/topic_id，視為失敗：%s" % [data])
+		for pid in occupants:
+			_seat_deny_and_unseat(pid, "配對建立失敗，請稍後再試")
+		return
+	# 座位重新驗證：HTTP 在途期間有人按取消或斷線的話，peer id 早就不代表座位了。
+	# 只有「現在誰坐在這個議題的樁上」才是真的。
+	var seated := []
+	for t in _TOPIC_TRUNKS[topic]:
+		if _occupancy.has(t):
+			seated.append(_occupancy[t])
+	for pid in occupants:
+		if not seated.has(pid):
+			# 這一對已經不成立。還坐著的那位退座重來，不要把他單方面送進房間。
+			for other in occupants:
+				if seated.has(other):
+					_seat_deny_and_unseat(other, "對方已取消配對，請重新選擇")
+			return
+	for pid in occupants:
+		# rpc_id 對自己(host)不會本地執行 → 目標是自己時直接呼叫。
+		if pid == multiplayer.get_unique_id():
+			match_found(topic_id, room_id)
+		elif pid in multiplayer.get_peers():
+			match_found.rpc_id(pid, topic_id, room_id)
+	# 配對成功、交給後端導去網頁聊天室後，把這兩位的人物清掉、還原木樁。
+	_finish_match(topic, occupants)
 
 # server-only：釋放該 peer 的座位。
 func _do_unseat(peer_id: int) -> void:
@@ -574,9 +607,12 @@ func _on_peer_disconnected(id: int) -> void:
 # ponytail: 原型固定 2 人；正式版若要支援重連/回主世界，這裡再改成別的善後。
 func _finish_match(topic: String, peer_ids: Array) -> void:
 	await get_tree().create_timer(1.5).timeout
+	# 只清這兩位實際佔著的樁，不是整個議題的——這 1.5 秒內若有第三位玩家坐上
+	# 空出來的樁，無條件清空會把他的座位一起清掉（人還坐著、樁卻顯示是空的）。
 	for t in _TOPIC_TRUNKS[topic]:
-		_occupancy.erase(t)
-		clear_trunk.rpc(t)
+		if _occupancy.has(t) and peer_ids.has(_occupancy[t]):
+			_occupancy.erase(t)
+			clear_trunk.rpc(t)
 	for pid in peer_ids:
 		var p = get_node_or_null(str(pid))
 		if p:
