@@ -28,7 +28,14 @@ def _make_users():
 
 
 def _godot_match(user_a, user_b, *, topic_id=102, room_id="room-adj",
-                 deadline_offset_seconds=300):
+                 deadline_offset_seconds=3600):
+    """建一間跟 GodotMatchRoomView 產出形狀相同的 Godot 綁定房。
+
+    預設期限刻意給得比正式的 300 秒寬鬆很多：測試裡的 _submit_survey 會實際跑
+    embedding 模型，機器負載高時單一測試可能耗掉數分鐘。用 300 秒的話，期限會在
+    測試執行途中真的到期，裁決正確地把房作廢，測試卻是因為時鐘而不是因為邏輯失敗
+    ——曾經因此看過四個原本綠燈的測試同時變紅。要驗逾時行為的測試一律自己傳負值。
+    """
     return DialogueMatch.objects.create(
         topic_id=topic_id,
         user_a=user_a,
@@ -394,3 +401,90 @@ def test_normal_match_room_is_not_gated():
     response = client.get(f"/api/matching/rooms/{match.room_id}/messages/")
 
     assert response.status_code == 200
+
+
+@pytest.mark.django_db
+def test_command_cancels_expired_unattended_room():
+    from django.core.management import call_command
+
+    user_a, user_b = _make_users()
+    match = _godot_match(
+        user_a, user_b, room_id="room-cmd-1", deadline_offset_seconds=-60
+    )
+
+    call_command("close_expired_godot_matches")
+
+    match.refresh_from_db()
+    assert match.status == DialogueMatch.Status.CANCELLED
+    assert match.stats["binding"]["cancel_reason"] == "godot_survey_timeout"
+
+
+@pytest.mark.django_db
+def test_command_dry_run_writes_nothing():
+    from django.core.management import call_command
+
+    user_a, user_b = _make_users()
+    match = _godot_match(
+        user_a, user_b, room_id="room-cmd-2", deadline_offset_seconds=-60
+    )
+
+    call_command("close_expired_godot_matches", "--dry-run")
+
+    match.refresh_from_db()
+    assert match.status == DialogueMatch.Status.ACTIVE
+
+
+@pytest.mark.django_db
+def test_command_leaves_rooms_within_deadline():
+    from django.core.management import call_command
+
+    user_a, user_b = _make_users()
+    match = _godot_match(user_a, user_b, room_id="room-cmd-3")
+
+    call_command("close_expired_godot_matches")
+
+    match.refresh_from_db()
+    assert match.status == DialogueMatch.Status.ACTIVE
+
+
+@pytest.mark.django_db
+def test_command_leaves_completed_rooms_alone():
+    """雙方都填完的房已經在對話了，逾期與否都不該被指令收掉。"""
+    from django.core.management import call_command
+
+    user_a, user_b = _make_users()
+    match = _godot_match(user_a, user_b, room_id="room-cmd-4")
+    _submit_survey(user_a, SUPPORT_ANSWERS)
+    _submit_survey(user_b, OPPOSE_ANSWERS)
+    # 兩人都填完之後才讓期限過期（順序不能反：一開始就過期的話，第一個人
+    # 送出時裁決就會正確地把房收掉，第二個人根本送不進來）。
+    match.refresh_from_db()
+    stats = dict(match.stats)
+    binding = dict(stats["binding"])
+    binding["survey_deadline"] = (timezone.now() - timedelta(seconds=60)).isoformat()
+    stats["binding"] = binding
+    match.stats = stats
+    match.save(update_fields=["stats"])
+
+    call_command("close_expired_godot_matches")
+
+    match.refresh_from_db()
+    assert match.status == DialogueMatch.Status.ACTIVE
+
+
+@pytest.mark.django_db
+def test_command_leaves_normal_matches_alone():
+    """一般配對房沒有 binding，不在這支指令的管轄範圍。"""
+    from django.core.management import call_command
+
+    user_a, user_b = _make_users()
+    match = DialogueMatch.objects.create(
+        topic_id=102, user_a=user_a, user_b=user_b,
+        user_a_score=5, user_b_score=3,
+        room_id="room-cmd-normal", status=DialogueMatch.Status.ACTIVE,
+    )
+
+    call_command("close_expired_godot_matches")
+
+    match.refresh_from_db()
+    assert match.status == DialogueMatch.Status.ACTIVE

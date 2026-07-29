@@ -64,7 +64,12 @@ def test_score_check_constraint_still_rejects_out_of_range():
 
 
 def _godot_match(user_a, user_b, *, topic_id=102, room_id="room-binding"):
-    """建一間跟 GodotMatchRoomView 產出形狀相同的房（含 binding stats）。"""
+    """建一間跟 GodotMatchRoomView 產出形狀相同的房（含 binding stats）。
+
+    期限給 3600 秒而不是正式的 300：這裡的測試會實際跑 embedding 模型，機器負載
+    高時可能耗掉數分鐘，用 300 秒的話期限會在測試途中真的到期、裁決正確地把房
+    作廢，測試卻是因為時鐘而不是因為邏輯而失敗。
+    """
     return DialogueMatch.objects.create(
         topic_id=topic_id,
         user_a=user_a,
@@ -76,7 +81,7 @@ def _godot_match(user_a, user_b, *, topic_id=102, room_id="room-binding"):
             "binding": {
                 "source": "godot",
                 "survey_deadline": (
-                    timezone.now() + timedelta(seconds=300)
+                    timezone.now() + timedelta(seconds=3600)
                 ).isoformat(),
             }
         },
