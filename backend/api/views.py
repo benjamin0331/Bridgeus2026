@@ -762,6 +762,24 @@ def _godot_binding_fields(
     }
 
 
+def _godot_pretest_incomplete_response(match):
+    """Godot 綁定房在雙方前測完成前不得進聊天室；未完成回 Response，完成或
+    非綁定房回 None。
+
+    前端已有 isMatchChatReady 擋著，但那只是 UI——繞過它（直接打 API 或開 WS）
+    就能在前測資料齊全前產生對話文字，研究資料上會出現「對話早於 s_pre」的紀錄。
+    把關要在後端。
+    """
+    if godot_binding_info(match) is None:
+        return None
+    if match_pretest_state(match)["both_done"]:
+        return None
+    return Response(
+        {"detail": "雙方都完成前測問卷後才能開始對話。"},
+        status=status.HTTP_409_CONFLICT,
+    )
+
+
 def _build_matching_state_payload(*, topic_id: int, state, user_id: int) -> dict:
     queue_entry = state.queue_entry
     match = state.match
@@ -2910,6 +2928,9 @@ class MatchingRoomMessagesView(APIView):
                 {"detail": "找不到這個配對房間。"},
                 status=status.HTTP_404_NOT_FOUND,
             )
+        gate = _godot_pretest_incomplete_response(match)
+        if gate is not None:
+            return gate
 
         match = _touch_room_match_for_user_activity(
             match=match,
@@ -2934,6 +2955,10 @@ class MatchingRoomMessagesView(APIView):
                 {"detail": "找不到這個配對房間。"},
                 status=status.HTTP_404_NOT_FOUND,
             )
+        gate = _godot_pretest_incomplete_response(match)
+        if gate is not None:
+            return gate
+
         match = _touch_room_match_for_user_activity(
             match=match,
             user_id=request.user.id,

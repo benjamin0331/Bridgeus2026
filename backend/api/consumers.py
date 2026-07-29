@@ -350,6 +350,11 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
         if not self.match:
             await self.close(code=4004)
             return
+        if not await self._godot_pretest_complete():
+            # 雙方前測未完成前不建立連線，理由同 REST 端點（見
+            # views.py::_godot_pretest_incomplete_response）。
+            await self.close(code=4009)
+            return
         if not await self._refresh_current_match_for_activity():
             await self.close(code=4004)
             return
@@ -783,6 +788,16 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
             .filter(Q(user_a_id=self.user.id) | Q(user_b_id=self.user.id))
             .afirst()
         )
+
+    async def _godot_pretest_complete(self) -> bool:
+        from api.godot_binding import godot_binding_info, match_pretest_state
+
+        def _check(match):
+            if godot_binding_info(match) is None:
+                return True
+            return match_pretest_state(match)["both_done"]
+
+        return await database_sync_to_async(_check)(self.match)
 
     async def _refresh_current_match_for_activity(self) -> bool:
         from api.models import DialogueMatch

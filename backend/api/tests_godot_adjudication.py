@@ -332,3 +332,65 @@ def test_cancel_reason_is_reported_once_then_clears():
 
     assert first.data["binding_cancel_reason"] == "godot_partner_left"
     assert second.data["binding_cancel_reason"] is None
+
+
+@pytest.mark.django_db
+def test_room_messages_blocked_until_both_pretests_done():
+    user_a, user_b = _make_users()
+    match = _godot_match(user_a, user_b, room_id="room-gate-msg")
+    _submit_survey(user_a, SUPPORT_ANSWERS)
+
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+    response = client.get(f"/api/matching/rooms/{match.room_id}/messages/")
+
+    assert response.status_code == 409
+
+
+@pytest.mark.django_db
+def test_room_messages_allowed_once_both_pretests_done():
+    user_a, user_b = _make_users()
+    match = _godot_match(user_a, user_b, room_id="room-gate-msg-ok")
+    _submit_survey(user_a, SUPPORT_ANSWERS)
+    _submit_survey(user_b, OPPOSE_ANSWERS)
+
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+    response = client.get(f"/api/matching/rooms/{match.room_id}/messages/")
+
+    assert response.status_code == 200
+
+
+@pytest.mark.django_db
+def test_room_message_post_blocked_until_both_pretests_done():
+    """POST 也要擋——只擋 GET 的話，繞過 UI 直接送訊息照樣寫得進去。"""
+    user_a, user_b = _make_users()
+    match = _godot_match(user_a, user_b, room_id="room-gate-msg-post")
+    _submit_survey(user_a, SUPPORT_ANSWERS)
+
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+    response = client.post(
+        f"/api/matching/rooms/{match.room_id}/messages/",
+        {"content": "前測還沒做完就想聊天"},
+        format="json",
+    )
+
+    assert response.status_code == 409
+
+
+@pytest.mark.django_db
+def test_normal_match_room_is_not_gated():
+    """一般配對房建房時就有分數，沒有「前測未完成」這種狀態，不該被擋。"""
+    user_a, user_b = _make_users()
+    match = DialogueMatch.objects.create(
+        topic_id=102, user_a=user_a, user_b=user_b,
+        user_a_score=5, user_b_score=3,
+        room_id="room-normal-msg", status=DialogueMatch.Status.ACTIVE,
+    )
+
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+    response = client.get(f"/api/matching/rooms/{match.room_id}/messages/")
+
+    assert response.status_code == 200
