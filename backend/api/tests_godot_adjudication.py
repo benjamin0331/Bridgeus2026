@@ -47,6 +47,16 @@ def _godot_match(user_a, user_b, *, topic_id=102, room_id="room-adj",
     )
 
 
+GODOT_PRESENCE_TIMEOUT = 45
+
+
+@pytest.fixture(autouse=True)
+def _pin_presence_timeout(monkeypatch):
+    """實作在呼叫當下讀環境變數；測試裡的 GODOT_PRESENCE_TIMEOUT 是寫死的。
+    不釘住的話，環境裡若設了這個變數，相關測試會靜默地改變語意。"""
+    monkeypatch.setenv("GODOT_PRESENCE_TIMEOUT_SECONDS", str(GODOT_PRESENCE_TIMEOUT))
+
+
 def _submit_survey(user, answers, *, topic_id=102, open_text="我的看法是……"):
     client = APIClient()
     client.force_authenticate(user=user)
@@ -86,9 +96,6 @@ def test_metrics_computed_once_both_sides_submit():
     assert match.match_score > 0
     # semantic_distance 取決於 embedding 模型，不斷言確切值，只確認有被寫入
     assert match.semantic_distance is not None
-
-
-GODOT_PRESENCE_TIMEOUT = 45
 
 
 def _mark_seen(match, user, *, seconds_ago=0):
@@ -250,5 +257,26 @@ def test_gate_ignores_non_godot_match():
     )
 
     resolved = resolve_godot_survey_gate(match=match)
+
+    assert resolved.status == DialogueMatch.Status.ACTIVE
+
+
+@pytest.mark.django_db
+def test_viewer_is_not_judged_by_own_stale_last_seen():
+    """輪詢者自己的 last_seen 在裁決當下還沒更新（那是裁決之後才做的）。
+    不排除他的話，載入慢、第一次輪詢就超過門檻的人會在抵達瞬間把房間判掉。"""
+    from apps.matching.services.matcher import resolve_godot_survey_gate
+
+    user_a, user_b = _make_users()
+    match = _godot_match(user_a, user_b, room_id="room-gate-self")
+    # A 從沒出現過（last_seen 為 None），B 剛剛才輪詢過。
+    _mark_seen(match, user_b, seconds_ago=1)
+    # 把建房時間推到門檻之外，模擬 A 載入很久才第一次輪詢。
+    DialogueMatch.objects.filter(pk=match.pk).update(
+        created_at=timezone.now() - timedelta(seconds=GODOT_PRESENCE_TIMEOUT + 10)
+    )
+    match.refresh_from_db()
+
+    resolved = resolve_godot_survey_gate(match=match, viewer_user_id=user_a.id)
 
     assert resolved.status == DialogueMatch.Status.ACTIVE

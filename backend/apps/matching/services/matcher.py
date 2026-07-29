@@ -748,7 +748,7 @@ def _godot_participant_is_gone(match, user_id: int, *, now, timeout_seconds: int
     return (now - reference).total_seconds() > timeout_seconds
 
 
-def resolve_godot_survey_gate(*, match, now=None):
+def resolve_godot_survey_gate(*, match, viewer_user_id=None, now=None):
     """Godot 綁定房在雙方完成前測問卷前的裁決。
 
     由 get_matching_state() 在輪詢路徑上呼叫——雙方在問卷階段與等待階段都會
@@ -756,6 +756,12 @@ def resolve_godot_survey_gate(*, match, now=None):
     觸發，由 close_expired_godot_matches 指令兜底。
 
     先判離開再判逾時：離開的訊息（「對方已退出」）比「時間到了」對使用者具體。
+
+    viewer_user_id 是正在發出這次請求的人。他顯然還在現場，所以不拿他的
+    last_seen 去判斷——輪詢者自己的 last_seen 要到 mark_match_participant_connected
+    才會更新，而那是在裁決之後。不排除他的話，一個載入較慢、超過門檻才第一次
+    輪詢的人會在自己抵達的瞬間把房間判掉。清理指令沒有 viewer（傳 None），
+    兩邊都檢查，那正是「兩個人都不在」該有的行為。
     """
     from api.godot_binding import (
         BINDING_STATS_KEY,
@@ -781,6 +787,8 @@ def resolve_godot_survey_gate(*, match, now=None):
 
     if timeout_seconds > 0:
         for user_id in (match.user_a_id, match.user_b_id):
+            if user_id == viewer_user_id:
+                continue
             if _godot_participant_is_gone(
                 match, user_id, now=current_time, timeout_seconds=timeout_seconds
             ):
@@ -799,6 +807,13 @@ def resolve_godot_survey_gate(*, match, now=None):
         locked = DialogueMatch.objects.select_for_update().get(pk=match.pk)
         if locked.status != DialogueMatch.Status.ACTIVE:
             return locked
+        # 在鎖內重讀填卷狀態：從上面那次鎖外讀取到取得鎖之間，對方可能剛送出
+        # 問卷、把房間補成雙方都完成。沿用鎖外的 pretest 會作廢一間其實已經
+        # 完成的房，而且那位剛送出的人還會因為過期狀態被跳過退回一般模式，
+        # 變成手上有 s_pre 卻無路可走的孤兒。
+        locked_pretest = match_pretest_state(locked)
+        if locked_pretest["both_done"]:
+            return locked
         stats = _stats_dict(locked).copy()
         binding = dict(stats.get(BINDING_STATS_KEY) or {})
         binding["cancel_reason"] = reason
@@ -812,11 +827,19 @@ def resolve_godot_survey_gate(*, match, now=None):
     # 房間作廢後才退回一般模式：已填問卷的人有 stance 資料可以重新分流。
     # 這裡是階段四 §D3 刻意壓抑的分流規則恢復生效的地方。
     for user_id, done in (
-        (locked.user_a_id, pretest["user_a_done"]),
-        (locked.user_b_id, pretest["user_b_done"]),
+        (locked.user_a_id, locked_pretest["user_a_done"]),
+        (locked.user_b_id, locked_pretest["user_b_done"]),
     ):
         if done:
-            _godot_return_to_normal(user_id=user_id, topic_id=locked.topic_id)
+            try:
+                _godot_return_to_normal(user_id=user_id, topic_id=locked.topic_id)
+            except Exception:
+                # 房間已經 CANCELLED 且不可重試（_get_active_match 找不到它了），
+                # 一個人失敗不能拖累另一個人，也不該讓輪詢請求整個 500。
+                logger.exception(
+                    "Godot 房作廢後退回一般模式失敗 user=%s topic=%s match=%s",
+                    user_id, locked.topic_id, locked.id,
+                )
     return locked
 
 
@@ -868,7 +891,9 @@ def get_matching_state(*, user, topic_id: int) -> MatchingState:
     if active_match:
         # Godot 綁定房在雙方填完問卷前，適用的是問卷裁決而不是一般的缺席/閒置關房
         # （那兩者的預設值分別是 180s／600s，跟問卷階段的語意不同）。
-        active_match = resolve_godot_survey_gate(match=active_match)
+        active_match = resolve_godot_survey_gate(
+            match=active_match, viewer_user_id=user.id
+        )
     if active_match:
         active_match = close_match_if_participant_absent(match=active_match)
     if active_match and active_match.status == DialogueMatch.Status.ACTIVE:
