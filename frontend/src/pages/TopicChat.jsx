@@ -335,11 +335,18 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const currentIssue = issues?.find((item) => item.id === parseInt(id, 10));
   const displayUserName = user?.name || '公民';
   const matchPartnerName = MATCH_PARTNER_NAME;
+  // Godot 綁定房：自己填完問卷了（survey_required 是 false），但對方還沒填
+  // （partner_state 是 pending）——不能直接放行進聊天室，要先擋在等待畫面。
+  const isGodotWaitingForPartner =
+    matchingState?.binding_source === 'godot' &&
+    matchingState?.survey_required === false &&
+    matchingState?.partner_state === 'pending';
   const isMatchChatReady = Boolean(
     isMatchingMode &&
       !showSurvey &&
       matchingState?.status === 'matched' &&
-      matchingState?.room_id,
+      matchingState?.room_id &&
+      !isGodotWaitingForPartner,
   );
   const matchMessageIdsSignature = useMemo(
     () => matchMessages.map((message) => message.id).filter(Boolean).join(','),
@@ -701,9 +708,13 @@ function TopicChat({ user, issues, issuesLoaded }) {
   ]);
 
   useEffect(() => {
+    // Godot 綁定房在問卷期間仍要維持 room 追蹤：那段時間的輪詢同時是倒數的
+    // 時間來源、以及（階段五）判斷對方還在不在的心跳。一般入口維持原本行為
+    // ——問卷還沒送出前本來就還沒有房。
+    const keepRoom = !showSurvey || matchingState?.binding_source === 'godot';
     activeMatchRef.current = {
-      roomId: showSurvey ? null : matchingState?.room_id || null,
-      status: showSurvey ? null : matchingState?.status || null,
+      roomId: keepRoom ? matchingState?.room_id || null : null,
+      status: keepRoom ? matchingState?.status || null : null,
       topicId: Number(id),
     };
 
@@ -713,7 +724,13 @@ function TopicChat({ user, issues, issuesLoaded }) {
     if (matchingState?.status !== 'matching') {
       cancelQueueRequestSentRef.current = false;
     }
-  }, [id, matchingState?.room_id, matchingState?.status, showSurvey]);
+  }, [
+    id,
+    matchingState?.binding_source,
+    matchingState?.room_id,
+    matchingState?.status,
+    showSurvey,
+  ]);
 
   useEffect(() => {
     setSurvey(null);
@@ -855,7 +872,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
         const response = await api.get(`/api/matching/status/?topic_id=${id}`);
         if (!cancelled) {
           setMatchingState(response.data);
-          setShowSurvey(response.data.status === 'idle');
+          // Godot 綁定房：房已經建好（status 是 matched），但前測問卷還沒填，
+          // 所以不能只看 status === 'idle'——那個條件下 Godot 房永遠不會跳問卷。
+          setShowSurvey(
+            response.data.status === 'idle' || response.data.survey_required === true,
+          );
         }
       } catch (error) {
         if (!cancelled) {
@@ -1033,7 +1054,12 @@ function TopicChat({ user, issues, issuesLoaded }) {
   ]);
 
   useEffect(() => {
-    if (!isMatchingMode || matchingState?.status !== 'matching') {
+    const isGodotSurveyPending =
+      matchingState?.binding_source === 'godot' && showSurvey;
+    if (!isMatchingMode) {
+      return undefined;
+    }
+    if (matchingState?.status !== 'matching' && !isGodotSurveyPending) {
       return undefined;
     }
 
@@ -1066,7 +1092,13 @@ function TopicChat({ user, issues, issuesLoaded }) {
       cancelled = true;
       window.clearInterval(pollTimer);
     };
-  }, [id, isMatchingMode, matchingState?.status]);
+  }, [
+    id,
+    isMatchingMode,
+    matchingState?.binding_source,
+    matchingState?.status,
+    showSurvey,
+  ]);
 
   useEffect(() => {
     if (!isMatchChatReady) {
@@ -1604,6 +1636,33 @@ function TopicChat({ user, issues, issuesLoaded }) {
       survey_open_answers: openAnswers,
     }));
 
+    // Godot 綁定房：配對已經由遊戲內的木樁決定了，這裡只是把 s_pre 補上。
+    // 絕對不能走 /api/matching/join/——那會重新排隊，把已經綁好的房弄壞。
+    if (matchingState?.binding_source === 'godot' && matchingState?.survey_required) {
+      setMatchingError('');
+      setIsMatchingActionLoading(true);
+      try {
+        const response = await api.post('/api/matching/godot-survey/', {
+          topic_id: Number(id),
+          survey_answers: answers,
+          survey_open_answers: openAnswers,
+        });
+        if (!isChatPageMountedRef.current) return;
+        setMatchingState(response.data);
+        setShowSurvey(false);
+      } catch (error) {
+        if (!isChatPageMountedRef.current) return;
+        setMatchingError(
+          error?.response?.data?.detail || '目前無法送出問卷，請稍後再試。',
+        );
+      } finally {
+        if (isChatPageMountedRef.current) {
+          setIsMatchingActionLoading(false);
+        }
+      }
+      return;
+    }
+
     if (isMixedEntry) {
       setMatchingError('');
       // 使用者才剛送出問卷，「要不要沿用先前立場」已經沒有意義。上面的
@@ -2139,6 +2198,20 @@ function TopicChat({ user, issues, issuesLoaded }) {
                 {isMatchingActionLoading ? '取消中...' : '取消匹配'}
               </button>
             </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (matchingStatus === 'matched' && isGodotWaitingForPartner) {
+      return (
+        <div className="matching-status-shell">
+          <div className="matching-status-card is-waiting">
+            <span className="matching-status-badge">等待對方</span>
+            <h2 className="matching-status-title">你已填完問卷，正在等待對方完成</h2>
+            <p className="matching-status-copy">
+              房間已經建立，對方正在填寫前測問卷。等對方送出後，聊天室就會開放。
+            </p>
           </div>
         </div>
       );
