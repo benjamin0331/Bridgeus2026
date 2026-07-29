@@ -1054,12 +1054,17 @@ function TopicChat({ user, issues, issuesLoaded }) {
   ]);
 
   useEffect(() => {
-    const isGodotSurveyPending =
-      matchingState?.binding_source === 'godot' && showSurvey;
+    // Godot 綁定房要一路輪詢到真的進聊天室為止，不能只在問卷開著時輪詢——
+    // 先送出問卷的那位 showSurvey 會變 false 但還在等對方，此時若停止輪詢，
+    // 他永遠不會知道對方填完了（房間 WS 與訊息輪詢都被 isMatchChatReady 擋著，
+    // 初次抓取的 effect 也不會重跑），只能手動重新整理。
+    // 這段輪詢同時也是階段五要用的存在訊號來源。
+    const isGodotPreChatPending =
+      matchingState?.binding_source === 'godot' && !isMatchChatReady;
     if (!isMatchingMode) {
       return undefined;
     }
-    if (matchingState?.status !== 'matching' && !isGodotSurveyPending) {
+    if (matchingState?.status !== 'matching' && !isGodotPreChatPending) {
       return undefined;
     }
 
@@ -1094,10 +1099,10 @@ function TopicChat({ user, issues, issuesLoaded }) {
     };
   }, [
     id,
+    isMatchChatReady,
     isMatchingMode,
     matchingState?.binding_source,
     matchingState?.status,
-    showSurvey,
   ]);
 
   useEffect(() => {
@@ -1640,6 +1645,10 @@ function TopicChat({ user, issues, issuesLoaded }) {
     // 絕對不能走 /api/matching/join/——那會重新排隊，把已經綁好的房弄壞。
     if (matchingState?.binding_source === 'godot' && matchingState?.survey_required) {
       setMatchingError('');
+      // 跟 isMixedEntry 分支同樣的理由：上面的 setSavedStanceProfile 已經把
+      // exists 設成 true，不在 await 之前先關掉的話，等回應的那段時間會閃出
+      // 「沿用先前立場」卡片蓋住問卷——送出失敗時使用者會看不到錯誤訊息。
+      setStanceRedoConfirmed(true);
       setIsMatchingActionLoading(true);
       try {
         const response = await api.post('/api/matching/godot-survey/', {
