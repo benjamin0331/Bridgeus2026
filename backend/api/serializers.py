@@ -296,6 +296,14 @@ class MatchingStateSerializer(serializers.Serializer):
     presence = serializers.JSONField(required=False, allow_null=True)
     absence_deadline = serializers.DateTimeField(required=False, allow_null=True)
     fallback_offer = serializers.JSONField(required=False, allow_null=True)
+    binding_source = serializers.CharField(
+        max_length=16, required=False, allow_null=True
+    )
+    survey_required = serializers.BooleanField(required=False)
+    survey_deadline = serializers.DateTimeField(required=False, allow_null=True)
+    partner_state = serializers.CharField(
+        max_length=16, required=False, allow_null=True
+    )
 
 
 class MatchMessageSerializer(serializers.ModelSerializer):

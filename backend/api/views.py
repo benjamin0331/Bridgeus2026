@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+from datetime import timedelta
 from decimal import Decimal
 from difflib import SequenceMatcher
 from functools import lru_cache
@@ -66,6 +67,7 @@ from .display_settings import (
 )
 from .timeline_access import LOCKED_DETAIL, timeline_unlock_state
 from .godot_tickets import issue_ticket, redeem_ticket
+from api.godot_binding import godot_binding_info, match_pretest_state
 from .serializers import (
     AccountCreateSerializer,
     AccountListSerializer,
@@ -711,6 +713,32 @@ def _fallback_offer_fields(*, topic_id: int, state, user_id: int) -> dict:
     }
 
 
+def _godot_binding_fields(match, *, user_id: int) -> dict:
+    """Godot 綁定房專屬欄位。非綁定房一律回中性值，前端只在 binding_source
+    為 "godot" 時使用其餘三欄。
+
+    partner_state 本階段只有 pending/ready；"left"（對方退出）是階段五的裁決。
+    """
+    binding = godot_binding_info(match)
+    if binding is None:
+        return {
+            "binding_source": None,
+            "survey_required": False,
+            "survey_deadline": None,
+            "partner_state": None,
+        }
+    pretest = match_pretest_state(match)
+    is_user_a = match.user_a_id == user_id
+    self_done = pretest["user_a_done"] if is_user_a else pretest["user_b_done"]
+    partner_done = pretest["user_b_done"] if is_user_a else pretest["user_a_done"]
+    return {
+        "binding_source": "godot",
+        "survey_required": not self_done,
+        "survey_deadline": binding.get("survey_deadline"),
+        "partner_state": "ready" if partner_done else "pending",
+    }
+
+
 def _build_matching_state_payload(*, topic_id: int, state, user_id: int) -> dict:
     queue_entry = state.queue_entry
     match = state.match
@@ -743,6 +771,7 @@ def _build_matching_state_payload(*, topic_id: int, state, user_id: int) -> dict
         "other_user_name": other_user_name,
         **_match_presence_fields(match, user_id=user_id),
         **_fallback_offer_fields(topic_id=topic_id, state=state, user_id=user_id),
+        **_godot_binding_fields(match, user_id=user_id),
     }
     return MatchingStateSerializer(payload).data
 
@@ -3454,6 +3483,10 @@ class GodotTicketRedeemView(APIView):
         return Response({"user_id": user.id})
 
 
+# Godot 綁定房的前測問卷期限。本階段只用來顯示倒數；逾時作廢是階段五。
+GODOT_SURVEY_WINDOW_SECONDS = 300
+
+
 class GodotMatchRoomView(APIView):
     """POST /api/godot/match-rooms/ — 給常駐 headless Godot server 呼叫，把兩位
     已在主功能登入的玩家直接配成一間議題聊天室，不走 M3 立場配對佇列
@@ -3535,6 +3568,16 @@ class GodotMatchRoomView(APIView):
             matching_algorithm_version="godot_manual",
             room_id=uuid4().hex,
             status=DialogueMatch.Status.ACTIVE,
+            stats={
+                "binding": {
+                    "source": "godot",
+                    # 問卷期限。本階段只回傳給前端倒數用，逾時裁決在階段五。
+                    "survey_deadline": (
+                        timezone.now()
+                        + timedelta(seconds=GODOT_SURVEY_WINDOW_SECONDS)
+                    ).isoformat(),
+                }
+            },
         )
 
         return Response(
