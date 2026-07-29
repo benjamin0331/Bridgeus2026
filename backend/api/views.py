@@ -69,6 +69,7 @@ from .timeline_access import LOCKED_DETAIL, timeline_unlock_state
 from .godot_tickets import issue_ticket, redeem_ticket
 from api.godot_binding import (
     BINDING_STATS_KEY,
+    binding_cancel_reason,
     godot_binding_info,
     match_pretest_state,
 )
@@ -718,11 +719,18 @@ def _fallback_offer_fields(*, topic_id: int, state, user_id: int) -> dict:
     }
 
 
-def _godot_binding_fields(match, *, user_id: int) -> dict:
+def _godot_binding_fields(
+    match, *, user_id: int, cancel_reason_override: str | None = None
+) -> dict:
     """Godot 綁定房專屬欄位。非綁定房一律回中性值，前端只在 binding_source
-    為 "godot" 時使用其餘三欄。
+    為 "godot" 時使用其餘欄位。
 
-    partner_state 本階段只有 pending/ready；"left"（對方退出）是階段五的裁決。
+    binding_cancel_reason 只在裁決發生的那一次輪詢之後才會有值，而且房間一旦
+    作廢，get_matching_state 之後回的可能已經是這位使用者的新狀態（重新排隊或
+    改走 AI，match 不再是那間被作廢的房）。cancel_reason_override 就是為了這個
+    情境存在：原因由呼叫端從 MatchingState.binding_cancel_reason 帶進來，而不
+    是只看眼前這個 match 的 stats——那樣會漏掉「房間已經換了」的那一次回應。
+    前端要在收到當下就反應，不能指望它一直存在。
     """
     binding = godot_binding_info(match)
     if binding is None:
@@ -731,16 +739,26 @@ def _godot_binding_fields(match, *, user_id: int) -> dict:
             "survey_required": False,
             "survey_deadline": None,
             "partner_state": None,
+            "binding_cancel_reason": cancel_reason_override,
         }
+    cancel_reason = cancel_reason_override or binding.get("cancel_reason")
     pretest = match_pretest_state(match)
     is_user_a = match.user_a_id == user_id
     self_done = pretest["user_a_done"] if is_user_a else pretest["user_b_done"]
     partner_done = pretest["user_b_done"] if is_user_a else pretest["user_a_done"]
+    if cancel_reason:
+        partner_state = "left"
+    elif partner_done:
+        partner_state = "ready"
+    else:
+        partner_state = "pending"
     return {
         "binding_source": "godot",
-        "survey_required": not self_done,
+        # 房已作廢就不該再叫人填問卷——填了也沒地方收（送出端點會回 409）。
+        "survey_required": not self_done and not cancel_reason,
         "survey_deadline": binding.get("survey_deadline"),
-        "partner_state": "ready" if partner_done else "pending",
+        "partner_state": partner_state,
+        "binding_cancel_reason": cancel_reason,
     }
 
 
@@ -776,7 +794,11 @@ def _build_matching_state_payload(*, topic_id: int, state, user_id: int) -> dict
         "other_user_name": other_user_name,
         **_match_presence_fields(match, user_id=user_id),
         **_fallback_offer_fields(topic_id=topic_id, state=state, user_id=user_id),
-        **_godot_binding_fields(match, user_id=user_id),
+        **_godot_binding_fields(
+            match,
+            user_id=user_id,
+            cancel_reason_override=getattr(state, "binding_cancel_reason", None),
+        ),
     }
     return MatchingStateSerializer(payload).data
 
@@ -2770,6 +2792,22 @@ class GodotSurveyView(APIView):
             return Response(
                 {"detail": "找不到屬於你的 Godot 配對房間。"},
                 status=status.HTTP_404_NOT_FOUND,
+            )
+
+        from apps.matching.services.matcher import resolve_godot_survey_gate
+
+        # 先裁決再接受：房間若已因逾時或對方退出而作廢，不該再收問卷答案
+        # （寫進去也沒有意義，而且會讓使用者以為送出成功）。見 spec §8.2。
+        match = resolve_godot_survey_gate(
+            match=match, viewer_user_id=request.user.id
+        )
+        if match.status != DialogueMatch.Status.ACTIVE:
+            return Response(
+                {
+                    "detail": "這個配對房間已結束。",
+                    "binding_cancel_reason": binding_cancel_reason(match),
+                },
+                status=status.HTTP_409_CONFLICT,
             )
 
         stance_score = _compute_user_stance_score(

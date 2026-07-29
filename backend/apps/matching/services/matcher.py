@@ -55,6 +55,10 @@ class MatchingState:
     profile: UserStanceProfile | None = None
     queue_entry: MatchQueueEntry | None = None
     match: DialogueMatch | None = None
+    # Godot 綁定房剛被裁決作廢時的原因。一次性訊號：作廢之後
+    # _godot_return_to_normal 會把人重新排隊或改走 AI，回傳的 state 就不再掛著
+    # 那間房了，原因只能靠這裡帶出去。下一次輪詢就不會再有值。
+    binding_cancel_reason: str | None = None
 
 
 def _as_decimal(score: float | Decimal) -> Decimal:
@@ -887,13 +891,21 @@ def _godot_return_to_normal(*, user_id: int, topic_id: int) -> None:
 
 
 def get_matching_state(*, user, topic_id: int) -> MatchingState:
+    from api.godot_binding import binding_cancel_reason
+
     active_match = _get_active_match(user_id=user.id, topic_id=topic_id)
+    godot_cancel_reason = None
     if active_match:
         # Godot 綁定房在雙方填完問卷前，適用的是問卷裁決而不是一般的缺席/閒置關房
         # （那兩者的預設值分別是 180s／600s，跟問卷階段的語意不同）。
-        active_match = resolve_godot_survey_gate(
+        resolved = resolve_godot_survey_gate(
             match=active_match, viewer_user_id=user.id
         )
+        if resolved.status != DialogueMatch.Status.ACTIVE:
+            # 作廢原因要在這裡抓下來：接下來 _godot_return_to_normal 已經把這個人
+            # 重新排隊或改走 AI，底下回傳的 state 不會再掛著這間房，原因就消失了。
+            godot_cancel_reason = binding_cancel_reason(resolved)
+        active_match = resolved
     if active_match:
         active_match = close_match_if_participant_absent(match=active_match)
     if active_match and active_match.status == DialogueMatch.Status.ACTIVE:
@@ -920,6 +932,7 @@ def get_matching_state(*, user, topic_id: int) -> MatchingState:
             profile=queue_entry.profile if queue_entry else None,
             queue_entry=queue_entry,
             match=active_match,
+            binding_cancel_reason=godot_cancel_reason,
         )
 
     queue_entry = (
@@ -938,6 +951,7 @@ def get_matching_state(*, user, topic_id: int) -> MatchingState:
             status=MatchQueueEntry.Status.MATCHING,
             profile=queue_entry.profile,
             queue_entry=queue_entry,
+            binding_cancel_reason=godot_cancel_reason,
         )
 
     queue_entry = (
@@ -952,6 +966,7 @@ def get_matching_state(*, user, topic_id: int) -> MatchingState:
             profile=queue_entry.profile,
             queue_entry=queue_entry,
             match=queue_entry.match,
+            binding_cancel_reason=godot_cancel_reason,
         )
 
     profile = (
@@ -960,7 +975,11 @@ def get_matching_state(*, user, topic_id: int) -> MatchingState:
         .first()
     )
     if profile and not _can_enter_human_matching(profile.stance_category):
-        return MatchingState(status=AI_RECOMMENDED_STATUS, profile=profile)
+        return MatchingState(
+            status=AI_RECOMMENDED_STATUS,
+            profile=profile,
+            binding_cancel_reason=godot_cancel_reason,
+        )
 
     if queue_entry:
         return MatchingState(
@@ -968,9 +987,10 @@ def get_matching_state(*, user, topic_id: int) -> MatchingState:
             profile=queue_entry.profile,
             queue_entry=queue_entry,
             match=queue_entry.match,
+            binding_cancel_reason=godot_cancel_reason,
         )
 
-    return MatchingState(status="idle", profile=profile)
+    return MatchingState(status="idle", profile=profile, binding_cancel_reason=godot_cancel_reason)
 
 
 def cancel_matching(*, user, topic_id: int) -> MatchQueueEntry:

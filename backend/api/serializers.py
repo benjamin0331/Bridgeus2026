@@ -304,6 +304,9 @@ class MatchingStateSerializer(serializers.Serializer):
     partner_state = serializers.CharField(
         max_length=16, required=False, allow_null=True
     )
+    binding_cancel_reason = serializers.CharField(
+        max_length=32, required=False, allow_null=True
+    )
 
 
 class GodotSurveySerializer(serializers.Serializer):

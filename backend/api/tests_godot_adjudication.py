@@ -280,3 +280,55 @@ def test_viewer_is_not_judged_by_own_stale_last_seen():
     resolved = resolve_godot_survey_gate(match=match, viewer_user_id=user_a.id)
 
     assert resolved.status == DialogueMatch.Status.ACTIVE
+
+
+@pytest.mark.django_db
+def test_status_reports_partner_left_after_cancellation():
+    user_a, user_b = _make_users()
+    match = _godot_match(user_a, user_b, room_id="room-status-left")
+    _submit_survey(user_a, SUPPORT_ANSWERS)
+    match.refresh_from_db()
+    _mark_seen(match, user_a, seconds_ago=1)
+    _mark_seen(match, user_b, seconds_ago=GODOT_PRESENCE_TIMEOUT + 10)
+
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+    response = client.get("/api/matching/status/?topic_id=102")
+
+    assert response.status_code == 200
+    assert response.data["binding_cancel_reason"] == "godot_partner_left"
+
+
+@pytest.mark.django_db
+def test_survey_submission_rejected_after_room_cancelled():
+    """房已作廢就不該再收問卷——寫進去沒有意義，還會讓使用者以為送出成功。"""
+    user_a, user_b = _make_users()
+    match = _godot_match(user_a, user_b, room_id="room-submit-after-cancel")
+    _mark_seen(match, user_a, seconds_ago=1)
+    _mark_seen(match, user_b, seconds_ago=GODOT_PRESENCE_TIMEOUT + 10)
+
+    response = _submit_survey(user_a, SUPPORT_ANSWERS)
+
+    assert response.status_code == 409
+    assert response.data["binding_cancel_reason"] == "godot_partner_left"
+    assert not UserStanceProfile.objects.filter(user=user_a, topic_id=102).exists()
+
+
+@pytest.mark.django_db
+def test_cancel_reason_is_reported_once_then_clears():
+    """作廢原因是一次性訊號：裁決發生的那次輪詢帶出來，之後就沒有了。
+    前端必須在收到當下反應（見 TopicChat 的處理）。"""
+    user_a, user_b = _make_users()
+    match = _godot_match(user_a, user_b, room_id="room-reason-once")
+    _submit_survey(user_a, SUPPORT_ANSWERS)
+    match.refresh_from_db()
+    _mark_seen(match, user_a, seconds_ago=1)
+    _mark_seen(match, user_b, seconds_ago=GODOT_PRESENCE_TIMEOUT + 10)
+
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+    first = client.get("/api/matching/status/?topic_id=102")
+    second = client.get("/api/matching/status/?topic_id=102")
+
+    assert first.data["binding_cancel_reason"] == "godot_partner_left"
+    assert second.data["binding_cancel_reason"] is None
