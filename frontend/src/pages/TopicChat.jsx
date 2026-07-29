@@ -1081,6 +1081,22 @@ function TopicChat({ user, issues, issuesLoaded }) {
         if (response.data.status !== 'matching') {
           setMatchingError('');
         }
+
+        // 房間被裁決作廢（對方退出或問卷逾時）。後端已經把還留著的人退回一般
+        // 模式（極端立場重新排隊、中立改走 AI），所以這裡只要收下新狀態並把
+        // 發生的事說清楚，不要自己決定下一步該去哪。
+        //
+        // binding_cancel_reason 是一次性訊號：只在裁決發生的那一次輪詢帶回來，
+        // 下一次就沒有了（後端那時已經換成使用者的新狀態）。所以必須在收到的
+        // 當下就反應，不能等之後再處理。
+        if (response.data.binding_cancel_reason) {
+          setShowSurvey(false);
+          setMatchingError(
+            response.data.binding_cancel_reason === 'godot_partner_left'
+              ? '對方已退出配對，已為你轉回一般配對模式。'
+              : '前測問卷逾時，已為你轉回一般配對模式。',
+          );
+        }
       } catch (error) {
         if (cancelled) {
           return;
