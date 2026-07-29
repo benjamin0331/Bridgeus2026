@@ -285,11 +285,16 @@ class MatchingStateSerializer(serializers.Serializer):
 
 
 class MatchMessageSerializer(serializers.ModelSerializer):
+    """sender_name 從序列化情境的 context["anon_ids"] 查表取得（見
+    views._build_room_messages_payload），不在這裡重查 obj.match 避免多一趟
+    查詢——呼叫端已經有 match 物件、算過一次 anon_ids 就直接傳進來共用。"""
+
     sender_id = serializers.IntegerField(source="sender.id", read_only=True)
     sender_name = serializers.SerializerMethodField()
 
     def get_sender_name(self, obj):
-        return "匿名使用者"
+        anon_ids = self.context.get("anon_ids") or {}
+        return anon_ids.get(obj.sender_id, "匿名使用者")
 
     class Meta:
         model = MatchMessage

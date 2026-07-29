@@ -21,6 +21,7 @@ from rest_framework_simplejwt.authentication import JWTStatelessUserAuthenticati
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
+from apps.matching.services.anonymity import assign_anonymous_ids
 from apps.matching.services.semantic import build_q9_embedding
 from apps.matching.services.semantic_tree import get_topic_anchors
 from apps.summary.models import VideoRecommendation, ViewpointNode
@@ -82,7 +83,6 @@ DEFAULT_DIALOGUE_COLLECTION = os.getenv(
     "DEFAULT_DIALOGUE_COLLECTION",
     "general_knowledge",
 )
-ANONYMOUS_MATCH_USER_NAME = "匿名對話者"
 
 
 class BridgeUsTokenObtainPairView(TokenObtainPairView):
@@ -473,7 +473,8 @@ def _build_matching_state_payload(*, topic_id: int, state, user_id: int) -> dict
     if match:
         other_user = _get_other_user(match, user_id=user_id)
         other_user_id = other_user.id
-        other_user_name = ANONYMOUS_MATCH_USER_NAME
+        anon_ids = assign_anonymous_ids(match.room_id, [match.user_a_id, match.user_b_id])
+        other_user_name = anon_ids[other_user_id]
 
     payload = {
         "topic_id": topic_id,
@@ -523,18 +524,19 @@ def _get_latest_room_stance_drift(*, match: DialogueMatch, user_id: int) -> dict
 
 def _build_room_messages_payload(*, match: DialogueMatch, user_id: int, messages) -> dict:
     other_user = _get_other_user(match, user_id=user_id)
+    anon_ids = assign_anonymous_ids(match.room_id, [match.user_a_id, match.user_b_id])
     payload = {
         "room_id": match.room_id,
         "match_id": match.id,
         "topic_id": match.topic_id,
         "status": _room_match_state_status(match),
         "other_user_id": other_user.id,
-        "other_user_name": ANONYMOUS_MATCH_USER_NAME,
+        "other_user_name": anon_ids[other_user.id],
         "stance_drift": _get_latest_room_stance_drift(match=match, user_id=user_id),
         **_match_presence_fields(match, user_id=user_id),
         "messages": messages,
     }
-    return MatchingRoomMessagesSerializer(payload).data
+    return MatchingRoomMessagesSerializer(payload, context={"anon_ids": anon_ids}).data
 
 
 def _get_room_match_for_user(*, room_id: str, user_id: int) -> DialogueMatch | None:
@@ -633,6 +635,7 @@ def _history_ai_messages(record: DialogueSessionRecord) -> list[dict]:
 
 
 def _history_match_messages(match: DialogueMatch, *, user_id: int) -> list[dict]:
+    anon_ids = assign_anonymous_ids(match.room_id, [match.user_a_id, match.user_b_id])
     messages = []
     for message in match.messages.select_related("sender").order_by("created_at", "id"):
         is_current_user = message.sender_id == user_id
@@ -641,7 +644,7 @@ def _history_match_messages(match: DialogueMatch, *, user_id: int) -> list[dict]
                 "id": f"match-{message.id}",
                 "source_id": str(message.id),
                 "role": "user" if is_current_user else "partner",
-                "sender_label": "我" if is_current_user else ANONYMOUS_MATCH_USER_NAME,
+                "sender_label": "我" if is_current_user else anon_ids[message.sender_id],
                 "content": message.content,
                 "created_at": message.created_at,
             }

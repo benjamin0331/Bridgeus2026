@@ -22,6 +22,7 @@ from api.models import (
     UserStanceProfile,
 )
 from api.display_settings import resolve_stance_category
+from apps.matching.services.anonymity import assign_anonymous_ids
 
 
 def unlock_timeline(user, kind, conversation_id):
@@ -1292,7 +1293,8 @@ class MatchingApiTests(APITestCase):
         self.assertEqual(alice_status.status_code, status.HTTP_200_OK)
         self.assertEqual(alice_status.data["status"], MatchQueueEntry.Status.MATCHED)
         self.assertEqual(alice_status.data["other_user_id"], self.other_user.id)
-        self.assertEqual(alice_status.data["other_user_name"], "匿名對話者")
+        anon_ids = assign_anonymous_ids(match.room_id, [match.user_a_id, match.user_b_id])
+        self.assertEqual(alice_status.data["other_user_name"], anon_ids[self.other_user.id])
 
         self.assertEqual(match.status, DialogueMatch.Status.ACTIVE)
         self.assertEqual(
@@ -1518,6 +1520,7 @@ class MatchingApiTests(APITestCase):
 
     def test_matched_users_can_exchange_room_messages(self):
         match, room_id = self._create_match()
+        anon_ids = assign_anonymous_ids(match.room_id, [match.user_a_id, match.user_b_id])
 
         post_response = self.client.post(
             f"/api/matching/rooms/{room_id}/messages/",
@@ -1533,7 +1536,7 @@ class MatchingApiTests(APITestCase):
         )
         self.assertEqual(
             post_response.data["messages"][0]["sender_name"],
-            "匿名使用者",
+            anon_ids[self.user.id],
         )
 
         fetch_response = self.other_client.get(
@@ -1543,7 +1546,7 @@ class MatchingApiTests(APITestCase):
         self.assertEqual(fetch_response.data["match_id"], match.id)
         self.assertEqual(fetch_response.data["status"], MatchQueueEntry.Status.MATCHED)
         self.assertEqual(fetch_response.data["other_user_id"], self.user.id)
-        self.assertEqual(fetch_response.data["other_user_name"], "匿名對話者")
+        self.assertEqual(fetch_response.data["other_user_name"], anon_ids[self.user.id])
         self.assertEqual(len(fetch_response.data["messages"]), 1)
         self.assertEqual(
             fetch_response.data["messages"][0]["content"],

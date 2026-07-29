@@ -14,6 +14,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from api.dialogue_topics import TOPIC_CONFIGS
+from apps.matching.services.anonymity import assign_anonymous_ids
 from apps.matching.services.hh_ai import (
     aredirect_match_to_topic,
     arephrase_match_message,
@@ -872,12 +873,15 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
         return int((timezone.now() - suggestion.created_at).total_seconds() * 1000)
 
     def _message_payload(self, message) -> dict:
+        anon_ids = assign_anonymous_ids(
+            self.room_id, [self.match.user_a_id, self.match.user_b_id]
+        )
         return {
             "id": message.id,
             "match_id": self.match.id,
             "room_id": self.room_id,
             "sender_id": self.user.id,
-            "sender_name": "匿名使用者",
+            "sender_name": anon_ids[self.user.id],
             "content": message.content,
             "created_at": message.created_at.isoformat(),
         }
