@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 from .matching_algorithm import (
     MATCHING_ALGORITHM_VERSION,
     ScoredCandidate,
+    calculate_match_score,
     candidate_categories_for,
     choose_best_candidate,
 )
@@ -688,10 +689,26 @@ def record_godot_survey(
             locked.user_b_score = decimal_score
         update_fields = ["user_a_score", "user_b_score"]
         if locked.user_a_score is not None and locked.user_b_score is not None:
-            locked.likert_distance = _as_metric_decimal(
-                abs(float(locked.user_a_score) - float(locked.user_b_score))
+            # 兩邊都填完才算得出來。這兩個指標對 Godot 房是**事後描述**，不是配對
+            # 依據——配對是遊戲內的木樁決定的，不是演算法挑的。但不能永遠留欄位
+            # 預設的 0：真實的 semantic_distance 也可能是 0，留著就跟階段四消滅的
+            # 4.00 佔位值一樣，分析時分不出「沒算」還是「算出來是 0」。
+            profile_a = UserStanceProfile.objects.filter(
+                user_id=locked.user_a_id, topic_id=topic_id
+            ).first()
+            profile_b = UserStanceProfile.objects.filter(
+                user_id=locked.user_b_id, topic_id=topic_id
+            ).first()
+            metrics = calculate_match_score(
+                requester_score=locked.user_a_score,
+                candidate_score=locked.user_b_score,
+                requester_embedding=profile_a.q9_embedding if profile_a else None,
+                candidate_embedding=profile_b.q9_embedding if profile_b else None,
             )
-            update_fields.append("likert_distance")
+            locked.likert_distance = _as_metric_decimal(metrics.likert_distance)
+            locked.semantic_distance = _as_metric_decimal(metrics.semantic_distance)
+            locked.match_score = _as_metric_decimal(metrics.match_score)
+            update_fields += ["likert_distance", "semantic_distance", "match_score"]
         locked.save(update_fields=update_fields)
         return locked
 
