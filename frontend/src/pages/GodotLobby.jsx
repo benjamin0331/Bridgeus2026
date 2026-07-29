@@ -29,6 +29,27 @@ export default function GodotLobby() {
   }, []);
 
   const handleLoad = () => {
+    const el = iframeRef.current;
+    if (el) {
+      // 印出 Godot 實際可用的畫面範圍，方便對照 Godot 的 viewport 設定。
+      const ratio = (el.clientWidth / el.clientHeight).toFixed(3);
+      console.log(`[GodotLobby] 前端畫面範圍：${el.clientWidth} x ${el.clientHeight}px（長寬比 ${ratio}）`);
+      // Godot 網頁外殼 body 預設黑底、canvas 未必填滿 iframe → 露出黑邊。
+      // 同源，直接注入 CSS 強制 canvas 填滿、底色換成 app 米色。
+      try {
+        const doc = el.contentDocument;
+        if (doc && !doc.getElementById('bridgeus-godot-fit')) {
+          const style = doc.createElement('style');
+          style.id = 'bridgeus-godot-fit';
+          style.textContent =
+            'html,body{width:100%;height:100%;margin:0;background:#4d4d4d!important;overflow:hidden;}' +
+            '#canvas{display:block;width:100%!important;height:100%!important;}';
+          doc.head.appendChild(style);
+        }
+      } catch {
+        /* 跨來源時取不到 document，略過（正式同源部署不會發生）*/
+      }
+    }
     const frameWindow = iframeRef.current?.contentWindow;
     if (!frameWindow) return;
 
