@@ -21,6 +21,31 @@ def godot_binding_info(match) -> dict | None:
     return binding
 
 
+def survey_deadline_of(match):
+    """回傳這間 Godot 房的問卷期限（datetime）；不是綁定房或沒記期限就回 None。"""
+    binding = godot_binding_info(match)
+    if binding is None:
+        return None
+    from django.utils.dateparse import parse_datetime
+    from django.utils import timezone as dj_timezone
+
+    raw = binding.get("survey_deadline")
+    if not raw:
+        return None
+    parsed = parse_datetime(raw) if isinstance(raw, str) else raw
+    if parsed is None:
+        return None
+    if dj_timezone.is_naive(parsed):
+        return dj_timezone.make_aware(parsed, dj_timezone.get_current_timezone())
+    return parsed
+
+
+def binding_cancel_reason(match) -> str | None:
+    """房間若因裁決作廢，回傳原因代碼；否則 None。"""
+    binding = godot_binding_info(match)
+    return binding.get("cancel_reason") if binding else None
+
+
 def match_pretest_state(match) -> dict:
     """這間房兩位參與者各自填完前測問卷了沒。"""
     completed = set(
