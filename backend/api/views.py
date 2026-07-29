@@ -67,7 +67,11 @@ from .display_settings import (
 )
 from .timeline_access import LOCKED_DETAIL, timeline_unlock_state
 from .godot_tickets import issue_ticket, redeem_ticket
-from api.godot_binding import godot_binding_info, match_pretest_state
+from api.godot_binding import (
+    BINDING_STATS_KEY,
+    godot_binding_info,
+    match_pretest_state,
+)
 from .serializers import (
     AccountCreateSerializer,
     AccountListSerializer,
@@ -3654,7 +3658,9 @@ class GodotMatchRoomView(APIView):
             room_id=uuid4().hex,
             status=DialogueMatch.Status.ACTIVE,
             stats={
-                "binding": {
+                # key 由 godot_binding 模組擁有——它是唯一判讀這段結構的地方，
+                # 這裡是唯一的寫入點，兩邊必須用同一個常數才不會各自漂移。
+                BINDING_STATS_KEY: {
                     "source": "godot",
                     # 問卷期限。本階段只回傳給前端倒數用，逾時裁決在階段五。
                     "survey_deadline": (
