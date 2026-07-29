@@ -306,6 +306,16 @@ class MatchingStateSerializer(serializers.Serializer):
     )
 
 
+class GodotSurveySerializer(serializers.Serializer):
+    """Godot 綁定房的前測問卷。不含 restart_existing_match——這條路徑不排隊。"""
+
+    topic_id = serializers.IntegerField()
+    survey_answers = serializers.DictField(child=serializers.IntegerField())
+    survey_open_answers = serializers.DictField(
+        child=serializers.CharField(allow_blank=True), required=False, default=dict
+    )
+
+
 class MatchMessageSerializer(serializers.ModelSerializer):
     sender_id = serializers.IntegerField(source="sender.id", read_only=True)
     sender_name = serializers.SerializerMethodField()

@@ -623,6 +623,79 @@ def enqueue_for_matching(
         )
 
 
+def record_godot_survey(
+    *,
+    user,
+    match,
+    topic_id: int,
+    stance_score: float,
+    stance_category: str,
+    survey_answers: dict,
+    survey_open_answers: dict,
+):
+    """Godot 綁定房的前測問卷落地。
+
+    跟 enqueue_for_matching 的差別：不排隊、不找候選人——配對已經由遊戲內的木樁
+    決定了。這裡只補「s_pre」這一塊：建 profile、建一筆 MATCHED 的 queue entry
+    （它同時是「這個人填過問卷」的憑證，見 spec §D5），並回填 DialogueMatch 的分數。
+
+    建 queue entry 不只是為了憑證：下游（get_matching_state 的 profile 欄位、
+    M5 分析、M6 pipeline）本來就預期配對房兩邊都有這筆記錄，順手建起來比另外加
+    一個布林欄位更不容易跟既有邏輯打架。
+    """
+    decimal_score = _as_decimal(stance_score)
+    q9_embedding = build_q9_embedding(survey_open_answers)
+
+    with transaction.atomic():
+        locked = DialogueMatch.objects.select_for_update().get(pk=match.pk)
+        profile, _ = UserStanceProfile.objects.update_or_create(
+            user=user,
+            topic_id=topic_id,
+            defaults={
+                "stance_score": decimal_score,
+                "stance_category": stance_category,
+                "survey_answers": survey_answers,
+                "survey_open_answers": survey_open_answers,
+                "q9_embedding": q9_embedding,
+            },
+        )
+
+        entry = MatchQueueEntry.objects.filter(
+            user=user,
+            topic_id=topic_id,
+            match=locked,
+            status=MatchQueueEntry.Status.MATCHED,
+        ).first()
+        if entry:
+            # 重填問卷：覆寫同一筆，不要建第二筆（憑證必須是一對一）。
+            entry.profile = profile
+            entry.stance_score = decimal_score
+            entry.save(update_fields=["profile", "stance_score", "updated_at"])
+        else:
+            MatchQueueEntry.objects.create(
+                user=user,
+                topic_id=topic_id,
+                profile=profile,
+                stance_score=decimal_score,
+                status=MatchQueueEntry.Status.MATCHED,
+                match=locked,
+                matched_at=timezone.now(),
+            )
+
+        if locked.user_a_id == user.id:
+            locked.user_a_score = decimal_score
+        else:
+            locked.user_b_score = decimal_score
+        update_fields = ["user_a_score", "user_b_score"]
+        if locked.user_a_score is not None and locked.user_b_score is not None:
+            locked.likert_distance = _as_metric_decimal(
+                abs(float(locked.user_a_score) - float(locked.user_b_score))
+            )
+            update_fields.append("likert_distance")
+        locked.save(update_fields=update_fields)
+        return locked
+
+
 def get_matching_state(*, user, topic_id: int) -> MatchingState:
     active_match = _get_active_match(user_id=user.id, topic_id=topic_id)
     if active_match:

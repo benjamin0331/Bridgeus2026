@@ -79,6 +79,7 @@ from .serializers import (
     DialogueSurveySerializer,
     DialogueTopicSerializer,
     DialogueSessionCreateSerializer,
+    GodotSurveySerializer,
     MatchMessageSerializer,
     MatchingJoinSerializer,
     MatchingRoomMessageCreateSerializer,
@@ -2729,6 +2730,90 @@ class MatchingStatusView(APIView):
                 topic_id=topic_id,
                 state=state,
                 user_id=request.user.id,
+            )
+        )
+
+
+class GodotSurveyView(APIView):
+    """POST /api/matching/godot-survey/ — Godot 綁定房的前測問卷回填。
+
+    刻意**不**經過 _entry_gate_response：這條路徑的分組是遊戲內的木樁配對決定的，
+    不是混合入口的立場分流決定的。中立立場的人也照樣 route=match（見 spec §D3）
+    ——問卷是配對成立之後才填的，這時候再判定「你該去 AI」會把已經配好的兩人卡死。
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from apps.matching.services.matcher import record_godot_survey
+
+        serializer = GodotSurveySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        validated = serializer.validated_data
+        topic_id = validated["topic_id"]
+
+        match = (
+            DialogueMatch.objects.filter(
+                topic_id=topic_id,
+                status=DialogueMatch.Status.ACTIVE,
+            )
+            .filter(Q(user_a=request.user) | Q(user_b=request.user))
+            .order_by("-created_at")
+            .first()
+        )
+        if match is None or godot_binding_info(match) is None:
+            # 一般配對房也走這裡會被擋掉——它的分數是配對演算法算的，不該被覆寫。
+            return Response(
+                {"detail": "找不到屬於你的 Godot 配對房間。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        stance_score = _compute_user_stance_score(
+            topic_id=topic_id, survey_answers=validated["survey_answers"]
+        )
+        stance_category = resolve_stance_category(
+            topic_id=topic_id, user_stance_score=stance_score
+        )
+        resolved_open_answers = _resolve_open_answers(
+            topic_id=topic_id,
+            survey_open_answers=validated.get("survey_open_answers", {}),
+        )
+
+        record_godot_survey(
+            user=request.user,
+            match=match,
+            topic_id=topic_id,
+            stance_score=stance_score,
+            stance_category=stance_category,
+            survey_answers=validated["survey_answers"],
+            survey_open_answers=resolved_open_answers,
+        )
+
+        support_threshold, oppose_threshold = get_stance_thresholds(topic_id=topic_id)
+        DialogueEntryAssignment.objects.update_or_create(
+            user=request.user,
+            topic_id=topic_id,
+            defaults={
+                # 一律 match：見上方 docstring 與 spec §D3。
+                "route": DialogueEntryAssignment.Route.MATCH,
+                "stance_score": stance_score,
+                "stance_category": stance_category,
+                "support_threshold": support_threshold,
+                "oppose_threshold": oppose_threshold,
+                "entry_mode_at_assignment": get_entry_mode(
+                    is_researcher=user_is_researcher(request.user)
+                ),
+                "fallback_offered_at": None,
+                "fallback_accepted_at": None,
+            },
+        )
+
+        from apps.matching.services.matcher import get_matching_state
+
+        state = get_matching_state(user=request.user, topic_id=topic_id)
+        return Response(
+            _build_matching_state_payload(
+                topic_id=topic_id, state=state, user_id=request.user.id
             )
         )
 
