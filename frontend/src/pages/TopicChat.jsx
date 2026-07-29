@@ -2538,6 +2538,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
             isSubmitting={isMatchingMode ? isMatchingActionLoading : false}
             submitError={isMatchingMode ? matchingError : ''}
             onSubmit={handleSurveySubmit}
+            deadline={
+              matchingState?.binding_source === 'godot'
+                ? matchingState?.survey_deadline
+                : null
+            }
           />
         )
       )}
