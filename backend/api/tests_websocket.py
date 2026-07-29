@@ -11,6 +11,7 @@ from django.test import override_settings
 from rest_framework_simplejwt.tokens import AccessToken
 
 from api.models import AIConversation, DialogueMatch, MatchMessage
+from apps.matching.services.anonymity import assign_anonymous_ids
 
 User = get_user_model()
 
@@ -775,7 +776,8 @@ async def test_match_room_websocket_persists_and_broadcasts_message():
     payload = response_a["message"]
     assert payload["room_id"] == match.room_id
     assert payload["sender_id"] == alice.id
-    assert payload["sender_name"] == "匿名使用者"
+    anon_ids = assign_anonymous_ids(match.room_id, [match.user_a_id, match.user_b_id])
+    assert payload["sender_name"] == anon_ids[alice.id]
     assert payload["content"] == "我想先談核安。"
 
     saved_message = await MatchMessage.objects.aget(id=payload["id"])
