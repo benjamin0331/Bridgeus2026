@@ -2796,7 +2796,7 @@ class GodotSurveyView(APIView):
             defaults={
                 # 一律 match：見上方 docstring 與 spec §D3。
                 "route": DialogueEntryAssignment.Route.MATCH,
-                "stance_score": stance_score,
+                "stance_score": Decimal(str(stance_score)),
                 "stance_category": stance_category,
                 "support_threshold": support_threshold,
                 "oppose_threshold": oppose_threshold,
