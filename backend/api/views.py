@@ -3523,16 +3523,15 @@ class GodotMatchRoomView(APIView):
                 status=status.HTTP_200_OK,
             )
 
-        # Godot 木樁配對只做「同議題湊一對」，不跑 M3 立場向量配對，所以沒有
-        # 真實 stance score 可用——user_a_score/user_b_score 只是滿足 DB 1-7
-        # constraint 的中性佔位值。matching_algorithm_version 標成
-        # "godot_manual"，方便日後分析時跟真正演算法配對的資料分開看。
+        # Godot 木樁配對只做「同議題湊一對」，不跑 M3 立場向量配對。前測問卷是
+        # 跳轉到網頁之後才填的（spec §D4），所以建房當下沒有 s_pre——兩個分數
+        # 欄位留 NULL，等 /api/matching/godot-survey/ 回填。
+        # matching_algorithm_version 標成 "godot_manual"，方便日後分析時跟真正
+        # 演算法配對的資料分開看。
         match = DialogueMatch.objects.create(
             topic_id=topic_id,
             user_a=user_a,
             user_b=user_b,
-            user_a_score=Decimal("4.00"),
-            user_b_score=Decimal("4.00"),
             matching_algorithm_version="godot_manual",
             room_id=uuid4().hex,
             status=DialogueMatch.Status.ACTIVE,

@@ -133,8 +133,15 @@ class DialogueMatch(models.Model):
         on_delete=models.CASCADE,
         related_name="dialogue_matches_as_b",
     )
-    user_a_score = models.DecimalField(max_digits=4, decimal_places=2)
-    user_b_score = models.DecimalField(max_digits=4, decimal_places=2)
+    # 建房當下不一定有 s_pre：Godot 木樁配對是先建房、跳轉之後才填前測問卷
+    # （見 spec §D4）。NULL = 還沒填；不要用 4.00 之類的佔位值，那跟「真的
+    # 填出 4.00」在資料上無法區分。
+    user_a_score = models.DecimalField(
+        max_digits=4, decimal_places=2, null=True, blank=True
+    )
+    user_b_score = models.DecimalField(
+        max_digits=4, decimal_places=2, null=True, blank=True
+    )
     likert_distance = models.DecimalField(max_digits=6, decimal_places=4, default=0)
     semantic_distance = models.DecimalField(max_digits=6, decimal_places=4, default=0)
     match_score = models.DecimalField(max_digits=6, decimal_places=4, default=0)
@@ -159,11 +166,13 @@ class DialogueMatch(models.Model):
                 name="match_users_must_differ",
             ),
             models.CheckConstraint(
-                condition=Q(user_a_score__gte=1) & Q(user_a_score__lte=7),
+                condition=Q(user_a_score__isnull=True)
+                | (Q(user_a_score__gte=1) & Q(user_a_score__lte=7)),
                 name="match_user_a_score_between_1_and_7",
             ),
             models.CheckConstraint(
-                condition=Q(user_b_score__gte=1) & Q(user_b_score__lte=7),
+                condition=Q(user_b_score__isnull=True)
+                | (Q(user_b_score__gte=1) & Q(user_b_score__lte=7)),
                 name="match_user_b_score_between_1_and_7",
             ),
         ]
