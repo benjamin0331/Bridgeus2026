@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import api from '../api/client';
+import SettlementReceipt from './SettlementReceipt';
 import './PostQuestionnairePage.css';
 
 // --- Static question data -----------------------------------------------
@@ -247,118 +248,6 @@ function StepE({ flag, detail, onFlagChange, onDetailChange }) {
   );
 }
 
-// --- Result card ----------------------------------------------------------
-
-const CHANGE_EPSILON = 0.1;
-
-function formatMetric(value) {
-  const numericValue = Number(value);
-  return Number.isFinite(numericValue) ? numericValue.toFixed(2) : '—';
-}
-
-function describeDelta(delta) {
-  if (delta === null || delta === undefined) return null;
-  if (Math.abs(delta) < CHANGE_EPSILON) {
-    return { tone: 'flat', text: '立場幾乎沒有改變' };
-  }
-  const amount = Math.abs(delta).toFixed(2);
-  return delta > 0
-    ? { tone: 'up', text: `往「支持」方向移動了 ${amount} 分` }
-    : { tone: 'down', text: `往「反對」方向移動了 ${amount} 分` };
-}
-
-function describeCentrism(value) {
-  if (value === null || value === undefined) return null;
-  if (Math.abs(value) < CHANGE_EPSILON) {
-    return { tone: 'flat', text: '極化程度沒有明顯變化' };
-  }
-  return value < 0
-    ? { tone: 'good', text: '你變得更靠近中立，出現去極化' }
-    : { tone: 'warn', text: '你變得更遠離中立，立場更極化' };
-}
-
-function ResultCard({ data, onContinue }) {
-  const sPre = data.s_pre;
-  const sPost = data.s_post;
-  const delta = data.delta_s;
-  const centrism = data.stance_centrism;
-  const hasPre = sPre !== null && sPre !== undefined;
-  const deltaInfo = describeDelta(delta);
-  const centrismInfo = describeCentrism(centrism);
-
-  return (
-    <div className="pq-page">
-      <div className="pq-container">
-        <div className="pq-header">
-          <h2>本次對話結果</h2>
-          <p className="pq-subtitle">
-            以下是對話前後的立場問卷分數（1–7 分，4 分為中立）。
-          </p>
-        </div>
-
-        <div className="pq-body">
-          {!hasPre && (
-            <p className="pq-result-note">
-              這場對話沒有可用的前測分數，因此只顯示對話後分數。
-            </p>
-          )}
-
-          <div className="pq-result-scores">
-            <div className="pq-score-box">
-              <span className="pq-score-label">對話前立場</span>
-              <span className="pq-score-value">
-                {hasPre ? formatMetric(sPre) : '—'}
-              </span>
-            </div>
-            <div className="pq-score-arrow">→</div>
-            <div className="pq-score-box">
-              <span className="pq-score-label">對話後立場</span>
-              <span className="pq-score-value">{formatMetric(sPost)}</span>
-            </div>
-          </div>
-
-          {hasPre && (
-            <div className="pq-result-metrics">
-              <div className={`pq-metric pq-metric-${deltaInfo?.tone || 'flat'}`}>
-                <div className="pq-metric-head">
-                  <span className="pq-metric-name">立場移動量</span>
-                  <span className="pq-metric-num">
-                    {delta > 0 ? '+' : ''}{formatMetric(delta)}
-                  </span>
-                </div>
-                <p className="pq-metric-desc">{deltaInfo?.text}</p>
-              </div>
-
-              <div className={`pq-metric pq-metric-${centrismInfo?.tone || 'flat'}`}>
-                <div className="pq-metric-head">
-                  <span className="pq-metric-name">去極化指標</span>
-                  <span className="pq-metric-num">
-                    {centrism > 0 ? '+' : ''}{formatMetric(centrism)}
-                  </span>
-                </div>
-                <p className="pq-metric-desc">{centrismInfo?.text}</p>
-              </div>
-            </div>
-          )}
-
-          <p className="pq-result-hint">
-            立場移動量為後測減前測；去極化指標為負代表更靠近中立。
-            這些數值僅供參考，沒有好壞之分。
-          </p>
-        </div>
-
-        <div className="pq-footer">
-          <div className="pq-nav-buttons">
-            <button className="pq-btn pq-btn-primary" onClick={onContinue}>
-              繼續
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // --- Main page ------------------------------------------------------------
 
 export default function PostQuestionnairePage() {
@@ -536,14 +425,11 @@ export default function PostQuestionnairePage() {
 
   if (result) {
     return (
-      <ResultCard
+      <SettlementReceipt
         data={result}
-        onContinue={() =>
-          navigate('/debriefing', {
-            state: { responseId: result.id },
-            replace: true,
-          })
-        }
+        sessionId={sessionId}
+        roomId={roomId}
+        condition={condition}
       />
     );
   }

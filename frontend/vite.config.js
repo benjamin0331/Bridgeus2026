@@ -18,23 +18,21 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           ws: true,
         },
-        // 本機開發用的路徑分流，對齊正式環境 Cloudflare Tunnel 的 ingress 規則
-        // （部署說明的「對外路徑」表）：/godot/* 是 Godot Web 匯出的靜態檔，
-        // /godot-ws 是 headless Godot server 的多人連線。正式環境由 Tunnel 依
-        // 路徑分流，本機沒有對應物，所以要在這裡補——沒有這兩條，從 /chat 開
-        // Godot iframe 必然 404、按 Join 必然連不上。
+        // Godot 多人連線：轉到本機 headless Godot server（port 8085）。
+        // 正式環境由 Cloudflare Tunnel 依路徑轉到常駐 server，這裡是本機對應版；
+        // 沒有這條，按 Join 必然連不上。要另外自己起：
+        //   GODOT_SERVICE_TOKEN=<同 backend/.env> godot --headless --path godot --server
         //
-        // 兩者都要另外自己起（見 godot/CLAUDE.md「Running」）：
-        //   靜態檔  cd godot && python3 -m http.server 8090
-        //   連線    GODOT_SERVICE_TOKEN=<同 backend/.env> \
-        //           godot --headless --path godot --server
-        '/godot': {
-          target: 'http://127.0.0.1:8090',
-          changeOrigin: true,
-          rewrite: (path) => path.replace(/^\/godot/, ''),
-        },
+        // 刻意不 rewrite 掉 /godot-ws 前綴：Cloudflare Tunnel 的 ingress 不會
+        // 剝前綴，本機保持一致才不會出現「本機通、正式站掛」。Godot 的
+        // WebSocketMultiplayerPeer server 不看路徑，兩種寫法它都收，所以對齊
+        // 正式環境是這裡唯一的判準。
+        //
+        // 註：Godot 的靜態檔不需要 proxy——export_presets.cfg 已把 web build
+        // 直接匯出到 frontend/public/godot/，由 Vite 當一般靜態資源服務
+        // （thread_support=false，不需要 COOP/COEP 標頭）。
         '/godot-ws': {
-          target: 'ws://127.0.0.1:8085',
+          target: env.VITE_GODOT_WS_TARGET || 'ws://127.0.0.1:8085',
           changeOrigin: true,
           ws: true,
         },

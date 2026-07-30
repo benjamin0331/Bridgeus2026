@@ -68,7 +68,7 @@ animations = [{
 }]
 
 [sub_resource type="CircleShape2D" id="CircleShape2D_yf5fn"]
-radius = 9.0
+radius = 5.0
 
 [sub_resource type="CircleShape2D" id="CircleShape2D_near"]
 radius = 32.0
@@ -85,12 +85,13 @@ autoplay = "default"
 frame_progress = 0.97409016
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="." unique_id=191716575]
-position = Vector2(1, 1)
+position = Vector2(0, 4)
 shape = SubResource("CircleShape2D_yf5fn")
 
 [node name="Area2D" type="Area2D" parent="." unique_id=247333842]
 
 [node name="near" type="CollisionShape2D" parent="Area2D" unique_id=911592242]
+visible = false
 position = Vector2(1, 1)
 shape = SubResource("CircleShape2D_near")
 

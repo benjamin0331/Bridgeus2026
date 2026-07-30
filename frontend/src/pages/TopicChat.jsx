@@ -217,6 +217,23 @@ function mapMatchMessagesToDisplay(messages, userId) {
   });
 }
 
+function ThumbIcon({ down = false }) {
+  return (
+    <svg
+      className={`reaction-icon${down ? ' reaction-icon--down' : ''}`}
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      aria-hidden="true"
+    >
+      <path
+        fill="currentColor"
+        d="M2 21h3V9H2v12zm20-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L13.17 1 6.59 7.59C6.22 7.96 6 8.45 6 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1z"
+      />
+    </svg>
+  );
+}
+
 function MessageReactions({ target, value, onReact }) {
   if (!target) {
     return null;
@@ -226,21 +243,21 @@ function MessageReactions({ target, value, onReact }) {
     <div className="message-reactions">
       <button
         type="button"
-        className={`reaction-btn ${value === 1 ? 'active like' : ''}`}
+        className={`reaction-btn like${value === 1 ? ' active' : ''}`}
         onClick={() => onReact(target, 1)}
-        aria-label="讚"
+        aria-label="Like"
         aria-pressed={value === 1}
       >
-        <span className="reaction-icon">👍</span>
+        <ThumbIcon />
       </button>
       <button
         type="button"
-        className={`reaction-btn ${value === -1 ? 'active dislike' : ''}`}
+        className={`reaction-btn dislike${value === -1 ? ' active' : ''}`}
         onClick={() => onReact(target, -1)}
-        aria-label="倒讚"
+        aria-label="Unlike"
         aria-pressed={value === -1}
       >
-        <span className="reaction-icon">👎</span>
+        <ThumbIcon down />
       </button>
     </div>
   );
@@ -2392,7 +2409,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
           {matchChatDisplayMessages.map((msg) => (
             <div key={msg.id} className={`message-row ${msg.type === 'user' ? 'user-message' : ''}`}>
               <div className="message-user-info">
-                <img src="/icon.jpg" alt="Avatar" className="message-avatar" />
+                <img src={msg.type === 'user' ? '/icon.jpg' : '/logo.png'} alt="Avatar" className="message-avatar" />
                 <span className="message-username">{msg.userName}</span>
               </div>
               <div className="message-bubble">{msg.text}</div>
@@ -2670,7 +2687,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
               {messages.map((msg) => (
                 <div key={msg.id} className={`message-row ${msg.type === 'user' ? 'user-message' : ''}`}>
                   <div className="message-user-info">
-                    <img src="/icon.jpg" alt="Avatar" className="message-avatar" />
+                    <img src={msg.type === 'user' ? '/icon.jpg' : '/logo.png'} alt="Avatar" className="message-avatar" />
                     <span className="message-username">{msg.userName}</span>
                   </div>
                   <div className="message-bubble">{msg.text}</div>
@@ -2684,7 +2701,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
               {isSending && !isAgentStreaming && (
                 <div className="message-row">
                   <div className="message-user-info">
-                    <img src="/icon.jpg" alt="Avatar" className="message-avatar" />
+                    <img src="/logo.png" alt="Avatar" className="message-avatar" />
                     <span className="message-username">BridgeUs</span>
                   </div>
                   <div className="message-bubble">正在整理回應...</div>

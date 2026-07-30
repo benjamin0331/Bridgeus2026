@@ -1189,8 +1189,10 @@ class DialogueStanceProfileView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        # request.user 是 stateless TokenUser：直接丟進 filter 會讓 Django 誤觸
+        # TokenUser.__getattr__ 回傳的 resolve_expression=None 而崩潰，改用 id 過濾。
         profile = (
-            UserStanceProfile.objects.filter(user=request.user, topic_id=topic_id)
+            UserStanceProfile.objects.filter(user_id=request.user.id, topic_id=topic_id)
             .order_by("-updated_at", "-id")
             .first()
         )

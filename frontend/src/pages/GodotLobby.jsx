@@ -1,7 +1,12 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api/client';
 import './GodotLobby.css';
+
+// Godot web build 是否已放進 public/godot/。抓 .wasm（永遠會匯出、不會被
+// SPA fallback 改寫成 index.html），存在才載入 iframe，避免 404 fallback 成
+// 「整個 app 塞進 iframe」的重複畫面。
+const GODOT_BUILD_PROBE = '/godot/takeAbridge_godot.wasm';
 
 // 把主功能登入的 access token / API base 交給嵌入的 Godot 大廳，並提供拉式
 // 發券函式讓 Godot 每次連線前換一次性入場券（不再交付可冒充的 user_id）。
@@ -11,8 +16,43 @@ import './GodotLobby.css';
 export default function GodotLobby() {
   const iframeRef = useRef(null);
   const navigate = useNavigate();
+  const [status, setStatus] = useState('checking'); // checking | ready | missing
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(GODOT_BUILD_PROBE, { method: 'HEAD' })
+      .then((res) => {
+        if (cancelled) return;
+        const type = res.headers.get('content-type') || '';
+        // SPA fallback 會回 200 + text/html；真正的 wasm 不是 html 才算部署好
+        setStatus(res.ok && !type.includes('text/html') ? 'ready' : 'missing');
+      })
+      .catch(() => { if (!cancelled) setStatus('missing'); });
+    return () => { cancelled = true; };
+  }, []);
 
   const handleLoad = () => {
+    const el = iframeRef.current;
+    if (el) {
+      // 印出 Godot 實際可用的畫面範圍，方便對照 Godot 的 viewport 設定。
+      const ratio = (el.clientWidth / el.clientHeight).toFixed(3);
+      console.log(`[GodotLobby] 前端畫面範圍：${el.clientWidth} x ${el.clientHeight}px（長寬比 ${ratio}）`);
+      // Godot 網頁外殼 body 預設黑底、canvas 未必填滿 iframe → 露出黑邊。
+      // 同源，直接注入 CSS 強制 canvas 填滿、底色換成 app 米色。
+      try {
+        const doc = el.contentDocument;
+        if (doc && !doc.getElementById('bridgeus-godot-fit')) {
+          const style = doc.createElement('style');
+          style.id = 'bridgeus-godot-fit';
+          style.textContent =
+            'html,body{width:100%;height:100%;margin:0;background:#4d4d4d!important;overflow:hidden;}' +
+            '#canvas{display:block;width:100%!important;height:100%!important;}';
+          doc.head.appendChild(style);
+        }
+      } catch {
+        /* 跨來源時取不到 document，略過（正式同源部署不會發生）*/
+      }
+    }
     const frameWindow = iframeRef.current?.contentWindow;
     if (!frameWindow) return;
 
@@ -74,16 +114,33 @@ export default function GodotLobby() {
     return () => window.removeEventListener('message', handleMessage);
   }, [navigate]);
 
+  // 早退出必須排在所有 hook 之後，否則 status 一變成 'missing' 就會少跑上面
+  // 那個 useEffect，違反 Rules of Hooks。
+  if (status === 'missing') {
+    return (
+      <div className="godot-lobby godot-lobby--empty">
+        <div className="godot-lobby-notice">
+          <h2>虛擬大廳尚未部署</h2>
+          <p>找不到 Godot 的 web build，請先把 Godot 專案匯出成 HTML5。</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="godot-lobby">
-      <iframe
-        ref={iframeRef}
-        src="/godot/takeAbridge_godot.html"
-        onLoad={handleLoad}
-        allow="microphone"
-        className="godot-lobby-frame"
-        title="BridgeUs 虛擬大廳"
-      />
+      {status === 'checking' ? (
+        <div className="godot-lobby-notice">載入虛擬大廳中…</div>
+      ) : (
+        <iframe
+          ref={iframeRef}
+          src="/godot/takeAbridge_godot.html"
+          onLoad={handleLoad}
+          allow="microphone"
+          className="godot-lobby-frame"
+          title="BridgeUs 虛擬大廳"
+        />
+      )}
     </div>
   );
 }

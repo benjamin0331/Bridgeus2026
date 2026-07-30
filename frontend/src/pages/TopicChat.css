@@ -116,29 +116,28 @@
 
 .message-reactions {
   display: flex;
-  gap: 6px;
+  gap: 0;
   align-self: flex-end;
   margin-bottom: 2px;
 }
 
 .reaction-btn {
   display: inline-flex;
-  width: 30px;
-  height: 30px;
   align-items: center;
   justify-content: center;
+  width: 28px;
+  height: 28px;
   padding: 0;
-  border: 1px solid transparent;
+  border: none;
   border-radius: 50%;
-  background-color: #f0f0f0;
+  background: transparent;
+  color: #9a9188;
   cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-  opacity: 0.55;
+  opacity: 0.4;
   transition:
     opacity 0.15s,
     background-color 0.15s,
-    border-color 0.15s,
+    color 0.15s,
     transform 0.1s;
 }
 
@@ -149,22 +148,31 @@
 }
 
 .reaction-btn:hover {
-  background-color: #e6e6e6;
-  transform: translateY(-1px);
+  background: rgba(0, 0, 0, 0.06);
+  color: #5c5449;
 }
 
-.reaction-btn.active.like {
-  border-color: #6f9a5f;
-  background-color: #e3efe0;
+.reaction-btn:active {
+  transform: scale(0.88);
 }
 
-.reaction-btn.active.dislike {
-  border-color: #b46a5c;
-  background-color: #f4e2df;
+.reaction-btn.like.active {
+  background: #e3efe0;
+  color: #4c7a3c;
+}
+
+.reaction-btn.dislike.active {
+  background: #f6e3e0;
+  color: #b05540;
 }
 
 .reaction-icon {
+  display: block;
   pointer-events: none;
+}
+
+.reaction-icon--down {
+  transform: rotate(180deg);
 }
 
 .message-user-info {

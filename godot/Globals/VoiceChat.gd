@@ -48,7 +48,7 @@ func start() -> void:
 	_analyzer = AudioServer.get_bus_effect_instance(_bus_idx, cnt - 1) as AudioEffectSpectrumAnalyzerInstance
 
 # --- 滑桿即時調整 ---------------------------------------------------------
-func set_pitch(v: float) -> void:      # 0.5 大叔 ~ 2.0 花栗鼠
+func set_pitch(v: float) -> void:      # 0.7 低沉 ~ 1.5 尖細（收窄範圍以保持可聽懂）
 	if _pitch:
 		_pitch.pitch_scale = v
 
