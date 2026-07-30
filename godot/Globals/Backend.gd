@@ -26,6 +26,14 @@ func _ready() -> void:
 			BASE_URL = str(origin) + "/api"   # 同源拓樸預設
 	else:
 		service_token = OS.get_environment("GODOT_SERVICE_TOKEN")
+		# 桌面開發沒設這個變數時維持上面宣告的 localhost 預設，行為不變。
+		# 常駐 server 進了 Docker 之後 localhost 指的是 container 自己，不是
+		# 跑 Django 的 host——這裡沒改到、只改了 service_token 的那個版本，
+		# 就是「WS 握手成功、票券兌換卻默默連不上」這個症狀的成因（兌換是
+		# server 對 server 的呼叫，不經過 nginx，所以 Web 版的同源機制救不到它）。
+		var base_url_override = OS.get_environment("GODOT_BACKEND_BASE_URL")
+		if base_url_override != "":
+			BASE_URL = base_url_override
 
 # --- 認證：正式交接（唯一途徑）----------------------------------------------
 # 由主功能頁面把這個場景嵌進 <iframe> 前，設定 window.bridgeus_token

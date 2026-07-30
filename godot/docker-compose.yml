@@ -5,6 +5,14 @@ services:
     container_name: bridgeus_godot_server
     env_file:
       - .env
+    environment:
+      # 同一套 host.docker.internal 手法 frontend/docker-compose.yml 已在用、
+      # 已驗證在這台伺服器上可行（nginx 代理 /api/ 到 host.docker.internal:8005
+      # 一直是通的）。這裡是 server 對 server 的直接呼叫，不經 nginx，所以要
+      # 自己補一份，且後端 ALLOWED_HOSTS 要放行這個 Host（見部署說明）。
+      GODOT_BACKEND_BASE_URL: ${GODOT_BACKEND_BASE_URL:-http://host.docker.internal:8005/api}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8085:8085"
     restart: unless-stopped
