@@ -1,0 +1,10 @@
+services:
+  godot-server:
+    build:
+      context: .
+    container_name: bridgeus_godot_server
+    env_file:
+      - .env
+    ports:
+      - "8085:8085"
+    restart: unless-stopped
