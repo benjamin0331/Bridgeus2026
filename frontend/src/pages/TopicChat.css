@@ -147,6 +147,14 @@
   opacity: 1;
 }
 
+/* 觸控裝置沒有 hover，上面那條「滑過才浮出」永遠不會觸發，按鈕會一直停在
+   0.4 的低對比狀態。這裡把靜止透明度拉高，讓手機/平板上看得見也點得到。 */
+@media (hover: none) {
+  .reaction-btn {
+    opacity: 0.75;
+  }
+}
+
 .reaction-btn:hover {
   background: rgba(0, 0, 0, 0.06);
   color: #5c5449;
