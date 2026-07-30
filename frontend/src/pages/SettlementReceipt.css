@@ -204,7 +204,22 @@
   align-items: center;
   gap: 16px;
   margin: 6px 0 14px;
+
+  /* 印泥顏色：預設印章紅，四個等級各自覆蓋（見下）。沒有投入度資料時
+     computeGrade 回傳 '✓'，湊出來的 .sr-grade-✓ 選不到任何規則，就落在
+     這個預設值上——刻意的，那不是一個等級。 */
+  --sr-seal-ink: #b05540;
+  --sr-seal-ink-soft: rgba(176, 85, 64, 0.15);
 }
+
+/* 只換印泥顏色，不動橡皮章的形（雙線圓框＋歪斜）——收據是紙面風格，
+   換成漸層徽章會跟整張紙打架。等級同時由印章裡的字母與右側頭銜文字表達，
+   顏色只是冗餘編碼，色弱使用者不會因此讀不出等級。 */
+.sr-grade-S { --sr-seal-ink: #a8791f; --sr-seal-ink-soft: rgba(168, 121, 31, 0.15); }
+.sr-grade-A { --sr-seal-ink: #4c7a3c; --sr-seal-ink-soft: rgba(76, 122, 60, 0.15); }
+.sr-grade-B { --sr-seal-ink: #3f7a86; --sr-seal-ink-soft: rgba(63, 122, 134, 0.15); }
+.sr-grade-C { --sr-seal-ink: #8a7d6f; --sr-seal-ink-soft: rgba(138, 125, 111, 0.15); }
+
 .sr-seal {
   flex-shrink: 0;
   display: flex;
@@ -213,13 +228,13 @@
   width: 76px;
   height: 76px;
   border-radius: 50%;
-  border: 3px double #b05540;
-  color: #b05540;
+  border: 3px double var(--sr-seal-ink);
+  color: var(--sr-seal-ink);
   font-family: Georgia, serif;
   font-size: 40px;
   font-weight: 800;
   transform: rotate(-8deg);
-  box-shadow: inset 0 0 0 2px rgba(176, 85, 64, 0.15);
+  box-shadow: inset 0 0 0 2px var(--sr-seal-ink-soft);
   animation: sr-stamp 0.4s cubic-bezier(0.2, 0.9, 0.3, 1.5) 0.15s both;
 }
 @keyframes sr-stamp {
