@@ -21,10 +21,18 @@ def is_duplicate(
     dimension: str,
     threshold: float = DUPLICATE_SIMILARITY_THRESHOLD,
 ) -> tuple[bool, int | None]:
-    """回傳 (is_dup, 既有重複節點的 id | None)。"""
+    """回傳 (is_dup, 既有重複節點的 id | None)。
+
+    候選集排除 REJECTED：被研究者判定「品質不好、退回」的節點不該再拿來當
+    去重比對基準——否則之後任何跟它相似的新觀點（可能是同一個論點但表達得
+    更好）都會被判為重複，只會幫一個已經被退回、永遠不會再被人看到的節點
+    累加 citation_count，白白錯失收錄機會。PENDING 節點仍然要留在候選集：
+    還沒審過不代表品質不好，一樣該當作去重基準。
+    """
     candidates = (
         ViewpointNode.objects
         .filter(topic_id=topic_id, dimension=dimension)
+        .exclude(review_status=ViewpointNode.ReviewStatus.REJECTED)
         .order_by(CosineDistance("embedding", new_embedding))[:CANDIDATE_POOL_SIZE]
     )
     for node in candidates:

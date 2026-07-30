@@ -6,13 +6,14 @@ from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.contrib.auth.password_validation import validate_password as dj_validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 
-from apps.summary.models import ViewpointNode
+from apps.summary.models import VideoRecommendation, ViewpointNode
 
 from .dialogue_topics import get_dialogue_survey
 from .models import (
     AIConversation,
     DiscomfortReport,
     MatchMessage,
+    PlatformDisplaySetting,
     PlatformFeedback,
     PostDialogueResponse,
 )
@@ -58,6 +59,7 @@ class ViewpointNodeReviewSerializer(serializers.ModelSerializer):
             "dialogue_id",
             "topic_id",
             "dimension",
+            "speaker_side",
             "stance_direction",
             "user_input_text",
             "ai_response_text",
@@ -79,10 +81,69 @@ class ViewpointNodeReviewDecisionSerializer(serializers.Serializer):
     notes = serializers.CharField(required=False, allow_blank=True, default="")
 
 
+class ViewpointHighlightSerializer(serializers.Serializer):
+    """知識庫首頁「熱門對話」卡片、以及「觀看更多」清單用的公開唯讀欄位——
+    只允許已通過人工審核（review_status=approved）的 ViewpointNode 走這條
+    序列化，見 views.KnowledgeBaseHighlightsView / KnowledgeBaseViewpointBrowseView。
+    不重用 ViewpointNodeReviewSerializer，因為那個是研究者審核用，會帶
+    user_input_text 等未經篩選的原始逐字稿。"""
+
+    id = serializers.IntegerField()
+    topic_id = serializers.IntegerField()
+    topic_title = serializers.CharField()
+    dimension = serializers.CharField()
+    dimension_name = serializers.CharField()
+    speaker_side = serializers.CharField(allow_blank=True)
+    stance_direction = serializers.CharField(allow_blank=True)
+    viewpoint_summary = serializers.CharField(allow_blank=True)
+    citation_count = serializers.IntegerField()
+    composite_score = serializers.FloatField(allow_null=True)
+    created_at = serializers.DateTimeField()
+
+
+class DialogueSummaryDetailSerializer(serializers.Serializer):
+    """知識庫「熱門對話」卡片點進去的對話紀錄——只回傳 DialogueSummary 已沉澱
+    的摘要欄位，不帶 ViewpointNode.user_input_text/ai_response_text 原始逐字
+    稿，避免把真實參與者的對話內容直接開放給任何登入使用者看。"""
+
+    dialogue_summary_id = serializers.IntegerField()
+    topic_id = serializers.IntegerField()
+    topic_title = serializers.CharField()
+    summary_text = serializers.CharField(allow_blank=True)
+    side_a_stance = serializers.CharField(allow_blank=True)
+    side_b_stance = serializers.CharField(allow_blank=True)
+    quality_score = serializers.FloatField(allow_null=True)
+    stance_shift_magnitude = serializers.FloatField(allow_null=True)
+    created_at = serializers.DateTimeField()
+    viewpoints = ViewpointHighlightSerializer(many=True)
+
+
+class VideoRecommendationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VideoRecommendation
+        fields = [
+            "id",
+            "title",
+            "url",
+            "thumbnail_url",
+            "description",
+            "topic_id",
+            "created_at",
+        ]
+
+
 class AIConversationSerializer(serializers.ModelSerializer):
     class Meta:
         model = AIConversation
         fields = '__all__'
+
+
+class MessageReactionSerializer(serializers.Serializer):
+    """Like/dislike an opponent message; value=0 removes the reaction."""
+
+    target_type = serializers.ChoiceField(choices=["ai", "match"])
+    target_id = serializers.IntegerField(min_value=1)
+    value = serializers.ChoiceField(choices=[1, -1, 0])
 
 
 class DialogueSessionCreateSerializer(serializers.Serializer):
@@ -117,6 +178,12 @@ class DialogueTopicSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=255)
     description = serializers.CharField(max_length=500)
     date = serializers.CharField(max_length=20)
+
+
+class DialogueTopicTrendingSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    title = serializers.CharField(max_length=255)
+    hits = serializers.IntegerField()
 
 
 class DialogueSurveyQuestionSerializer(serializers.Serializer):
@@ -228,6 +295,7 @@ class MatchingStateSerializer(serializers.Serializer):
     other_user_name = serializers.CharField(max_length=150, required=False, allow_null=True)
     presence = serializers.JSONField(required=False, allow_null=True)
     absence_deadline = serializers.DateTimeField(required=False, allow_null=True)
+    fallback_offer = serializers.JSONField(required=False, allow_null=True)
 
 
 class MatchMessageSerializer(serializers.ModelSerializer):
@@ -391,9 +459,21 @@ class PostDialogueResponseSerializer(serializers.Serializer):
                 {"discomfort_detail": "選擇「是」時請描述不適情況。"}
             )
 
-        if not attrs.get("session_id") and not attrs.get("room_id"):
+        session_id = attrs.get("session_id")
+        room_id = attrs.get("room_id")
+        if condition == "ai" and (not session_id or room_id):
             raise serializers.ValidationError(
-                "session_id 與 room_id 至少需提供其中一個。"
+                {
+                    "session_id": "H-AI 組必須只提供 session_id。",
+                    "room_id": "H-AI 組不可提供 room_id。",
+                }
+            )
+        if condition == "hh" and (not room_id or session_id):
+            raise serializers.ValidationError(
+                {
+                    "room_id": "H-H 組必須只提供 room_id。",
+                    "session_id": "H-H 組不可提供 session_id。",
+                }
             )
 
         return attrs
@@ -454,6 +534,11 @@ class PlatformFeedbackOutputSerializer(serializers.ModelSerializer):
 
 class PostDialogueResponseOutputSerializer(serializers.ModelSerializer):
     s_post = serializers.SerializerMethodField()
+    delta_s = serializers.FloatField(source="delta_s_value", read_only=True)
+    stance_centrism = serializers.FloatField(
+        source="stance_centrism_value",
+        read_only=True,
+    )
     pre_question_map = serializers.SerializerMethodField()
 
     def get_s_post(self, obj):
@@ -477,7 +562,8 @@ class PostDialogueResponseOutputSerializer(serializers.ModelSerializer):
             "opponent_judgment",
             "post_open_comprehension", "post_open_feedback",
             "discomfort_flag", "consent_confirmed",
-            "s_post", "pre_question_map",
+            "s_pre", "s_post", "delta_s", "stance_centrism",
+            "pre_question_map",
             "created_at",
         ]
         read_only_fields = fields
@@ -548,3 +634,87 @@ class PasswordResetSerializer(serializers.Serializer):
         except DjangoValidationError as exc:
             raise serializers.ValidationError(list(exc.messages))
         return value
+
+
+class PlatformDisplaySettingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PlatformDisplaySetting
+        fields = [
+            "participant_entry_mode",
+            "researcher_entry_mode",
+            "match_fallback_timeout_minutes",
+            "updated_at",
+        ]
+        read_only_fields = ["updated_at"]
+
+    def validate_match_fallback_timeout_minutes(self, value):
+        if not 1 <= value <= 120:
+            raise serializers.ValidationError("等待時間需介於 1 到 120 分鐘。")
+        return value
+
+
+class TopicDisplayOverrideSerializer(serializers.Serializer):
+    """單一議題的顯示覆寫。四個欄位都選填；門檻傳 null＝還原成程式碼預設值。
+
+    門檻驗證必須看「套用後的實際結果」而不是只看這次送來的欄位：只送
+    support=3.0 但目前 oppose 是 3.5 的話，合起來是不合法的，得擋下來。
+    """
+
+    visible_to_participant = serializers.BooleanField(required=False)
+    visible_to_researcher = serializers.BooleanField(required=False)
+    support_threshold = serializers.FloatField(required=False, allow_null=True)
+    oppose_threshold = serializers.FloatField(required=False, allow_null=True)
+
+    def validate(self, attrs):
+        from .display_settings import default_stance_thresholds, get_stance_thresholds
+
+        topic_id = self.context["topic_id"]
+        survey_config = get_dialogue_survey(topic_id) or {}
+        scale_config = survey_config.get("scale", {})
+        scale_min = float(scale_config.get("min", 1))
+        scale_max = float(scale_config.get("max", 7))
+
+        current_support, current_oppose = get_stance_thresholds(topic_id=topic_id)
+        default_support, default_oppose = default_stance_thresholds(topic_id=topic_id)
+
+        def resolve(field, current, default):
+            if field not in attrs:
+                return current
+            value = attrs[field]
+            return default if value is None else float(value)
+
+        support = resolve("support_threshold", current_support, default_support)
+        oppose = resolve("oppose_threshold", current_oppose, default_oppose)
+
+        for label, value in (("支持門檻", support), ("反對門檻", oppose)):
+            if not scale_min <= value <= scale_max:
+                raise serializers.ValidationError(
+                    f"{label}需介於 {scale_min} 到 {scale_max} 之間。"
+                )
+
+        if oppose >= support:
+            raise serializers.ValidationError("反對門檻必須小於支持門檻。")
+
+        return attrs
+
+
+class DialogueEntrySerializer(serializers.Serializer):
+    """混合入口的輸入。
+
+    刻意不收 topic_title / topic_description / user_initial_argument——
+    那些一律由後端從 TOPIC_CONFIGS 與問卷 Q9 補齊，少一組可被客戶端
+    竄改的輸入。
+    """
+
+    topic_id = serializers.IntegerField()
+    survey_answers = serializers.DictField(
+        child=serializers.IntegerField(min_value=1, max_value=7),
+    )
+    survey_open_answers = serializers.DictField(
+        child=serializers.CharField(
+            allow_blank=True,
+            trim_whitespace=False,
+            max_length=2000,
+        ),
+        required=False,
+    )

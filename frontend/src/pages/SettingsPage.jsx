@@ -33,6 +33,26 @@ function SettingsPage({ user }) {
 
   const refreshAccounts = () => setReloadKey((key) => key + 1);
 
+  const extractError = (requestError, fallback) => {
+    const data = requestError?.response?.data;
+    if (data?.detail) return data.detail;
+    if (data && typeof data === 'object') {
+      const firstKey = Object.keys(data)[0];
+      const firstVal = firstKey ? data[firstKey] : null;
+      if (Array.isArray(firstVal)) return firstVal[0];
+      if (typeof firstVal === 'string') return firstVal;
+    }
+    return fallback;
+  };
+
+  // 顯示設定
+  const [displaySettings, setDisplaySettings] = useState(null);
+  const [displayError, setDisplayError] = useState('');
+  const [displayNotice, setDisplayNotice] = useState('');
+  const [displayReloadKey, setDisplayReloadKey] = useState(0);
+
+  const refreshDisplaySettings = () => setDisplayReloadKey((key) => key + 1);
+
   useEffect(() => {
     if (!isResearcher) return undefined;
 
@@ -64,17 +84,29 @@ function SettingsPage({ user }) {
     };
   }, [isResearcher, reloadKey]);
 
-  const extractError = (requestError, fallback) => {
-    const data = requestError?.response?.data;
-    if (data?.detail) return data.detail;
-    if (data && typeof data === 'object') {
-      const firstKey = Object.keys(data)[0];
-      const firstVal = firstKey ? data[firstKey] : null;
-      if (Array.isArray(firstVal)) return firstVal[0];
-      if (typeof firstVal === 'string') return firstVal;
-    }
-    return fallback;
-  };
+  useEffect(() => {
+    if (!isResearcher) return undefined;
+
+    let cancelled = false;
+    const loadDisplaySettings = async () => {
+      setDisplayError('');
+      try {
+        const response = await api.get('/api/settings/display/');
+        if (cancelled) return;
+        setDisplaySettings(response.data);
+      } catch (requestError) {
+        if (cancelled) return;
+        setDisplaySettings(null);
+        setDisplayError(extractError(requestError, '目前無法讀取顯示設定。'));
+      }
+    };
+
+    void loadDisplaySettings();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isResearcher, displayReloadKey]);
 
   const handleCreate = async (event) => {
     event.preventDefault();
@@ -126,6 +158,48 @@ function SettingsPage({ user }) {
     }
   };
 
+  const patchPlatformSetting = async (payload) => {
+    setDisplayError('');
+    setDisplayNotice('');
+    try {
+      await api.patch('/api/settings/display/', payload);
+      refreshDisplaySettings();
+    } catch (requestError) {
+      setDisplayError(extractError(requestError, '更新顯示設定失敗。'));
+    }
+  };
+
+  const patchTopicSetting = async (topicId, payload) => {
+    setDisplayError('');
+    setDisplayNotice('');
+    try {
+      const response = await api.patch(
+        `/api/settings/display/topics/${topicId}/`,
+        payload,
+      );
+      if (response.data?.warning) setDisplayNotice(response.data.warning);
+      refreshDisplaySettings();
+    } catch (requestError) {
+      setDisplayError(extractError(requestError, '更新議題設定失敗。'));
+    }
+  };
+
+  const handleThresholdBlur = (topic, field, rawValue) => {
+    const trimmed = String(rawValue).trim();
+    // 空字串＝還原成程式碼預設值
+    if (trimmed === '') {
+      void patchTopicSetting(topic.topic_id, { [field]: null });
+      return;
+    }
+    const parsed = Number(trimmed);
+    if (Number.isNaN(parsed)) {
+      setDisplayError('門檻需為數字。');
+      return;
+    }
+    if (parsed === topic[field]) return;
+    void patchTopicSetting(topic.topic_id, { [field]: parsed });
+  };
+
   if (!isResearcher) {
     return (
       <div className="settings-page">
@@ -139,9 +213,141 @@ function SettingsPage({ user }) {
     <div className="settings-page">
       <div className="settings-heading">
         <span className="settings-kicker">研究者</span>
-        <h1>帳號管理</h1>
-        <p>新增、停用／啟用帳號，設定研究者身分，或重設密碼。</p>
+        <h1>研究者設定</h1>
+        <p>調整前端顯示與議題開關，或管理帳號。</p>
       </div>
+
+      {displaySettings && (
+        <section className="settings-display-panel">
+          <h2>顯示設定</h2>
+
+          {displayError && <div className="settings-action-error">{displayError}</div>}
+          {displayNotice && <div className="settings-action-notice">{displayNotice}</div>}
+
+          <div className="settings-display-row">
+            <label>
+              一般使用者入口
+              <select
+                value={displaySettings.platform.participant_entry_mode}
+                onChange={(e) =>
+                  patchPlatformSetting({ participant_entry_mode: e.target.value })
+                }
+              >
+                <option value="mixed">混合入口（依立場自動分流）</option>
+                <option value="split">分開入口（AI／配對各一）</option>
+              </select>
+            </label>
+
+            <label>
+              研究者入口
+              <select
+                value={displaySettings.platform.researcher_entry_mode}
+                onChange={(e) =>
+                  patchPlatformSetting({ researcher_entry_mode: e.target.value })
+                }
+              >
+                <option value="mixed">混合入口（依立場自動分流）</option>
+                <option value="split">分開入口（AI／配對各一）</option>
+              </select>
+            </label>
+
+            <label>
+              配對等待逾時（分鐘）
+              <input
+                type="number"
+                min="1"
+                max="120"
+                key={displaySettings.platform.match_fallback_timeout_minutes}
+                defaultValue={displaySettings.platform.match_fallback_timeout_minutes}
+                onBlur={(e) => {
+                  const parsed = Number(e.target.value);
+                  if (
+                    Number.isNaN(parsed) ||
+                    parsed === displaySettings.platform.match_fallback_timeout_minutes
+                  ) return;
+                  void patchPlatformSetting({
+                    match_fallback_timeout_minutes: parsed,
+                  });
+                }}
+              />
+            </label>
+          </div>
+
+          <table className="settings-table">
+            <thead>
+              <tr>
+                <th>議題</th>
+                <th>一般使用者可見</th>
+                <th>研究者可見</th>
+                <th>支持門檻</th>
+                <th>反對門檻</th>
+              </tr>
+            </thead>
+            <tbody>
+              {displaySettings.topics.map((topic) => (
+                <tr key={topic.topic_id}>
+                  <td>{topic.title}</td>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={topic.visible_to_participant}
+                      onChange={(e) =>
+                        patchTopicSetting(topic.topic_id, {
+                          visible_to_participant: e.target.checked,
+                        })
+                      }
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={topic.visible_to_researcher}
+                      onChange={(e) =>
+                        patchTopicSetting(topic.topic_id, {
+                          visible_to_researcher: e.target.checked,
+                        })
+                      }
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="number"
+                      step="0.1"
+                      key={`sup-${topic.topic_id}-${topic.support_threshold}`}
+                      defaultValue={topic.support_threshold}
+                      onBlur={(e) =>
+                        handleThresholdBlur(topic, 'support_threshold', e.target.value)
+                      }
+                    />
+                    <span className="settings-hint">
+                      預設 {topic.default_support_threshold}
+                    </span>
+                  </td>
+                  <td>
+                    <input
+                      type="number"
+                      step="0.1"
+                      key={`opp-${topic.topic_id}-${topic.oppose_threshold}`}
+                      defaultValue={topic.oppose_threshold}
+                      onBlur={(e) =>
+                        handleThresholdBlur(topic, 'oppose_threshold', e.target.value)
+                      }
+                    />
+                    <span className="settings-hint">
+                      預設 {topic.default_oppose_threshold}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="settings-hint">
+            門檻欄位清空後離開輸入框，即還原成程式碼預設值。變更門檻只影響之後填寫的問卷。
+          </p>
+        </section>
+      )}
+
+      <h2>帳號管理</h2>
 
       <form className="settings-create-form" onSubmit={handleCreate}>
         <h2>新增帳號</h2>

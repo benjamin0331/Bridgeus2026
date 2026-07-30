@@ -90,13 +90,22 @@ function semanticTreePayloadKey(payload) {
   return '';
 }
 
+function reactionKey(target) {
+  return target ? `${target.type}:${target.id}` : null;
+}
+
 function mapHistoryToMessages(history, userName) {
-  return history.map((message, index) => ({
-    id: `${message.role}-${index}`,
-    type: message.role === 'agent' ? 'agent' : 'user',
-    userName: message.role === 'agent' ? 'BridgeUs' : userName,
-    text: message.content,
-  }));
+  return history.map((message, index) => {
+    const isAgent = message.role === 'agent';
+    const turnId = message.turn_id ?? null;
+    return {
+      id: `${message.role}-${index}`,
+      type: isAgent ? 'agent' : 'user',
+      userName: isAgent ? 'BridgeUs' : userName,
+      text: message.content,
+      reactTarget: isAgent && turnId ? { type: 'ai', id: turnId } : null,
+    };
+  });
 }
 
 function formatTimestamp(value) {
@@ -228,8 +237,40 @@ function mapMatchMessagesToDisplay(messages, userId) {
       userName: isCurrentUser ? MATCH_SELF_NAME : MATCH_PARTNER_NAME,
       text: message.content,
       timestamp: message.created_at,
+      reactTarget: isCurrentUser
+        ? null
+        : { type: 'match', id: Number(message.id) },
     };
   });
+}
+
+function MessageReactions({ target, value, onReact }) {
+  if (!target) {
+    return null;
+  }
+
+  return (
+    <div className="message-reactions">
+      <button
+        type="button"
+        className={`reaction-btn ${value === 1 ? 'active like' : ''}`}
+        onClick={() => onReact(target, 1)}
+        aria-label="讚"
+        aria-pressed={value === 1}
+      >
+        <span className="reaction-icon">👍</span>
+      </button>
+      <button
+        type="button"
+        className={`reaction-btn ${value === -1 ? 'active dislike' : ''}`}
+        onClick={() => onReact(target, -1)}
+        aria-label="倒讚"
+        aria-pressed={value === -1}
+      >
+        <span className="reaction-icon">👎</span>
+      </button>
+    </div>
+  );
 }
 
 function TopicChat({ user, issues, issuesLoaded }) {
@@ -239,9 +280,19 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const { markRoomRead } = useNotifications();
   const mode = useMemo(() => {
     const params = new URLSearchParams(location.search);
-    return params.get('mode') === 'match' ? 'match' : 'ai';
+    const raw = params.get('mode');
+    if (raw === 'match') return 'match';
+    if (raw === 'ai') return 'ai';
+    // 沒帶 mode＝混合入口：先填問卷，由後端分流後才知道是哪一種。
+    return 'mixed';
   }, [location.search]);
-  const isMatchingMode = mode === 'match';
+  const isMixedEntry = mode === 'mixed';
+  const [resolvedMode, setResolvedMode] = useState(isMixedEntry ? null : mode);
+  const isMatchingMode = (resolvedMode ?? mode) === 'match';
+  // 只看網址、不看 resolvedMode。底下那個「換頁大重設」effect 必須只在換議題
+  // 或換網址時才跑；若讓它跟著 isMatchingMode 走，混合入口在頁面內完成分流
+  // （或 fallback 從配對轉 AI）時也會觸發整套重設，把剛建立的 session 清掉。
+  const urlIsMatchingMode = mode === 'match';
   const modeLabel = isMatchingMode ? '配對模式' : 'AI 模式';
 
   const [showSurvey, setShowSurvey] = useState(!isMatchingMode);
@@ -287,8 +338,10 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const [showScrollToBottomButton, setShowScrollToBottomButton] = useState(false);
 
   const [isRightPanelOpen, setIsRightPanelOpen] = useState(false);
+  const [reactions, setReactions] = useState({});
 
   const messagesContainerRef = useRef(null);
+  const reactionsRef = useRef({});
   const isComposingRef = useRef(false);
   const textareaRef = useRef(null);
   const wsRef = useRef(null);
@@ -318,6 +371,24 @@ function TopicChat({ user, issues, issuesLoaded }) {
       matchingState?.status === 'matched' &&
       matchingState?.room_id,
   );
+
+  // 使用者正在看這個聊天室時，不論訊息是輪詢拿到還是 WebSocket 推來的，
+  // 都直接標記成已讀，側邊欄鈴鐺才不會在使用者明明就在對話中時還亮紅點。
+  useEffect(() => {
+    if (!isMatchChatReady || !matchingState?.room_id || matchMessages.length === 0) {
+      return;
+    }
+    markRoomRead(matchingState.room_id, matchMessages.length);
+  }, [isMatchChatReady, markRoomRead, matchMessages, matchingState?.room_id]);
+
+  // AI 對話同一套已讀邏輯：sessionId 就是通知列表裡 AI 房間的 room_id。
+  useEffect(() => {
+    if (isMatchingMode || !sessionId || messages.length === 0) {
+      return;
+    }
+    markRoomRead(sessionId, messages.length);
+  }, [isMatchingMode, markRoomRead, messages, sessionId]);
+
   const matchMessageIdsSignature = useMemo(
     () => matchMessages.map((message) => message.id).filter(Boolean).join(','),
     [matchMessages],
@@ -360,6 +431,57 @@ function TopicChat({ user, issues, issuesLoaded }) {
     window.requestAnimationFrame(() => {
       textareaRef.current?.focus({ preventScroll: true });
     });
+  }, []);
+
+  const mergeFetchedReactions = useCallback((list, type) => {
+    if (!Array.isArray(list)) {
+      return;
+    }
+    setReactions((previous) => {
+      const next = { ...previous };
+      list.forEach((item) => {
+        if (item?.target_id != null) {
+          next[`${type}:${item.target_id}`] = item.value;
+        }
+      });
+      reactionsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const handleReact = useCallback(async (target, clickedValue) => {
+    if (!target) {
+      return;
+    }
+
+    const key = reactionKey(target);
+    const previousValue = reactionsRef.current[key] || 0;
+    const nextValue = previousValue === clickedValue ? 0 : clickedValue;
+    const optimistic = { ...reactionsRef.current };
+    if (nextValue === 0) {
+      delete optimistic[key];
+    } else {
+      optimistic[key] = nextValue;
+    }
+    reactionsRef.current = optimistic;
+    setReactions(optimistic);
+
+    try {
+      await api.post('/api/message-reactions/', {
+        target_type: target.type,
+        target_id: target.id,
+        value: nextValue,
+      });
+    } catch {
+      const reverted = { ...reactionsRef.current };
+      if (previousValue === 0) {
+        delete reverted[key];
+      } else {
+        reverted[key] = previousValue;
+      }
+      reactionsRef.current = reverted;
+      setReactions(reverted);
+    }
   }, []);
 
   const resetAiSemanticTreeState = useCallback(() => {
@@ -409,6 +531,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setPendingRestoredSession(null);
     setSessionId(null);
     setMessages([]);
+    reactionsRef.current = {};
+    setReactions({});
     setAiStanceMeta(null);
     setAiStanceDrift(null);
     setSurveyAnswers({});
@@ -646,10 +770,12 @@ function TopicChat({ user, issues, issuesLoaded }) {
     setSurveyError('');
     setSavedStanceProfile(null);
     setStanceRedoConfirmed(false);
-    setShowSurvey(!isMatchingMode);
+    setShowSurvey(!urlIsMatchingMode);
     setSessionId(null);
     setInputValue('');
     setMessages([]);
+    reactionsRef.current = {};
+    setReactions({});
     setAiStanceMeta(null);
     setAiStanceDrift(null);
     setIsSending(false);
@@ -663,7 +789,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     wsSessionIdRef.current = null;
     closeMatchWebSocket();
     setMatchingState(null);
-    setIsMatchingStateLoading(isMatchingMode);
+    setIsMatchingStateLoading(urlIsMatchingMode);
     setIsMatchingActionLoading(false);
     setMatchingError('');
     setMatchMessages([]);
@@ -685,7 +811,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
     cancelQueueRequestSentRef.current = false;
     shouldAutoScrollMatchRef.current = true;
     setShowScrollToBottomButton(false);
-  }, [closeMatchWebSocket, id, isMatchingMode]);
+  }, [closeMatchWebSocket, id, urlIsMatchingMode]);
 
   useEffect(() => {
     if (!currentIssue) {
@@ -803,7 +929,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
   }, [currentIssue, id, isMatchingMode]);
 
   useEffect(() => {
-    if (isMatchingMode || !currentIssue) {
+    // 已經有 session 就不要還原：混合入口的分流端點與 fallback 端點都會當場
+    // 建好 session 並把 id 交給前端，這時再去拉 sessions/latest/ 會把那場剛
+    // 建立的對話當成「上次的對話」，跳出「要繼續上次嗎」問使用者。
+    // 純 ?mode=ai 進來時 sessionId 仍是 null，重新整理後的續用行為不受影響。
+    if (isMatchingMode || !currentIssue || sessionId) {
       return undefined;
     }
 
@@ -861,7 +991,58 @@ function TopicChat({ user, issues, issuesLoaded }) {
     return () => {
       cancelled = true;
     };
-  }, [currentIssue, displayUserName, id, isMatchingMode]);
+  }, [currentIssue, displayUserName, id, isMatchingMode, sessionId]);
+
+  useEffect(() => {
+    if (isMatchingMode || !sessionId) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const fetchReactions = async () => {
+      try {
+        const response = await api.get(
+          `/api/message-reactions/?target_type=ai&conversation_id=${encodeURIComponent(sessionId)}`,
+        );
+        if (!cancelled) {
+          mergeFetchedReactions(response.data?.reactions, 'ai');
+        }
+      } catch {
+        // Reactions are optional UI state; chat remains usable if loading fails.
+      }
+    };
+    void fetchReactions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isMatchingMode, mergeFetchedReactions, sessionId]);
+
+  useEffect(() => {
+    if (!isMatchChatReady || !matchingState?.room_id) {
+      return undefined;
+    }
+
+    const roomId = matchingState.room_id;
+    let cancelled = false;
+    const fetchReactions = async () => {
+      try {
+        const response = await api.get(
+          `/api/message-reactions/?target_type=match&conversation_id=${encodeURIComponent(roomId)}`,
+        );
+        if (!cancelled) {
+          mergeFetchedReactions(response.data?.reactions, 'match');
+        }
+      } catch {
+        // Reactions are optional UI state; chat remains usable if loading fails.
+      }
+    };
+    void fetchReactions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isMatchChatReady, matchingState?.room_id, mergeFetchedReactions]);
 
   useEffect(() => {
     if (!isMatchChatReady || !matchingState?.room_id) {
@@ -1003,23 +1184,6 @@ function TopicChat({ user, issues, issuesLoaded }) {
       window.clearInterval(pollTimer);
     };
   }, [isMatchChatReady, isMatchingMode, matchingState?.room_id]);
-
-  // 使用者正在看這個聊天室時，不論訊息是輪詢拿到還是 WebSocket 推來的，
-  // 都直接標記成已讀，側邊欄鈴鐺才不會在使用者明明就在對話中時還亮紅點。
-  useEffect(() => {
-    if (!isMatchChatReady || !matchingState?.room_id || matchMessages.length === 0) {
-      return;
-    }
-    markRoomRead(matchingState.room_id, matchMessages.length);
-  }, [isMatchChatReady, markRoomRead, matchMessages, matchingState?.room_id]);
-
-  // AI 對話同一套已讀邏輯：sessionId 就是通知列表裡 AI 房間的 room_id。
-  useEffect(() => {
-    if (isMatchingMode || !sessionId || messages.length === 0) {
-      return;
-    }
-    markRoomRead(sessionId, messages.length);
-  }, [isMatchingMode, markRoomRead, messages, sessionId]);
 
   useEffect(() => {
     if (!isMatchingMode) {
@@ -1325,6 +1489,17 @@ function TopicChat({ user, issues, issuesLoaded }) {
       }
 
       if (data.type === 'agent_stream_end') {
+        const streamedMessageId = currentAgentMsgIdRef.current;
+        const turnId = data.turn_id ?? null;
+        if (streamedMessageId && turnId) {
+          setMessages((previous) =>
+            previous.map((message) =>
+              message.id === streamedMessageId
+                ? { ...message, reactTarget: { type: 'ai', id: turnId } }
+                : message,
+            ),
+          );
+        }
         currentAgentMsgIdRef.current = null;
         setAiStanceDrift(extractStanceDrift(data));
         setIsAgentStreaming(false);
@@ -1477,6 +1652,55 @@ function TopicChat({ user, issues, issuesLoaded }) {
       survey_open_answers: openAnswers,
     }));
 
+    if (isMixedEntry) {
+      setMatchingError('');
+      // 使用者才剛送出問卷，「要不要沿用先前立場」已經沒有意義。上面的
+      // setSavedStanceProfile 會把 exists 設成 true，若不在 await 之前先
+      // 關掉，等待分流回應的那段時間會閃出重填問卷的對話框。
+      setStanceRedoConfirmed(true);
+      setIsMatchingActionLoading(true);
+      try {
+        const response = await api.post('/api/dialogue/entry/', {
+          topic_id: Number(id),
+          survey_answers: answers,
+          survey_open_answers: openAnswers,
+        });
+
+        if (!isChatPageMountedRef.current) return;
+
+        if (response.data.route === 'ai') {
+          setResolvedMode('ai');
+          // 分流端點已經把 session 建好了，直接收下 session_id——
+          // ensureSession() 之後會因為 sessionId 有值而短路，不會重建一場，
+          // 也不會去打被把關擋住的 /api/dialogue/sessions/。
+          setSessionId(response.data.session_id);
+          setAiStanceMeta(extractAiStanceMeta(response.data));
+          setAiStanceDrift(extractStanceDrift(response.data));
+          setMessages([]);
+          setSemanticTreePayload(null);
+          setSemanticTreeStatus('ready');
+          setSemanticTreeMessage('');
+          semanticTreeAnalyzeSignatureRef.current = '';
+          shouldAutoScrollAiRef.current = true;
+          setChatError('');
+        } else {
+          setResolvedMode('match');
+          setMatchingState(response.data);
+        }
+        setShowSurvey(false);
+      } catch (error) {
+        if (!isChatPageMountedRef.current) return;
+        setMatchingError(
+          error?.response?.data?.detail || '目前無法開始對話，請稍後再試。',
+        );
+      } finally {
+        if (isChatPageMountedRef.current) {
+          setIsMatchingActionLoading(false);
+        }
+      }
+      return;
+    }
+
     if (!isMatchingMode) {
       wsRef.current?.close();
       wsRef.current = null;
@@ -1530,6 +1754,36 @@ function TopicChat({ user, issues, issuesLoaded }) {
       if (isChatPageMountedRef.current) {
         setIsMatchingActionLoading(false);
       }
+    }
+  };
+
+  const [fallbackBusy, setFallbackBusy] = useState(false);
+  const fallbackOffer = matchingState?.fallback_offer;
+
+  const handleAcceptFallback = async () => {
+    if (fallbackBusy) return;
+    setFallbackBusy(true);
+    setMatchingError('');
+    try {
+      const response = await api.post('/api/dialogue/entry/fallback/', {
+        topic_id: Number(id),
+      });
+      if (!isChatPageMountedRef.current) return;
+      setResolvedMode('ai');
+      setMatchingState(null);
+      setSessionId(response.data.session_id);
+      setAiStanceMeta(extractAiStanceMeta(response.data));
+      setAiStanceDrift(extractStanceDrift(response.data));
+      setMessages([]);
+      shouldAutoScrollAiRef.current = true;
+      setChatError('');
+    } catch (error) {
+      if (!isChatPageMountedRef.current) return;
+      setMatchingError(
+        error?.response?.data?.detail || '目前無法改成 AI 對話，請稍後再試。',
+      );
+    } finally {
+      if (isChatPageMountedRef.current) setFallbackBusy(false);
     }
   };
 
@@ -1882,6 +2136,31 @@ function TopicChat({ user, issues, issuesLoaded }) {
             <p className="matching-status-copy">
               你現在已經在等待佇列中。離開頁面會自動取消等待；配對成功後短暫重整頁面可以回到同一個聊天室。
             </p>
+            {fallbackOffer?.available && (
+              <div className="matching-fallback-offer">
+                <p>目前沒有找到合適的對談對象。要改成和 AI 代理人對話嗎？</p>
+                <div className="matching-status-actions">
+                  <button
+                    className="matching-status-btn"
+                    type="button"
+                    disabled={fallbackBusy}
+                    onClick={handleAcceptFallback}
+                  >
+                    改成 AI 對話
+                  </button>
+                  <button
+                    className="matching-status-btn secondary"
+                    type="button"
+                    disabled={fallbackBusy}
+                    onClick={() => setMatchingState((prev) => (
+                      prev ? { ...prev, fallback_offer: null } : prev
+                    ))}
+                  >
+                    繼續等待
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="matching-status-meta">
               <div className="matching-status-row">
                 <span className="matching-status-label">立場類型</span>
@@ -2041,6 +2320,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
                 <span className="message-username">{msg.userName}</span>
               </div>
               <div className="message-bubble">{msg.text}</div>
+              <MessageReactions
+                target={msg.reactTarget}
+                value={msg.reactTarget ? reactions[reactionKey(msg.reactTarget)] || 0 : 0}
+                onReact={handleReact}
+              />
             </div>
           ))}
           {isMatchSending && (
@@ -2306,6 +2590,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
                     <span className="message-username">{msg.userName}</span>
                   </div>
                   <div className="message-bubble">{msg.text}</div>
+                  <MessageReactions
+                    target={msg.reactTarget}
+                    value={msg.reactTarget ? reactions[reactionKey(msg.reactTarget)] || 0 : 0}
+                    onReact={handleReact}
+                  />
                 </div>
               ))}
               {isSending && !isAgentStreaming && (
@@ -2421,11 +2710,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
                 className="metric-info"
                 tabIndex={0}
                 role="note"
-                aria-label="論述移動說明：顯示你的發言與最初立場陳述的語意差距。+:與前句發言陳述角度不一，-:與前句發言陳述角度較一致。"
+                aria-label="論述移動說明：顯示你的發言與最初立場陳述的語意差距。數值上升代表你的論述正在展開、觸及新的角度——這反映討論的廣度，不代表你被說服或立場動搖。"
               >
                 i
                 <span className="metric-info-tooltip" role="tooltip">
-                  顯示你的發言與最初立場陳述的語意差距。<br />+:與前句發言陳述角度不一<br />-:與前句發言陳述角度較一致。
+                  顯示你的發言與最初立場陳述的語意差距。數值上升代表你的論述正在展開、觸及新的角度——這反映討論的廣度，不代表你被說服或立場動搖。
                 </span>
               </span>
             </span>

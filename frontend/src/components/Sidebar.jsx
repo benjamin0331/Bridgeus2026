@@ -47,6 +47,15 @@ function Sidebar({ navigate, isTopicPage = false, isResearcher = false }) {
           <button
             className="sidebar-icon-btn"
             type="button"
+            onClick={() => handleNavigate('/kb')}
+            aria-label="觀點知識庫"
+            title="觀點知識庫"
+          >
+            <img src="/star.png" alt="" className="utility-icon" />
+          </button>
+          <button
+            className="sidebar-icon-btn"
+            type="button"
             onClick={() => handleNavigate('/notifications')}
             aria-label="消息通知"
             title="消息通知"

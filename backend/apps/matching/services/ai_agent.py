@@ -16,6 +16,7 @@ Skeleton: Benjamin (PM)
 """
 
 import asyncio
+import logging
 import os
 import random
 import re
@@ -29,6 +30,8 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from core.chroma_utils import ensure_chroma_dir_writable
 from core.llm_provider import get_embeddings, get_llm
+
+logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -72,6 +75,110 @@ async def stream_chunks(
             await send_typing()
         await asyncio.sleep(random.uniform(min_delay, max_delay))
         await send_message(chunk)
+
+
+# ═══════════════════════════════════════════════════════════
+# Output Contract Gate
+# ═══════════════════════════════════════════════════════════
+
+_JUDGMENT_OPEN = "<judgment>"
+_JUDGMENT_CLOSE = "</judgment>"
+_REPLY_OPEN = "<reply>"
+_REPLY_CLOSE = "</reply>"
+
+# claude-sonnet-4-6 returns 400 on a trailing assistant message, so the output
+# contract cannot be pinned by prefill. Flip this only after verifying the
+# configured model actually accepts one (api/tests_live_contract.py proves it).
+PREFILL_SUPPORTED = False
+
+
+class ReplyStreamGate:
+    """壓制 <reply> 之前與 </reply> 之後的所有內容。
+
+    只有 feed() 回傳的字串可以推給前端。
+
+    兩段式開閘:必須先看到 </judgment>,才開始尋找 <reply>。
+    單段式(直接找第一個 <reply>)有一個真實漏洞:system prompt 第十節本身
+    就包含 "<reply>" 字面字串,模型若在 judgment 區塊內仿寫(例如「本輪
+    <reply> 只寫 3 句」),開閘點會提前,該句之後的判定文字就會外洩。
+    換哨兵符號不能解決——換成什麼,prompt 裡就會出現什麼。
+
+    這個定義同時涵蓋兩種串流形狀:
+      - 無 prefill(現況):串流含 "<judgment>…</judgment>" 完整標籤
+      - 有 prefill(未來若模型支援):串流從 judgment 內文開始,不含開標籤
+    """
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._judgment_closed = False
+        self._open = False
+        self._closed = False
+        self._judgment_raw = ""
+        self.reply = ""
+
+    @property
+    def judgment(self) -> str:
+        # _judgment_raw 已不含 </judgment>(階段一切掉了),但無 prefill 時
+        # 模型會自己輸出 <judgment> 開標籤,仍需剝除。
+        return (
+            self._judgment_raw
+            .replace(_JUDGMENT_OPEN, "")
+            .replace(_JUDGMENT_CLOSE, "")
+            .strip()
+        )
+
+    @property
+    def buffered_preview(self) -> str:
+        """未開閘時已收到的全部內容,僅供 fail-closed 時記 log,不得推給前端。
+
+        含階段一已切出的 judgment,否則違約樣本的診斷資訊會少一半。
+        """
+        return self._judgment_raw + self._buf
+
+    def feed(self, chunk: str) -> str:
+        if self._closed:
+            return ""
+        self._buf += chunk
+
+        # 階段一：等 </judgment>
+        if not self._judgment_closed:
+            idx = self._buf.find(_JUDGMENT_CLOSE)
+            if idx == -1:
+                return ""          # judgment 尚未結束,一律不推
+            self._judgment_raw = self._buf[:idx]
+            self._buf = self._buf[idx + len(_JUDGMENT_CLOSE):]
+            self._judgment_closed = True
+
+        # 階段二：等 <reply>（此時 buf 已在 judgment 區塊之外）
+        if not self._open:
+            idx = self._buf.find(_REPLY_OPEN)
+            if idx == -1:
+                return ""          # 尚未開閘,一律不推
+            self._buf = self._buf[idx + len(_REPLY_OPEN):]
+            self._open = True
+
+        idx = self._buf.find(_REPLY_CLOSE)
+        if idx != -1:
+            out = self._buf[:idx]
+            self._buf = ""
+            self._closed = True
+        else:
+            hold = len(_REPLY_CLOSE) - 1   # 保留尾巴,防止閉合標籤被切斷
+            if len(self._buf) > hold:
+                out, self._buf = self._buf[:-hold], self._buf[-hold:]
+            else:
+                out = ""
+
+        self.reply += out
+        return out
+
+    def finish(self) -> tuple[str, bool]:
+        """回傳 (剩餘可推內容, 契約是否成立)。"""
+        if not self._open:
+            return "", False       # 從未開閘 → fail closed
+        out, self._buf = self._buf, ""
+        self.reply += out
+        return out, True
 
 # ═══════════════════════════════════════════════════════════
 # Prompt Loading
@@ -414,6 +521,18 @@ class DialogueAgent:
         # Load system prompt from file
         system_prompt_text = load_system_prompt(prompt_file)
         self._system_prompt_raw = system_prompt_text
+        # No assistant prefill here either — see the note in astream_respond().
+        # A trailing ("ai", "<judgment>") turn would pin the model's first token,
+        # but the model rejects it at the API layer, so both paths rely on
+        # 第十節 of the system prompt plus ReplyStreamGate's fail-closed parsing.
+        self._prefill_supported = PREFILL_SUPPORTED
+        if not self._prefill_supported:
+            logger.warning(
+                "Output contract is NOT protected by assistant prefill "
+                "(model rejects it); enforcement rests on system prompt 第十節 "
+                "+ ReplyStreamGate. collection=%s",
+                self._collection_name,
+            )
         self._prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", system_prompt_text),
@@ -537,9 +656,19 @@ class DialogueAgent:
             system_text = system_text.replace("{" + key + "}", value)
 
         client = anthropic.AsyncAnthropic()
+        # NOTE: assistant prefill (a trailing {"role": "assistant", "content":
+        # "<judgment>"}) is NOT available here. claude-sonnet-4-6 rejects it:
+        #   400 invalid_request_error — "This model does not support assistant
+        #   message prefill. The conversation must end with a user message."
+        # Switching models to regain prefill would change the experimental
+        # manipulation, so the output contract is carried by 第十節 of the system
+        # prompt and enforced by ReplyStreamGate, which fails closed.
+        # Consequence: the stream DOES include the literal "<judgment>" open tag.
+        # The gate treats everything before "<reply>" as judgment either way, so
+        # it stays correct if prefill becomes available on a future model.
         async with client.messages.stream(
             model=os.getenv("CLAUDE_CHAT_MODEL", "claude-sonnet-4-6"),
-            max_tokens=int(os.getenv("CLAUDE_CHAT_MAX_TOKENS", "1024")),
+            max_tokens=int(os.getenv("CLAUDE_CHAT_MAX_TOKENS", "1536")),
             temperature=self._temperature,
             system=[
                 {

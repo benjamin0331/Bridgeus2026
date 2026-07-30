@@ -263,11 +263,11 @@
   font-weight: 800;
 }
 
-/* 樹狀圖保留完整操作空間；高度不足時由右側 panel 捲動，
-   避免壓縮後裁掉 canvas 或節點詳情。 */
+/* 讓樹狀圖佔滿剩餘空間，下方的滑桿與回顧卡片各自佔正常流的高度，
+   不再讓滑桿用絕對定位浮在樹上（那會跟回顧卡片重疊）。 */
 .history-tree-panel > .conversation-tree-panel {
-  flex: 1 0 auto;
-  min-height: 480px;
+  flex: 1 1 auto;
+  min-height: 180px;
   height: auto;
 }
 

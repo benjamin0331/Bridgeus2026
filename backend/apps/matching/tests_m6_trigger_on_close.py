@@ -9,7 +9,7 @@ from django.contrib.auth.models import User
 from django.test import TestCase
 from django.utils import timezone
 
-from api.models import DialogueMatch, MatchMessage, MatchStanceDrift
+from api.models import DialogueMatch, MatchMessage
 from apps.matching.services.matcher import close_match
 from apps.matching.services.semantic_tree import (
     OWNER_USER_A,
@@ -17,6 +17,12 @@ from apps.matching.services.semantic_tree import (
     create_owner_tree_state,
 )
 from apps.summary.models import DialogueSummary, ViewpointNode
+
+# ccnd_semantic_dist is the cosine distance between a message's own embedding
+# and the same speaker's previous message (see assemble.py module docstring).
+# Orthogonal unit vectors give a clean, deterministic distance of 1.0.
+_EMB_A0 = [1.0] + [0.0] * 383
+_EMB_A2 = [0.0, 1.0] + [0.0] * 382
 
 # Six real turns, alternating sides, each comfortably over the 30-char /
 # quality-filter thresholds so Step 1 passes and message index 2 (side "a")
@@ -29,6 +35,10 @@ _TURNS = [
     ("a", "從供電穩定的角度來看，再生能源目前還沒辦法完全取代核能作為基載電力的角色，仍需要時間發展。"),
     ("b", "儲能技術與智慧電網的發展其實已經逐漸成熟，未來完全可以支撐再生能源成為穩定的基載選項。"),
 ]
+# index -> embedding, only where the fixture cares about the resulting
+# ccnd_semantic_dist (index 2 needs to clear SEMANTIC_DIST_THRESHOLD relative
+# to index 0, its speaker's previous message).
+_EMBEDDINGS = {0: _EMB_A0, 2: _EMB_A2}
 
 
 class TriggerM6PipelineOnCloseTests(TestCase):
@@ -47,14 +57,13 @@ class TriggerM6PipelineOnCloseTests(TestCase):
         messages = []
         for index, (side, content) in enumerate(_TURNS):
             sender = self.user_a if side == "a" else self.user_b
-            if index == 2:
-                # Gives message index 2 (side "a") a real drift > SEMANTIC_DIST_THRESHOLD
-                # so it clears Step 2 of quality_filter.extract_valuable_pairs().
-                MatchStanceDrift.objects.create(
-                    match=self.match, user=self.user_a, drift_value=0.5
-                )
             messages.append(
-                MatchMessage.objects.create(match=self.match, sender=sender, content=content)
+                MatchMessage.objects.create(
+                    match=self.match,
+                    sender=sender,
+                    content=content,
+                    embedding=_EMBEDDINGS.get(index),
+                )
             )
 
         owner_a_state = create_owner_tree_state(OWNER_USER_A, "核電")
