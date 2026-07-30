@@ -81,7 +81,6 @@ function StepC1({ answers, onChange, questions }) {
         <LikertItem
           key={q.index}
           label={`C1-${q.index}`}
-          tag={q.reverse ? '(反向)' : null}
           text={q.text}
           value={answers[q.index]}
           onChange={(v) => onChange(q.index, v)}
@@ -367,6 +366,13 @@ export default function PostQuestionnairePage() {
     setStep((s) => s - 1);
   };
 
+  const handleClose = () => {
+    const confirmed = window.confirm('確定要離開問卷嗎？目前填寫的內容將不會被儲存。');
+    if (confirmed) {
+      navigate(-1);
+    }
+  };
+
   const handleSubmit = async () => {
     if (!canAdvance()) {
       setSubmitError('請填完本頁所有欄位再繼續。');
@@ -458,7 +464,18 @@ export default function PostQuestionnairePage() {
     <div className="pq-page">
       <div className="pq-container">
         <div className="pq-header">
-          <h2>對話後問卷</h2>
+          <div className="pq-header-top">
+            <h2>對話後問卷</h2>
+            <button
+              type="button"
+              className="pq-close-btn"
+              onClick={handleClose}
+              aria-label="離開問卷並返回對話"
+              title="離開問卷並返回對話"
+            >
+              ×
+            </button>
+          </div>
           <p className="pq-subtitle">感謝你的參與！請依序回答以下問題。</p>
           <div className="pq-step-badge">{getStepLabel()}</div>
           <StepIndicator current={step} total={actualSteps} />

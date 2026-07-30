@@ -6,6 +6,7 @@ import ConversationTreePanel from '../components/ConversationTreePanel';
 import SurveyModal from '../components/SurveyModal';
 import StanceReuseModal from '../components/StanceReuseModal';
 import api from '../api/client';
+import { useNotifications } from '../context/NotificationsContext';
 
 const MATCHING_POLL_INTERVAL_MS = 3000;
 const MATCH_SCROLL_BOTTOM_THRESHOLD_PX = 96;
@@ -155,6 +156,32 @@ function formatDriftValue(value) {
   return numericValue.toFixed(4);
 }
 
+function usePreviousValue(value) {
+  const ref = useRef({ current: undefined, previous: undefined });
+  if (ref.current.current !== value) {
+    ref.current = { current: value, previous: ref.current.current };
+  }
+  return ref.current.previous;
+}
+
+// 顯示樣式：上一輪的數值 +/- 差異值（這輪數值 = 兩者相加，不在畫面上重複列出）。
+// 只影響呈現方式，drift_value 本身仍由後端 cosine 距離公式計算，此處不重新推導。
+function formatDriftEquation(currentValue, previousValue) {
+  const current = Number(currentValue);
+  if (!Number.isFinite(current)) {
+    return '尚未計算';
+  }
+
+  const previous = Number(previousValue);
+  if (!Number.isFinite(previous)) {
+    return formatDriftValue(current);
+  }
+
+  const diff = current - previous;
+  const sign = diff >= 0 ? '+' : '-';
+  return `${formatDriftValue(previous)} ${sign}${Math.abs(diff).toFixed(4)}`;
+}
+
 function formatStanceScoreValue(value) {
   if (value === null || value === undefined || value === '') {
     return '尚未建立';
@@ -209,6 +236,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const { id } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
+  const { markRoomRead } = useNotifications();
   const mode = useMemo(() => {
     const params = new URLSearchParams(location.search);
     return params.get('mode') === 'match' ? 'match' : 'ai';
@@ -243,6 +271,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const [matchingError, setMatchingError] = useState('');
   const [matchMessages, setMatchMessages] = useState([]);
   const [matchStanceDrift, setMatchStanceDrift] = useState(null);
+  const previousMatchDriftValue = usePreviousValue(matchStanceDrift?.drift_value ?? null);
+  const previousAiDriftValue = usePreviousValue(aiStanceDrift?.drift_value ?? null);
   const [semanticTreePayload, setSemanticTreePayload] = useState(null);
   const [semanticTreeStatus, setSemanticTreeStatus] = useState('ready');
   const [semanticTreeMessage, setSemanticTreeMessage] = useState('');
@@ -973,6 +1003,23 @@ function TopicChat({ user, issues, issuesLoaded }) {
       window.clearInterval(pollTimer);
     };
   }, [isMatchChatReady, isMatchingMode, matchingState?.room_id]);
+
+  // 使用者正在看這個聊天室時，不論訊息是輪詢拿到還是 WebSocket 推來的，
+  // 都直接標記成已讀，側邊欄鈴鐺才不會在使用者明明就在對話中時還亮紅點。
+  useEffect(() => {
+    if (!isMatchChatReady || !matchingState?.room_id || matchMessages.length === 0) {
+      return;
+    }
+    markRoomRead(matchingState.room_id, matchMessages.length);
+  }, [isMatchChatReady, markRoomRead, matchMessages, matchingState?.room_id]);
+
+  // AI 對話同一套已讀邏輯：sessionId 就是通知列表裡 AI 房間的 room_id。
+  useEffect(() => {
+    if (isMatchingMode || !sessionId || messages.length === 0) {
+      return;
+    }
+    markRoomRead(sessionId, messages.length);
+  }, [isMatchingMode, markRoomRead, messages, sessionId]);
 
   useEffect(() => {
     if (!isMatchingMode) {
@@ -2153,8 +2200,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
     ? isMatchChatReady || Boolean(semanticTreePayload)
     : Boolean(sessionId) || Boolean(semanticTreePayload);
   const driftValueDisplay = isMatchingMode
-    ? formatDriftValue(matchStanceDrift?.drift_value)
-    : formatDriftValue(aiStanceDrift?.drift_value);
+    ? formatDriftEquation(matchStanceDrift?.drift_value, previousMatchDriftValue)
+    : formatDriftEquation(aiStanceDrift?.drift_value, previousAiDriftValue);
   const driftHintDisplay = isMatchingMode
     ? driftUpdatedAt
     : aiDriftUpdatedAt;
@@ -2287,64 +2334,66 @@ function TopicChat({ user, issues, issuesLoaded }) {
           </button>
         )}
 
-        {!isMatchingMode && sessionId && messages.length > 0 && (
-          <div className="ai-end-dialogue-bar">
-            <button
-              className="ai-end-dialogue-btn"
-              type="button"
-              disabled={isSending || isAgentStreaming}
-              onClick={() =>
-                navigate('/post-questionnaire', {
-                  state: {
-                    topicId: Number(id),
-                    sessionId,
-                    condition: 'ai',
-                  },
-                })
-              }
-            >
-              結束對話 &amp; 填寫後測問卷
-            </button>
-          </div>
-        )}
-
-        <div className="chat-input-area">
-          <div className={`chat-input-wrapper ${isMatchingMode && !isMatchChatReady ? 'is-disabled' : ''}`}>
-            <textarea
-              ref={textareaRef}
-              className="chat-text-input"
-              placeholder={inputPlaceholder}
-              value={inputValue}
-              disabled={isInputDisabled}
-              onChange={handleTextareaChange}
-              onCompositionStart={() => {
-                isComposingRef.current = true;
-              }}
-              onCompositionEnd={() => {
-                isComposingRef.current = false;
-              }}
-              onKeyDown={handleInputKeyDown}
-              rows={1}
-            />
-            <button
-              className="chat-send-btn"
-              onMouseDown={(event) => {
-                event.preventDefault();
-              }}
-              onClick={() => {
-                void handleSendMessage();
-              }}
-              disabled={isInputDisabled || isAiSendCoolingDown || !inputValue.trim()}
-              aria-label="發送訊息"
-            >
-              <img src="/arrow-right.png" alt="發送" className="send-icon" />
-            </button>
-          </div>
-          {activeChatError && (
-            <p style={{ color: '#b42318', fontSize: '14px', marginTop: '8px' }}>
-              {activeChatError}
-            </p>
+        <div className="chat-fixed-footer">
+          {!isMatchingMode && sessionId && messages.length > 0 && (
+            <div className="ai-end-dialogue-bar">
+              <button
+                className="ai-end-dialogue-btn"
+                type="button"
+                disabled={isSending || isAgentStreaming}
+                onClick={() =>
+                  navigate('/post-questionnaire', {
+                    state: {
+                      topicId: Number(id),
+                      sessionId,
+                      condition: 'ai',
+                    },
+                  })
+                }
+              >
+                結束對話 &amp; 填寫後測問卷
+              </button>
+            </div>
           )}
+
+          <div className="chat-input-area">
+            <div className={`chat-input-wrapper ${isMatchingMode && !isMatchChatReady ? 'is-disabled' : ''}`}>
+              <textarea
+                ref={textareaRef}
+                className="chat-text-input"
+                placeholder={inputPlaceholder}
+                value={inputValue}
+                disabled={isInputDisabled}
+                onChange={handleTextareaChange}
+                onCompositionStart={() => {
+                  isComposingRef.current = true;
+                }}
+                onCompositionEnd={() => {
+                  isComposingRef.current = false;
+                }}
+                onKeyDown={handleInputKeyDown}
+                rows={1}
+              />
+              <button
+                className="chat-send-btn"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                }}
+                onClick={() => {
+                  void handleSendMessage();
+                }}
+                disabled={isInputDisabled || isAiSendCoolingDown || !inputValue.trim()}
+                aria-label="發送訊息"
+              >
+                <img src="/arrow-right.png" alt="發送" className="send-icon" />
+              </button>
+            </div>
+            {activeChatError && (
+              <p style={{ color: '#b42318', fontSize: '14px', marginTop: '8px' }}>
+                {activeChatError}
+              </p>
+            )}
+          </div>
         </div>
       </div>
 
@@ -2372,15 +2421,15 @@ function TopicChat({ user, issues, issuesLoaded }) {
                 className="metric-info"
                 tabIndex={0}
                 role="note"
-                aria-label="論述移動說明：顯示你的發言與最初立場陳述的語意差距。數值上升代表你的論述正在展開、觸及新的角度——這反映討論的廣度，不代表你被說服或立場動搖。"
+                aria-label="論述移動說明：顯示你的發言與最初立場陳述的語意差距。+:與前句發言陳述角度不一，-:與前句發言陳述角度較一致。"
               >
                 i
                 <span className="metric-info-tooltip" role="tooltip">
-                  顯示你的發言與最初立場陳述的語意差距。數值上升代表你的論述正在展開、觸及新的角度——這反映討論的廣度，不代表你被說服或立場動搖。
+                  顯示你的發言與最初立場陳述的語意差距。<br />+:與前句發言陳述角度不一<br />-:與前句發言陳述角度較一致。
                 </span>
               </span>
             </span>
-            <strong className="metric-value">
+            <strong className="metric-value metric-value-equation" title={driftValueDisplay}>
               {driftValueDisplay}
             </strong>
             <span className="metric-hint">
