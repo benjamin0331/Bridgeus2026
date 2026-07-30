@@ -2710,11 +2710,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
                 className="metric-info"
                 tabIndex={0}
                 role="note"
-                aria-label="論述移動說明：顯示你的發言與最初立場陳述的語意差距。數值上升代表你的論述正在展開、觸及新的角度——這反映討論的廣度，不代表你被說服或立場動搖。"
+                aria-label="論述移動說明：顯示你的發言與最初立場陳述的語意差距。+：與上句角度陳述不同。-：與上句角度陳述相似。"
               >
                 i
                 <span className="metric-info-tooltip" role="tooltip">
-                  顯示你的發言與最初立場陳述的語意差距。數值上升代表你的論述正在展開、觸及新的角度——這反映討論的廣度，不代表你被說服或立場動搖。
+                  顯示你的發言與最初立場陳述的語意差距。<br/>+：與上句角度陳述不同。<br/>-：與上句角度陳述相似。
                 </span>
               </span>
             </span>
