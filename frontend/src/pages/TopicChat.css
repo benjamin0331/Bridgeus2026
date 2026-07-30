@@ -540,6 +540,14 @@
   line-height: 1.6;
 }
 
+.matching-status-notice {
+  margin: 4px auto 0;
+  width: min(100%, 760px);
+  color: #475467;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
 .chat-input-area {
   flex-shrink: 0;
   margin-bottom: 5px;

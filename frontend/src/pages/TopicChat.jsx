@@ -292,6 +292,10 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const [isMatchingStateLoading, setIsMatchingStateLoading] = useState(isMatchingMode);
   const [isMatchingActionLoading, setIsMatchingActionLoading] = useState(false);
   const [matchingError, setMatchingError] = useState('');
+  // Godot 房作廢的通知。刻意不重用 matchingError：那個會被輪詢裡的
+  // 「status 不是 matching 就清空」邏輯抹掉，而且它的渲染條件排除了
+  // status === 'matched'——倖存者若立刻被重新配對就永遠看不到訊息。
+  const [bindingNotice, setBindingNotice] = useState('');
   const [matchMessages, setMatchMessages] = useState([]);
   const [matchStanceDrift, setMatchStanceDrift] = useState(null);
   const [semanticTreePayload, setSemanticTreePayload] = useState(null);
@@ -1091,7 +1095,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
         // 當下就反應，不能等之後再處理。
         if (response.data.binding_cancel_reason) {
           setShowSurvey(false);
-          setMatchingError(
+          setBindingNotice(
             response.data.binding_cancel_reason === 'godot_partner_left'
               ? '對方已退出配對，已為你轉回一般配對模式。'
               : '前測問卷逾時，已為你轉回一般配對模式。',
@@ -1120,6 +1124,17 @@ function TopicChat({ user, issues, issuesLoaded }) {
     matchingState?.binding_source,
     matchingState?.status,
   ]);
+
+  useEffect(() => {
+    // 保險絲：問卷開著、但後端已經不認為這是「Godot 待填問卷」狀態時就關掉。
+    // 正常情況會由 binding_cancel_reason 的通知關閉；這裡是防止通知漏掉時
+    // 使用者卡在一份送出去只會被 409 拒絕的問卷前。
+    if (!showSurvey) return;
+    if (!matchingState) return;
+    if (matchingState.binding_source === 'godot') return;
+    if (matchingState.status === 'idle') return;   // 一般入口本來就該顯示問卷
+    setShowSurvey(false);
+  }, [matchingState, showSurvey]);
 
   useEffect(() => {
     if (!isMatchChatReady) {
@@ -1677,6 +1692,17 @@ function TopicChat({ user, issues, issuesLoaded }) {
         setShowSurvey(false);
       } catch (error) {
         if (!isChatPageMountedRef.current) return;
+        const reason = error?.response?.data?.binding_cancel_reason;
+        if (error?.response?.status === 409) {
+          // 房間在送出過程中被作廢了。關掉問卷並說明，不要停在一份送不出去的表單。
+          setShowSurvey(false);
+          setBindingNotice(
+            reason === 'godot_partner_left'
+              ? '對方已退出配對，已為你轉回一般配對模式。'
+              : '前測問卷逾時，已為你轉回一般配對模式。',
+          );
+          return;
+        }
         setMatchingError(
           error?.response?.data?.detail || '目前無法送出問卷，請稍後再試。',
         );
@@ -2606,6 +2632,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
               {renderMatchingCard()}
               {matchingError && !showSurvey && matchingState?.status !== 'matched' && (
                 <p className="matching-status-error">{matchingError}</p>
+              )}
+              {bindingNotice && (
+                <p className="matching-status-notice">{bindingNotice}</p>
               )}
             </>
           ) : (
