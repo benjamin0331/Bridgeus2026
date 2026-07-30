@@ -6,6 +6,7 @@ the "/"-compound cluster labels resolved via _resolve_point_name.
 from unittest import TestCase
 
 from apps.matching.services import nuclear_node_classifier as m
+from apps.matching.services import semantic_tree
 
 SAMPLE_MESSAGES = [
     "核電會像輻射那樣有散射的風險對人造成危害嗎",
@@ -39,3 +40,39 @@ class ClassifySampleMessagesTests(TestCase):
                 )
                 self.assertIn("class_id", result)
                 self.assertIn("cluster_id", result)
+
+
+class ClassifyStanceForSampleMessagesTests(TestCase):
+    """End-to-end check for the full nuclear_node_classifier.build_candidate_items
+    pipeline: does it (a) still find a CCND node for each sample message via
+    the local BERT model, and (b) get a real 支持/反對/無關/中立 verdict back
+    from the OpenAI stance call (semantic_tree.classify_stance_with_openai)?
+
+    Requires OPENAI_API_KEY to be configured in backend/.env — otherwise
+    classify_stance_with_openai silently falls back to "中立" for every
+    message, and this test can't tell a real API failure from "message
+    actually was neutral".
+    """
+
+    def test_prints_node_and_stance_for_sample_messages(self):
+        self.assertTrue(
+            semantic_tree.get_openai_api_key(),
+            "OPENAI_API_KEY is not configured in backend/.env — stance will just "
+            "silently fall back to '中立' for every message.",
+        )
+
+        for text in SAMPLE_MESSAGES:
+            with self.subTest(text=text):
+                items = m.build_candidate_items(text, semantic_tree.FIXED_ANCHORS)
+                if not items:
+                    print(f"\n文字: {text}\n（未命中任何節點，屬於其他/未分流，不會建立節點）")
+                    continue
+
+                item = items[0]
+                print(
+                    f"\n文字: {text}"
+                    f"\n節點: {item['pointName']}（anchor={item['anchorId']}）"
+                    f"\n立場: {item['stance']}"
+                )
+                self.assertIn("pointName", item)
+                self.assertIn(item["stance"], semantic_tree.STANCE_LABELS)

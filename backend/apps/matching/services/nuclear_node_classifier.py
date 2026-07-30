@@ -200,13 +200,19 @@ def build_candidate_items(text: str, anchors: list[dict[str, str]]) -> list[dict
     if anchor_id is None:
         return []
 
+    point_name = _resolve_point_name(cleaned, result["cluster_id"], result["cluster_name"])
+
+    from apps.matching.services.semantic_tree import classify_stance_with_openai
+
+    stance = classify_stance_with_openai(text=cleaned, context_label=point_name)
+
     return [
         {
             "claimText": cleaned,
             "anchorId": anchor_id,
             "path": [],
-            "pointName": _resolve_point_name(cleaned, result["cluster_id"], result["cluster_name"]),
-            "stance": "中立",
+            "pointName": point_name,
+            "stance": stance,
             "confidence": result["cluster_conf"],
             "rationale": (
                 f"分類模型判斷：{result['class_name']}（{result['class_conf']:.2f}）"

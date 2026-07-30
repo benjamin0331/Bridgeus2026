@@ -81,7 +81,7 @@ function StepC1({ answers, onChange, questions }) {
         <LikertItem
           key={q.index}
           label={`C1-${q.index}`}
-          tag={q.reverse ? '(反向)' : null}
+          
           text={q.text}
           value={answers[q.index]}
           onChange={(v) => onChange(q.index, v)}

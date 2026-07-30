@@ -192,6 +192,27 @@
   stroke: rgba(140, 110, 80, 0.28);
 }
 
+/* Stance lighting: latest OpenAI-judged stance per node repaints it green
+   (support) or red (oppose). Neutral/mixed/undetermined stances intentionally
+   have no rule here, so the node keeps its default fill above. */
+.node-point.stance-support .conversation-tree-node-shape {
+  fill: #2f9e58;
+  stroke: rgba(20, 90, 50, 0.45);
+}
+
+.node-point.stance-support .point-label {
+  fill: #f5fff8;
+}
+
+.node-point.stance-oppose .conversation-tree-node-shape {
+  fill: #d64545;
+  stroke: rgba(120, 30, 30, 0.45);
+}
+
+.node-point.stance-oppose .point-label {
+  fill: #fff5f5;
+}
+
 .conversation-tree-node.is-selected .conversation-tree-node-shape {
   stroke: #9b6f47;
   stroke-width: 2.5px;
