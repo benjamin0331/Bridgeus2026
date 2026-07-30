@@ -1040,7 +1040,15 @@ def analyze_with_openai(
     }
 
 
-LOCAL_CLASSIFIER_TOPIC_IDS = {102}
+LOCAL_CLASSIFIER_TOPIC_IDS = {102, 103}
+
+# Each locally-classified topic gets its own trained macro/micro pipeline
+# module (different weights, different class->anchor mapping) — one entry
+# per topic_id in LOCAL_CLASSIFIER_TOPIC_IDS.
+_LOCAL_CLASSIFIER_MODULES = {
+    102: "apps.matching.services.nuclear_node_classifier",
+    103: "apps.matching.services.women_conscription_node_classifier",
+}
 
 # MIN_CONFIDENCE (0.55) was tuned for an LLM's self-reported meta-confidence,
 # which tends to run high. The local classifier's confidence is a raw softmax
@@ -1062,15 +1070,17 @@ def analyze_text_for_tree(
     anchors: list[dict[str, str]] | None = None,
     anchor_descriptions: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Dispatch node analysis by topic: topic 102 (nuclear energy) uses the
-    locally fine-tuned classifier pipeline; every other topic keeps using the
-    generative OpenAI path.
+    """Dispatch node analysis by topic: topics in LOCAL_CLASSIFIER_TOPIC_IDS
+    each use their own locally fine-tuned classifier pipeline; every other
+    topic keeps using the generative OpenAI path.
     """
     resolved_anchors = anchors or FIXED_ANCHORS
     if uses_local_classifier(topic_id):
-        from apps.matching.services import nuclear_node_classifier
+        import importlib
 
-        candidate_items = nuclear_node_classifier.build_candidate_items(text, resolved_anchors)
+        classifier_module = importlib.import_module(_LOCAL_CLASSIFIER_MODULES[topic_id])
+
+        candidate_items = classifier_module.build_candidate_items(text, resolved_anchors)
         return {
             **validate_analysis_items(
                 {"items": candidate_items},
