@@ -912,7 +912,7 @@ def _godot_return_to_normal(*, user_id: int, topic_id: int, match) -> None:
 
 
 def get_matching_state(*, user, topic_id: int) -> MatchingState:
-    from api.godot_binding import binding_cancel_reason
+    from api.godot_binding import mark_cancel_notice_seen, pending_cancel_notice_for
 
     active_match = _get_active_match(user_id=user.id, topic_id=topic_id)
     godot_cancel_reason = None
@@ -925,8 +925,32 @@ def get_matching_state(*, user, topic_id: int) -> MatchingState:
         if resolved.status != DialogueMatch.Status.ACTIVE:
             # 作廢原因要在這裡抓下來：接下來 _godot_return_to_normal 已經把這個人
             # 重新排隊或改走 AI，底下回傳的 state 不會再掛著這間房，原因就消失了。
-            godot_cancel_reason = binding_cancel_reason(resolved)
+            # 觸發裁決的只會是其中一個請求，所以要走「逐人確認」名單——抓到之後
+            # 立刻標記已通知，否則觸發者接下來會透過下面補查的路徑再收到一次。
+            godot_cancel_reason = pending_cancel_notice_for(resolved, user.id)
+            if godot_cancel_reason:
+                mark_cancel_notice_seen(resolved, user.id)
         active_match = resolved
+
+    if godot_cancel_reason is None:
+        # 沒有從裁決拿到原因時，看看有沒有「最近作廢、這位使用者還沒被告知」的
+        # Godot 房。觸發裁決的只會是其中一個請求（清理指令取消時一個都沒有），
+        # 另一位要靠這條路徑才收得到通知。
+        recent_cancelled = (
+            DialogueMatch.objects.filter(
+                topic_id=topic_id,
+                status=DialogueMatch.Status.CANCELLED,
+            )
+            .filter(Q(user_a_id=user.id) | Q(user_b_id=user.id))
+            .order_by("-closed_at", "-id")
+            .first()
+        )
+        if recent_cancelled is not None:
+            pending = pending_cancel_notice_for(recent_cancelled, user.id)
+            if pending:
+                mark_cancel_notice_seen(recent_cancelled, user.id)
+                godot_cancel_reason = pending
+
     if active_match:
         active_match = close_match_if_participant_absent(match=active_match)
     if active_match and active_match.status == DialogueMatch.Status.ACTIVE:

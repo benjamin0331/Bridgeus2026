@@ -578,3 +578,53 @@ def test_return_to_normal_does_not_touch_other_rooms_credentials():
     # 舊房的憑證必須毫髮無傷。
     old_match.refresh_from_db()
     assert match_pretest_state(old_match)["both_done"] is True
+
+
+@pytest.mark.django_db
+def test_both_participants_each_receive_cancel_notice_once():
+    """通知要逐人確認：兩位各自收到剛好一次，不是只有觸發裁決的那個人。"""
+    user_a, user_b = _make_users()
+    match = _godot_match(user_a, user_b, room_id="room-notice-both")
+    _submit_survey(user_a, SUPPORT_ANSWERS)
+    match.refresh_from_db()
+    _mark_seen(match, user_a, seconds_ago=1)
+    _mark_seen(match, user_b, seconds_ago=GODOT_PRESENCE_TIMEOUT + 10)
+
+    client_a = APIClient()
+    client_a.force_authenticate(user=user_a)
+    client_b = APIClient()
+    client_b.force_authenticate(user=user_b)
+
+    # A 的輪詢觸發裁決並拿到原因。
+    a_first = client_a.get("/api/matching/status/?topic_id=102")
+    assert a_first.data["binding_cancel_reason"] == "godot_partner_left"
+    # A 再次輪詢就不該重複收到。
+    a_second = client_a.get("/api/matching/status/?topic_id=102")
+    assert a_second.data["binding_cancel_reason"] is None
+
+    # B 沒有觸發裁決，但仍然要收到一次。
+    b_first = client_b.get("/api/matching/status/?topic_id=102")
+    assert b_first.data["binding_cancel_reason"] == "godot_partner_left"
+    b_second = client_b.get("/api/matching/status/?topic_id=102")
+    assert b_second.data["binding_cancel_reason"] is None
+
+
+@pytest.mark.django_db
+def test_command_cancellation_still_notifies_both():
+    """清理指令取消時沒有任何請求在場，兩位之後輪詢都要收得到。"""
+    from django.core.management import call_command
+
+    user_a, user_b = _make_users()
+    match = _godot_match(
+        user_a, user_b, room_id="room-notice-cmd", deadline_offset_seconds=-60
+    )
+
+    call_command("close_expired_godot_matches")
+    match.refresh_from_db()
+    assert match.status == DialogueMatch.Status.CANCELLED
+
+    for user in (user_a, user_b):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.get("/api/matching/status/?topic_id=102")
+        assert response.data["binding_cancel_reason"] == "godot_survey_timeout"

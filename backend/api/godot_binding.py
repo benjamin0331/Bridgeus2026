@@ -46,6 +46,40 @@ def binding_cancel_reason(match) -> str | None:
     return binding.get("cancel_reason") if binding else None
 
 
+def pending_cancel_notice_for(match, user_id: int) -> str | None:
+    """這位使用者還沒被告知過的作廢原因；沒有就回 None。
+
+    作廢原因必須兩位都收得到，而觸發裁決的只會是其中一個請求（清理指令取消時
+    甚至一個都沒有）。所以改成持久化 + 逐人確認：名單記在 stats.binding，
+    每個人各自讀到一次。
+    """
+    binding = godot_binding_info(match)
+    if binding is None:
+        return None
+    reason = binding.get("cancel_reason")
+    if not reason:
+        return None
+    notified = binding.get("notified_user_ids") or []
+    return None if user_id in notified else reason
+
+
+def mark_cancel_notice_seen(match, user_id: int) -> None:
+    """把這位使用者記成已通知（冪等）。"""
+    binding = godot_binding_info(match)
+    if binding is None or not binding.get("cancel_reason"):
+        return
+    notified = list(binding.get("notified_user_ids") or [])
+    if user_id in notified:
+        return
+    notified.append(user_id)
+    stats = dict(match.stats or {})
+    new_binding = dict(stats.get(BINDING_STATS_KEY) or {})
+    new_binding["notified_user_ids"] = notified
+    stats[BINDING_STATS_KEY] = new_binding
+    match.stats = stats
+    match.save(update_fields=["stats"])
+
+
 def match_pretest_state(match) -> dict:
     """這間房兩位參與者各自填完前測問卷了沒。"""
     completed = set(
