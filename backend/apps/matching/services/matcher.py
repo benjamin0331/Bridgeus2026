@@ -647,12 +647,29 @@ def record_godot_survey(
     建 queue entry 不只是為了憑證：下游（get_matching_state 的 profile 欄位、
     M5 分析、M6 pipeline）本來就預期配對房兩邊都有這筆記錄，順手建起來比另外加
     一個布林欄位更不容易跟既有邏輯打架。
+
+    回傳值語意：成功寫入回傳（重新讀取後的）match；鎖內重驗擋下則回傳 None。
+    呼叫端（GodotSurveyView）必須檢查 None 並回應 409——呼叫端的裁決檢查發生在
+    這個 transaction 之外，那之後到這裡取得鎖的窗口期間，清理指令或另一位的輪詢
+    可能已經把房間取消，不能假設傳進來的 match 快照仍然有效。
     """
+    from api.godot_binding import godot_binding_info
+
     decimal_score = _as_decimal(stance_score)
     q9_embedding = build_q9_embedding(survey_open_answers)
 
     with transaction.atomic():
         locked = DialogueMatch.objects.select_for_update().get(pk=match.pk)
+        # 鎖內重驗：呼叫端的裁決檢查發生在 transaction 外，那之後到這裡取得鎖的
+        # 窗口期間，清理指令或另一位的輪詢可能已經把房間取消。不重驗的話會寫出
+        # 「問卷成功但房已作廢、人也沒被重新分流」的孤兒——因為退回一般模式是在
+        # 這筆 MATCHED entry 存在之前跑的，當時會判定這個人沒填完而跳過他。
+        if locked.status != DialogueMatch.Status.ACTIVE:
+            return None
+        if godot_binding_info(locked) is None:
+            return None
+        if user.id not in (locked.user_a_id, locked.user_b_id):
+            return None
         profile, _ = UserStanceProfile.objects.update_or_create(
             user=user,
             topic_id=topic_id,

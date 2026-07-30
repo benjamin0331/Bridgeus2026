@@ -2839,7 +2839,7 @@ class GodotSurveyView(APIView):
             survey_open_answers=validated.get("survey_open_answers", {}),
         )
 
-        record_godot_survey(
+        recorded = record_godot_survey(
             user=request.user,
             match=match,
             topic_id=topic_id,
@@ -2848,6 +2848,19 @@ class GodotSurveyView(APIView):
             survey_answers=validated["survey_answers"],
             survey_open_answers=resolved_open_answers,
         )
+        if recorded is None:
+            # 鎖內重驗擋下了——窗口期間房間被取消。回 409 跟前置檢查一致。
+            # 這裡要重讀 match：呼叫端手上那份是過期快照，拿不到剛寫入的作廢原因。
+            fresh = DialogueMatch.objects.filter(pk=match.pk).first()
+            return Response(
+                {
+                    "detail": "這個配對房間已結束。",
+                    "binding_cancel_reason": (
+                        binding_cancel_reason(fresh) if fresh else None
+                    ),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
 
         support_threshold, oppose_threshold = get_stance_thresholds(topic_id=topic_id)
         DialogueEntryAssignment.objects.update_or_create(

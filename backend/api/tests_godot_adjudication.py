@@ -488,3 +488,58 @@ def test_command_leaves_normal_matches_alone():
 
     match.refresh_from_db()
     assert match.status == DialogueMatch.Status.ACTIVE
+
+
+@pytest.mark.django_db
+def test_survey_write_is_rejected_if_room_cancelled_after_gate_check():
+    """檢查與寫入之間的窗口：模擬「裁決檢查通過後，房間才被取消」。
+
+    record_godot_survey 必須在鎖內重驗，否則會寫出「問卷成功但房已作廢、人也沒被
+    重新分流」的孤兒狀態。
+    """
+    from apps.matching.services.matcher import record_godot_survey
+
+    user_a, user_b = _make_users()
+    match = _godot_match(user_a, user_b, room_id="room-race-write")
+    # 模擬窗口期間房間被別人取消（清理指令或另一位的輪詢）。
+    DialogueMatch.objects.filter(pk=match.pk).update(
+        status=DialogueMatch.Status.CANCELLED
+    )
+
+    result = record_godot_survey(
+        user=user_a,
+        match=match,           # 呼叫端手上仍是那份過期的 ACTIVE 快照
+        topic_id=102,
+        stance_score=6.0,
+        stance_category="support",
+        survey_answers=SUPPORT_ANSWERS,
+        survey_open_answers={"Q9": "測試"},
+    )
+
+    assert result is None       # 寫不進去
+    assert not MatchQueueEntry.objects.filter(user=user_a, match=match).exists()
+    match.refresh_from_db()
+    assert match.user_a_score is None
+
+
+@pytest.mark.django_db
+def test_survey_write_rejected_for_non_participant():
+    """鎖內也要確認身份：呼叫端傳錯 match 不該寫得進去。"""
+    from apps.matching.services.matcher import record_godot_survey
+
+    user_a, user_b = _make_users()
+    outsider = User.objects.create_user(username="uc", password="pw")
+    match = _godot_match(user_a, user_b, room_id="room-race-outsider")
+
+    result = record_godot_survey(
+        user=outsider,
+        match=match,
+        topic_id=102,
+        stance_score=6.0,
+        stance_category="support",
+        survey_answers=SUPPORT_ANSWERS,
+        survey_open_answers={"Q9": "測試"},
+    )
+
+    assert result is None
+    assert not MatchQueueEntry.objects.filter(user=outsider).exists()
