@@ -543,3 +543,38 @@ def test_survey_write_rejected_for_non_participant():
 
     assert result is None
     assert not MatchQueueEntry.objects.filter(user=outsider).exists()
+
+
+@pytest.mark.django_db
+def test_return_to_normal_does_not_touch_other_rooms_credentials():
+    """退回一般模式只能取消「本次被裁決那間房」的 queue entry。
+
+    MATCHED entry 是 match_pretest_state 判斷「填過前測問卷」的憑證，波及其他房
+    等於讓歷史房間的前測紀錄憑空消失。
+    """
+    from api.godot_binding import match_pretest_state
+    from apps.matching.services.matcher import resolve_godot_survey_gate
+
+    user_a, user_b = _make_users()
+    # 同一位使用者、同一個議題的另一間（較早的）房，雙方都已填完。
+    old_match = _godot_match(user_a, user_b, room_id="room-old-done")
+    _submit_survey(user_a, SUPPORT_ANSWERS)
+    _submit_survey(user_b, OPPOSE_ANSWERS)
+    old_match.refresh_from_db()
+    assert match_pretest_state(old_match)["both_done"] is True
+    DialogueMatch.objects.filter(pk=old_match.pk).update(
+        status=DialogueMatch.Status.CLOSED
+    )
+
+    # 新的一間房，A 填完、B 離開 → 裁決作廢 → A 退回一般模式。
+    new_match = _godot_match(user_a, user_b, room_id="room-new-cancel")
+    _submit_survey(user_a, SUPPORT_ANSWERS)
+    new_match.refresh_from_db()
+    _mark_seen(new_match, user_a, seconds_ago=1)
+    _mark_seen(new_match, user_b, seconds_ago=GODOT_PRESENCE_TIMEOUT + 10)
+
+    resolve_godot_survey_gate(match=new_match)
+
+    # 舊房的憑證必須毫髮無傷。
+    old_match.refresh_from_db()
+    assert match_pretest_state(old_match)["both_done"] is True

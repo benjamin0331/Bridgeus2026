@@ -853,7 +853,9 @@ def resolve_godot_survey_gate(*, match, viewer_user_id=None, now=None):
     ):
         if done:
             try:
-                _godot_return_to_normal(user_id=user_id, topic_id=locked.topic_id)
+                _godot_return_to_normal(
+                    user_id=user_id, topic_id=locked.topic_id, match=locked
+                )
             except Exception:
                 # 房間已經 CANCELLED 且不可重試（_get_active_match 找不到它了），
                 # 一個人失敗不能拖累另一個人，也不該讓輪詢請求整個 500。
@@ -864,7 +866,7 @@ def resolve_godot_survey_gate(*, match, viewer_user_id=None, now=None):
     return locked
 
 
-def _godot_return_to_normal(*, user_id: int, topic_id: int) -> None:
+def _godot_return_to_normal(*, user_id: int, topic_id: int, match) -> None:
     """把已填過問卷的參與者退回一般模式。
 
     §D3 在 Godot 房裡刻意不套用「中立→AI」分流（問卷是配對成立後才填的，這時
@@ -881,11 +883,13 @@ def _godot_return_to_normal(*, user_id: int, topic_id: int) -> None:
     if profile is None:
         return
 
-    # 舊的 MATCHED queue entry 屬於已作廢的房，標成 CANCELLED，否則
-    # enqueue_for_matching 會撞上 uniq_active_queue_user_topic 或被誤讀成仍在配對。
+    # 只取消「這間房」的 MATCHED entry。MATCHED entry 是 match_pretest_state
+    # 判斷「填過前測問卷」的憑證（見 spec §D5），波及同使用者同議題的其他房，
+    # 會讓那些房的前測紀錄憑空消失——歷史資料被靜默改寫，研究上讀不出來。
     MatchQueueEntry.objects.filter(
         user_id=user_id,
         topic_id=topic_id,
+        match=match,
         status=MatchQueueEntry.Status.MATCHED,
     ).update(status=MatchQueueEntry.Status.CANCELLED, cancelled_at=timezone.now())
 
