@@ -490,6 +490,35 @@ class WomenConscriptionClassifierTests(SimpleTestCase):
         classify.assert_not_called()
 
 
+def assign_entry_route(user, topic_id, route=DialogueEntryAssignment.Route.AI):
+    """Give `user` the entry assignment that `route` requires for `topic_id`.
+
+    participant_entry_mode defaults to MIXED, and in that mode the entry gate
+    (views._entry_gate_response) 403s both POST /api/dialogue/sessions/ and
+    POST /api/matching/join/ unless the caller has already been routed — in
+    production by submitting the survey to /api/dialogue/entry/. Tests about
+    what happens *inside* a session or a match still need that precondition;
+    without it they only ever exercise the gate, and the 403 body has none of
+    the keys they go on to read. The routing decision itself is covered in
+    tests_mixed_entry.py, not here.
+    """
+    to_match = route == DialogueEntryAssignment.Route.MATCH
+    return DialogueEntryAssignment.objects.update_or_create(
+        user=user,
+        topic_id=topic_id,
+        defaults={
+            # Kept consistent with the route: only a non-neutral stance is
+            # routed to matching (matcher.can_enter_human_matching).
+            "route": route,
+            "stance_score": "6.00" if to_match else "4.00",
+            "stance_category": "support" if to_match else "neutral",
+            "support_threshold": 4.5,
+            "oppose_threshold": 3.5,
+            "entry_mode_at_assignment": "mixed",
+        },
+    )
+
+
 class DialogueSessionApiTests(APITestCase):
     def setUp(self):
         cache.clear()
@@ -498,6 +527,8 @@ class DialogueSessionApiTests(APITestCase):
             password="secret123",
         )
         self.client.force_authenticate(user=self.user)
+        # Every test in this class opens an AI session on topic 102.
+        assign_entry_route(self.user, 102)
 
     def test_session_creation_requires_authentication(self):
         self.client.force_authenticate(user=None)
@@ -904,32 +935,10 @@ class DialogueSessionApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIsNotNone(cache.get(f"dialogue_session:{session_id}"))
 
-    def _assign_to_ai_route(self, topic_id):
-        """Clear the mixed-entry gate for this user+topic.
-
-        participant_entry_mode defaults to MIXED, and in that mode
-        `dialogue/sessions` 403s unless the caller already has an entry
-        assignment (views._entry_gate_response) — a participant normally gets
-        one by submitting the pre-survey. Without this the request never
-        reaches the classifier the test is actually about.
-        """
-        DialogueEntryAssignment.objects.update_or_create(
-            user=self.user,
-            topic_id=topic_id,
-            defaults={
-                "route": DialogueEntryAssignment.Route.AI,
-                "stance_score": "4.00",
-                "stance_category": "neutral",
-                "support_threshold": 4.5,
-                "oppose_threshold": 3.5,
-                "entry_mode_at_assignment": "mixed",
-            },
-        )
-
     def test_ai_semantic_tree_topic_103_does_not_require_openai_key(self):
         # Same contract as topic 102 above: topic 103 is on the local
         # classifier path, so it must keep working with no OPENAI_API_KEY.
-        self._assign_to_ai_route(103)
+        assign_entry_route(self.user, 103)
         create_response = self.client.post(
             "/api/dialogue/sessions/",
             {
@@ -959,7 +968,7 @@ class DialogueSessionApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     def test_ai_semantic_tree_reports_503_when_local_model_weights_missing(self):
-        self._assign_to_ai_route(103)
+        assign_entry_route(self.user, 103)
         create_response = self.client.post(
             "/api/dialogue/sessions/",
             {
@@ -1006,6 +1015,10 @@ class SingleActiveDialogueSessionTests(APITestCase):
             password="secret123",
         )
         self.client.force_authenticate(user=self.user)
+        # Topics 102 and 103 are both used below; the invariant under test is
+        # about AI sessions, so both need the AI-arm assignment.
+        assign_entry_route(self.user, 102)
+        assign_entry_route(self.user, 103)
 
     def _create_session(self, topic_id=102):
         response = self.client.post(
@@ -1060,6 +1073,7 @@ class SingleActiveDialogueSessionTests(APITestCase):
         stranger = get_user_model().objects.create_user(
             username="stranger", password="secret123"
         )
+        assign_entry_route(stranger, 102)
         stranger_client = APIClient()
         stranger_client.force_authenticate(user=stranger)
         stranger_response = stranger_client.post(
@@ -1085,6 +1099,9 @@ class StanceProfileReuseApiTests(APITestCase):
             password="secret123",
         )
         self.client.force_authenticate(user=self.user)
+        # These exercise AI-session creation and stance-profile reuse, both
+        # behind the mixed-entry gate.
+        assign_entry_route(self.user, 102)
 
     def test_stance_profile_reports_not_existing_before_any_survey(self):
         response = self.client.get("/api/dialogue/topics/102/stance-profile/")
@@ -1470,6 +1487,12 @@ class MatchingApiTests(APITestCase):
         self.other_client.force_authenticate(user=self.other_user)
         self.third_client = APIClient()
         self.third_client.force_authenticate(user=self.third_user)
+        # All three join human matching on topic 102, which the mixed-entry
+        # gate only allows for participants already routed to that arm.
+        for participant in (self.user, self.other_user, self.third_user):
+            assign_entry_route(
+                participant, 102, DialogueEntryAssignment.Route.MATCH
+            )
 
     def _create_match(self):
         first_response = self.client.post(
@@ -2267,6 +2290,11 @@ class MatchingApiTests(APITestCase):
         self.assertIsNotNone(match.closed_at)
 
     def test_session_uses_backend_title_for_known_topic(self):
+        # An AI-session test that happens to live in this class: setUp routes
+        # everyone to matching, and the gate lets a match-routed participant
+        # open an AI session no more than the reverse. Override for this one.
+        assign_entry_route(self.user, 102, DialogueEntryAssignment.Route.AI)
+
         create_response = self.client.post(
             "/api/dialogue/sessions/",
             {
@@ -2292,6 +2320,10 @@ class MatchingApiTests(APITestCase):
 
     @patch("api.views.get_dialogue_agent", return_value=FakeExplodingDialogueAgent())
     def test_reply_does_not_leak_internal_errors(self, mocked_get_agent):
+        # Also an AI-session test — see the note in
+        # test_session_uses_backend_title_for_known_topic.
+        assign_entry_route(self.user, 102, DialogueEntryAssignment.Route.AI)
+
         create_response = self.client.post(
             "/api/dialogue/sessions/",
             {
