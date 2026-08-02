@@ -139,6 +139,7 @@ html, body {
 }
 
 .sidebar-icon-btn {
+  position: relative;
   display: inline-flex;
   width: 32px;
   height: 32px;
@@ -148,6 +149,18 @@ html, body {
   padding: 0;
   background: transparent;
   cursor: pointer;
+}
+
+/* 側邊欄鈴鐺右上角的未讀紅點：收到新訊息時亮起 */
+.sidebar-notification-dot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #e14b4b;
+  border: 2px solid #f1ede8;
 }
 
 /* 底部首頁按鈕：推至側邊欄最下方 */

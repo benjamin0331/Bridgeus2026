@@ -1,9 +1,30 @@
 .db-page {
-  min-height: 100vh;
+  height: 100%;
+  overflow-y: auto;
   background-color: #f7f3f0;
   display: flex;
   justify-content: center;
   padding: 48px 16px;
+  box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.1) transparent;
+}
+
+.db-page::-webkit-scrollbar {
+  width: 6px;
+}
+
+.db-page::-webkit-scrollbar-button,
+.db-page::-webkit-scrollbar-button:start,
+.db-page::-webkit-scrollbar-button:end {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.db-page::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 10px;
 }
 
 .db-container {

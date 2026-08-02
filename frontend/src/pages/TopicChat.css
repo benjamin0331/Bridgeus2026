@@ -775,22 +775,38 @@
   .scroll-to-bottom-btn {
     position: fixed;
     right: 18px;
-    bottom: calc(98px + env(safe-area-inset-bottom));
+    bottom: calc(160px + env(safe-area-inset-bottom));
     z-index: 210;
     min-height: 36px;
     padding: 0 14px;
     font-size: 13px;
   }
 
-  .chat-input-area {
+  .chat-fixed-footer {
     position: fixed;
     bottom: 0;
     left: 0;
     right: 0;
+    display: flex;
+    flex-direction: column;
+    z-index: 100;
+  }
+
+  .ai-end-dialogue-bar {
+    display: flex;
+    justify-content: center;
+    padding: 8px 14px;
+    background: #f7f3f0;
+  }
+
+  .ai-end-dialogue-btn {
+    background: #fff;
+  }
+
+  .chat-input-area {
     padding: 10px 14px calc(18px + env(safe-area-inset-bottom));
     background: #f7f3f0;
     box-shadow: 0 -12px 28px rgba(66, 52, 42, 0.08);
-    z-index: 100;
   }
 
   .chat-right-function-area {
@@ -976,6 +992,13 @@
   color: #2f2722;
   font-size: clamp(14px, 1.4vw, 18px);
   line-height: 1;
+}
+
+.metric-value-equation {
+  overflow: hidden;
+  font-size: clamp(11px, 1.1vw, 14px);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .metric-hint {

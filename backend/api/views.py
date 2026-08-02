@@ -971,10 +971,49 @@ def _history_match_messages(match: DialogueMatch, *, user_id: int) -> list[dict]
     return messages
 
 
-def _history_ai_summary(record: DialogueSessionRecord) -> dict:
+def _last_message_content_by_role(messages: list[dict], role: str) -> str:
+    """最後一則指定角色的訊息內容，找不到就回空字串（例如對方/AI 還沒回過）。"""
+    for message in reversed(messages):
+        if message["role"] == role:
+            return message.get("content", "")
+    return ""
+
+
+def _is_latest_ai_session_for_topic(record: DialogueSessionRecord) -> bool:
+    latest = (
+        DialogueSessionRecord.objects.filter(user_id=record.user_id, topic_id=record.topic_id)
+        .order_by("-last_activity_at", "-id")
+        .first()
+    )
+    return latest is not None and latest.pk == record.pk
+
+
+def _history_ai_summary(
+    record: DialogueSessionRecord,
+    *,
+    completed_session_ids: set[str] | None = None,
+    is_latest_for_topic: bool | None = None,
+) -> dict:
     messages = _history_ai_messages(record)
     user_messages = [message for message in messages if message["role"] == "user"]
     preview_source = user_messages[-1] if user_messages else (messages[-1] if messages else None)
+    last_overall_message = messages[-1] if messages else None
+    # AI 對話沒有真正的「已結束」流程——record.status 在正式流程裡永遠是
+    # active，不像真人配對房有明確的離開/關閉動作。改用兩個間接訊號判斷是否
+    # 已結束：(1) 這個 topic 的對話後問卷已經填完，或 (2) 使用者後來又對同一
+    # 個 topic 開了新的 session——沒填問卷就開新對話，代表舊的那場已經被放
+    # 棄了，不該再被通知導回去。completed_session_ids／is_latest_for_topic
+    # 由呼叫端一次查好整批傳進來，避免列表頁對每筆記錄各打好幾次 DB。
+    if completed_session_ids is not None:
+        has_post_response = record.session_id in completed_session_ids
+    else:
+        has_post_response = PostDialogueResponse.objects.filter(
+            user_id=record.user_id,
+            session_id=record.session_id,
+        ).exists()
+    if is_latest_for_topic is None:
+        is_latest_for_topic = _is_latest_ai_session_for_topic(record)
+    is_completed = has_post_response or not is_latest_for_topic
     return {
         "kind": "ai",
         "id": record.session_id,
@@ -986,9 +1025,16 @@ def _history_ai_summary(record: DialogueSessionRecord) -> dict:
         "room_id": record.session_id,
         "topic_id": record.topic_id,
         "topic_title": record.topic_title,
-        "status": record.status,
+        "status": DialogueSessionRecord.Status.CLOSED if is_completed else record.status,
         "message_count": len(messages),
         "last_message_preview": (preview_source or {}).get("content", "")[:120],
+        # 通知列表專用：一定是「AI 最後回了什麼」，不是自己最後問了什麼——
+        # last_message_preview 刻意留給歷史列表用（優先秀自己最後問的問題）。
+        "last_partner_message_preview": _last_message_content_by_role(messages, "agent")[:120],
+        # 通知鈴鐺用：最新一則若是 AI 回覆而非自己送出的，就算「未讀」——跟
+        # match summary 的 last_message_from_partner 同一套判斷方式，讓前端
+        # 不用分 kind 就能算未讀。
+        "last_message_from_partner": bool(last_overall_message) and last_overall_message.get("role") == "agent",
         "last_activity_at": record.last_activity_at,
     }
 
@@ -1005,6 +1051,11 @@ def _history_match_summary(match: DialogueMatch, *, user_id: int) -> dict:
         "status": match.status,
         "message_count": len(messages),
         "last_message_preview": (preview_source or {}).get("content", "")[:120],
+        # 通知列表專用：一定是「對方最後傳了什麼」，不是自己最後傳了什麼。
+        "last_partner_message_preview": _last_message_content_by_role(messages, "partner")[:120],
+        # 通知鈴鐺用來判斷「未讀」：只有對方（非本人）發出的最新一則才算數，
+        # 自己送出的最後一則不該讓自己的鈴鐺亮起紅點。
+        "last_message_from_partner": bool(preview_source) and preview_source.get("role") == "partner",
         "last_activity_at": (
             (preview_source or {}).get("created_at")
             or match.closed_at
@@ -1995,10 +2046,31 @@ class HistoryConversationListView(APIView):
 
         results = []
         if history_type in {"all", "ai"}:
-            for record in DialogueSessionRecord.objects.filter(
-                user=request.user,
-            ).order_by("-last_activity_at", "-id"):
-                summary = _history_ai_summary(record)
+            completed_session_ids = set(
+                PostDialogueResponse.objects.filter(
+                    user=request.user,
+                    experiment_condition=PostDialogueResponse.ExperimentCondition.AI,
+                ).values_list("session_id", flat=True)
+            )
+            ai_records = list(
+                DialogueSessionRecord.objects.filter(user=request.user).order_by(
+                    "-last_activity_at", "-id"
+                )
+            )
+            # 依 (-last_activity_at, -id) 排序後，每個 topic 第一次遇到的
+            # record 就是那個 topic 目前最新的 session。
+            latest_session_id_by_topic: dict[int, str] = {}
+            for record in ai_records:
+                latest_session_id_by_topic.setdefault(record.topic_id, record.session_id)
+
+            for record in ai_records:
+                summary = _history_ai_summary(
+                    record,
+                    completed_session_ids=completed_session_ids,
+                    is_latest_for_topic=(
+                        latest_session_id_by_topic.get(record.topic_id) == record.session_id
+                    ),
+                )
                 if summary["message_count"]:
                     results.append(summary)
 

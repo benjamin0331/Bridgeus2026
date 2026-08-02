@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import api from '../api/client';
 import ConversationTreePanel from '../components/ConversationTreePanel';
 import './HistoryPage.css';
@@ -134,7 +135,22 @@ function CcndInsightsPanel({ insights, showRaw, onToggleRaw }) {
 }
 
 function HistoryPage() {
-  const [filter, setFilter] = useState('all');
+  const location = useLocation();
+  // 從消息通知頁跳過來時，location.state 會帶著要直接開啟的那筆對話
+  // （例如已結束的配對聊天室），只在第一次拿到列表時套用一次，之後使用者
+  // 自己點別筆就不再被這個目標蓋回去。
+  const preselectTargetRef = useRef(
+    location.state?.kind && location.state?.id
+      ? { kind: location.state.kind, id: String(location.state.id) }
+      : null,
+  );
+  // 從通知頁跳過來時直接切到對應分頁（真人對話／AI 對話），畫面上看起來
+  // 像是直接落地在那個對話的頁面，而不是落在「全部」裡讓使用者自己找。
+  // 這裡直接讀 location.state（不是 ref），render 期間讀取才不會被 lint 擋下。
+  const preselectKind = location.state?.kind;
+  const [filter, setFilter] = useState(
+    () => (preselectKind === 'ai' || preselectKind === 'match' ? preselectKind : 'all'),
+  );
   const [items, setItems] = useState([]);
   const [selectedItem, setSelectedItem] = useState(null);
   const [detail, setDetail] = useState(null);
@@ -177,6 +193,16 @@ function HistoryPage() {
           setDetail(null);
         }
         setSelectedItem((current) => {
+          const preselectTarget = preselectTargetRef.current;
+          if (preselectTarget) {
+            const preselected = nextItems.find(
+              (item) => item.kind === preselectTarget.kind && String(item.id) === preselectTarget.id,
+            );
+            if (preselected) {
+              preselectTargetRef.current = null;
+              return preselected;
+            }
+          }
           if (current && nextItems.some((item) => item.kind === current.kind && item.id === current.id)) {
             return current;
           }

@@ -386,14 +386,46 @@ function labelClassForNode(node) {
   return `conversation-tree-node-label ${node.data.type}-label`;
 }
 
+function stanceClassForNode(node) {
+  // Only leaf claim nodes carry a stance history; category/path nodes never
+  // get `.messages` appended (see apply_analysis_items_to_tree backend-side),
+  // so they fall through to no class (their default/dormant color).
+  if (node.type !== 'point') {
+    return '';
+  }
+
+  const messages = nodeMessages(node);
+  if (!messages.length) {
+    return '';
+  }
+
+  // Messages are appended in chronological order, so the last one is the most
+  // recent judgment — if the same node gets lit by two different sentences,
+  // the newer sentence's stance wins and repaints the node.
+  const latestStance = cleanText(messages[messages.length - 1].stance);
+  if (latestStance === '支持') {
+    return 'stance-support';
+  }
+  if (latestStance === '反對') {
+    return 'stance-oppose';
+  }
+  // 中立 / 混合 / unrecognized: can't confidently call it green or red, so
+  // keep the node's original (unlit) color instead of guessing.
+  return '';
+}
+
 function nodeClassName(item) {
-  const base = `conversation-tree-node node-${item.data.type}`;
+  const classes = [`conversation-tree-node node-${item.data.type}`];
   // Depth-1 anchors that have not been lit yet (backend still flags them
   // hiddenUntilUsed) render in a dormant/gray state; lit anchors render bright.
   if (item.data.type === 'anchor' && item.data.hiddenUntilUsed) {
-    return `${base} is-dormant`;
+    classes.push('is-dormant');
   }
-  return base;
+  const stanceClass = stanceClassForNode(item.data);
+  if (stanceClass) {
+    classes.push(stanceClass);
+  }
+  return classes.join(' ');
 }
 
 function wrapText(textSelection) {

@@ -22,6 +22,26 @@
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.1) transparent;
+}
+
+.pq-container::-webkit-scrollbar {
+  width: 6px;
+}
+
+.pq-container::-webkit-scrollbar-button,
+.pq-container::-webkit-scrollbar-button:start,
+.pq-container::-webkit-scrollbar-button:end {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.pq-container::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 10px;
 }
 
 /* Header — fixed inside the card */
@@ -30,10 +50,39 @@
   margin-bottom: 20px;
 }
 
+.pq-header-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .pq-header h2 {
   font-size: 26px;
   font-weight: bold;
   margin-bottom: 6px;
+  color: #1a1a1a;
+}
+
+.pq-close-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background-color: #e8e2d9;
+  color: #666;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.pq-close-btn:hover {
+  background-color: #ddd4c8;
   color: #1a1a1a;
 }
 
@@ -90,10 +139,20 @@
   overflow-y: auto;
   padding-right: 10px;
   margin-right: -10px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.1) transparent;
 }
 
 .pq-body::-webkit-scrollbar {
   width: 5px;
+}
+
+.pq-body::-webkit-scrollbar-button,
+.pq-body::-webkit-scrollbar-button:start,
+.pq-body::-webkit-scrollbar-button:end {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .pq-body::-webkit-scrollbar-thumb {

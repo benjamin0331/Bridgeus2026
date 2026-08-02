@@ -91,7 +91,8 @@ def _analysis_response_schema(anchors: list[dict[str, str]]) -> dict:
                         },
                         "stance": {
                             "type": "string",
-                            "description": "支持、反對、中立或混合。",
+                            "enum": sorted(STANCE_LABELS),
+                            "description": "這句話對這個節點主張的立場：支持、反對、無關或中立。",
                         },
                         "confidence": {
                             "type": "number",
@@ -650,7 +651,11 @@ def build_openai_request(
             "- 如果輸入太模糊，輸出 items: []。",
             "",
             "stance 規則：",
-            "- stance 只能用：支持、反對、中立、混合。",
+            "- stance 只能用：支持、反對、無關、中立 四者之一。",
+            "- 支持：語氣認同、贊成這個節點的主張。",
+            "- 反對：語氣質疑、反駁這個節點的主張。",
+            "- 無關：這句話其實跟這個節點的主張無關，只是附和、離題或無法歸類。",
+            "- 中立：跟主張有關，但純粹敘述事實、無法判斷支持或反對。",
             "- 根據使用者語氣判斷，不要過度推論。",
             "",
             "輸出品質要求：",
@@ -970,6 +975,95 @@ def parse_openai_response(response_body: dict[str, Any]) -> dict[str, Any]:
         return json.loads(strip_json_fence(text))
     except json.JSONDecodeError as exc:
         raise OpenAIApiError(f"OpenAI response JSON parse failed: {exc}") from exc
+
+
+STANCE_LABELS = {"支持", "反對", "無關", "中立"}
+
+
+def _stance_schema() -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "stance": {
+                "type": "string",
+                "enum": sorted(STANCE_LABELS),
+                "description": "這句話對指定節點主題的立場：支持、反對或中立。",
+            },
+        },
+        "required": ["stance"],
+        "additionalProperties": False,
+    }
+
+
+def classify_stance_with_openai(
+    *,
+    text: str,
+    context_label: str = "",
+    api_key: str | None = None,
+    model: str | None = None,
+) -> str:
+    """Ask OpenAI whether `text` leans 支持/反對/中立 on `context_label` (the CCND
+    node this message was just classified under). Used by
+    nuclear_node_classifier, whose local BERT model only predicts topic/cluster
+    and has no stance signal of its own. Falls back to "中立" on any failure
+    (missing key, network/timeout error, malformed response) so a stance
+    lookup hiccup never blocks node creation — the node still gets created,
+    just without a support/oppose color.
+    """
+    cleaned = clean_text(text)
+    if not cleaned:
+        return "中立"
+
+    resolved_api_key = api_key if api_key is not None else get_openai_api_key()
+    if not resolved_api_key:
+        return "中立"
+
+    prompt_text = "\n".join(
+        [
+            f"你是立場分類 agent。判斷這句話對「{context_label or '目前討論主題'}」這個議題節點的立場。",
+            "只能回答：支持、反對、無關、中立 四者之一。",
+            "支持：語氣認同、贊成、正面評價。",
+            "反對：語氣質疑、反駁、負面評價。",
+            "無關：這句話其實跟這個節點的主張無關，只是附和、離題或無法歸類。",
+            "中立：跟主張有關，但純粹敘述事實、無法判斷支持或反對。",
+            "",
+            "使用者輸入：",
+            cleaned,
+        ]
+    )
+
+    request_body = {
+        "model": model or get_openai_model(),
+        "input": [{"role": "user", "content": prompt_text}],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "stance_classification",
+                "strict": True,
+                "schema": _stance_schema(),
+            }
+        },
+    }
+
+    endpoint = "https://api.openai.com/v1/responses"
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(request_body, ensure_ascii=False).encode("utf-8"),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {resolved_api_key}",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=_openai_timeout_seconds()) as response:
+            response_body = json.loads(response.read().decode("utf-8"))
+        parsed = parse_openai_response(response_body)
+        stance = clean_text(parsed.get("stance"))
+        return stance if stance in STANCE_LABELS else "中立"
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OpenAIApiError, ValueError):
+        return "中立"
 
 
 def get_openai_api_key() -> str:
