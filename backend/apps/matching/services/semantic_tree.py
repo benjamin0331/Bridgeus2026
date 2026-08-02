@@ -1040,7 +1040,15 @@ def analyze_with_openai(
     }
 
 
-LOCAL_CLASSIFIER_TOPIC_IDS = {102}
+LOCAL_CLASSIFIER_TOPIC_IDS = {102, 103}
+
+# Each locally-classified topic gets its own trained macro/micro pipeline
+# module (different weights, different class->anchor mapping) — one entry
+# per topic_id in LOCAL_CLASSIFIER_TOPIC_IDS.
+_LOCAL_CLASSIFIER_MODULES = {
+    102: "apps.matching.services.nuclear_node_classifier",
+    103: "apps.matching.services.women_conscription_node_classifier",
+}
 
 # MIN_CONFIDENCE (0.55) was tuned for an LLM's self-reported meta-confidence,
 # which tends to run high. The local classifier's confidence is a raw softmax
@@ -1062,15 +1070,17 @@ def analyze_text_for_tree(
     anchors: list[dict[str, str]] | None = None,
     anchor_descriptions: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Dispatch node analysis by topic: topic 102 (nuclear energy) uses the
-    locally fine-tuned classifier pipeline; every other topic keeps using the
-    generative OpenAI path.
+    """Dispatch node analysis by topic: topics in LOCAL_CLASSIFIER_TOPIC_IDS
+    each use their own locally fine-tuned classifier pipeline; every other
+    topic keeps using the generative OpenAI path.
     """
     resolved_anchors = anchors or FIXED_ANCHORS
     if uses_local_classifier(topic_id):
-        from apps.matching.services import nuclear_node_classifier
+        import importlib
 
-        candidate_items = nuclear_node_classifier.build_candidate_items(text, resolved_anchors)
+        classifier_module = importlib.import_module(_LOCAL_CLASSIFIER_MODULES[topic_id])
+
+        candidate_items = classifier_module.build_candidate_items(text, resolved_anchors)
         return {
             **validate_analysis_items(
                 {"items": candidate_items},
@@ -1124,6 +1134,70 @@ def _owner_key_for_message(match: DialogueMatch, sender_id: int | None) -> str |
         return OWNER_USER_A
     if sender_id == match.user_b_id:
         return OWNER_USER_B
+    return None
+
+
+def get_lit_node_count(
+    match: DialogueMatch,
+    *,
+    owner_key: str,
+    source_message_id: str,
+    root_name: str = "核電",
+) -> int:
+    """回傳某位參與者在 source_message_id 那則訊息當下，累積點亮過幾個不重複的
+    CCND micro node。
+
+    給 M6 觀點知識庫 pipeline（apps/summary/pipeline/quality_filter.py 的
+    ccnd_stance_shift）用來取得逐則的「點亮節點數」：先用 resolve_cutoff_for_message
+    找出該訊息被分析當下的時間點，reconstruct_tree_as_of 還原當時的樹快照，
+    再用 ccnd_snapshot_analysis.flatten_tree 攤平、以 (owner_key, node_id) 去重計數
+    ——同一顆節點被同一人多次點亮只算一次。
+
+    root_name 只影響空狀態（尚無任何分析紀錄）時的預設樹名稱，不影響既有樹內容。
+    找不到該訊息的分析紀錄（尚未分析過）時回傳 0。
+    """
+    from apps.matching.services.ccnd_snapshot_analysis import flatten_tree
+
+    state = get_semantic_tree_state(match, root_name=root_name)
+    owner_state = state["participants"].get(owner_key)
+    if not owner_state:
+        return 0
+
+    cutoff = resolve_cutoff_for_message(owner_state["analysisHistory"], source_message_id)
+    if cutoff is None:
+        return 0
+
+    snapshot = reconstruct_tree_as_of(owner_state["treeData"], cutoff)
+    hits = flatten_tree(snapshot, owner_key=owner_key)
+    return len({hit["_node_key"] for hit in hits})
+
+
+def get_message_dimension(
+    match: DialogueMatch,
+    *,
+    owner_key: str,
+    source_message_id: str,
+) -> str | None:
+    """回傳某位參與者在 source_message_id 那則訊息命中的第一個 CCND anchor id。
+
+    給 M6 觀點知識庫 pipeline（apps/summary/pipeline/assemble.py 的
+    run_pipeline_for_match）用來決定 ViewpointNode.dimension：一則訊息最多對到
+    MAX_ANALYSIS_ITEMS=2 個 anchor，這裡只取第一個命中的；訊息沒有任何 CCND
+    分析紀錄（不曾命中任何節點）時回傳 None，呼叫端應該視為「無法分類」而跳過
+    寫入，不要自己亂猜一個 anchor。
+    """
+    from apps.matching.services.ccnd_snapshot_analysis import flatten_tree
+
+    state = get_semantic_tree_state(match, root_name="核電")
+    owner_state = state["participants"].get(owner_key)
+    if not owner_state:
+        return None
+
+    target_id = clean_text(source_message_id)
+    hits = flatten_tree(owner_state["treeData"], owner_key=owner_key)
+    for hit in hits:
+        if clean_text(hit.get("source_message_id")) == target_id:
+            return hit.get("parent_anchor_id")
     return None
 
 

@@ -15,11 +15,25 @@ run/main_scene="uid://bu0s521nxp0w5"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 config/icon="res://icon.svg"
 
+[audio]
+
+driver/enable_input=true
+
+[autoload]
+
+Backend="*res://Globals/Backend.gd"
+VoiceChat="*res://Globals/VoiceChat.gd"
+
 [display]
 
 window/size/viewport_width=1280
 window/size/viewport_height=720
 window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+
+[gui]
+
+theme/custom_font="res://Assets/fonts/NotoSansTC-Regular.otf"
 
 [input]
 
@@ -55,6 +69,9 @@ down={
 [rendering]
 
 textures/canvas_textures/default_texture_filter=0
+; 畫面外（expand 撐開後超出地圖的區域）的底色，用中性灰避免露出黑邊。
+; 想微調在 Project Settings → Rendering → Environment → Default Clear Color。
+environment/defaults/default_clear_color=Color(0.3, 0.3, 0.3, 1)
 rendering_device/driver.windows="d3d12"
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"

@@ -12,7 +12,10 @@ Run from backend/:
 """
 import pytest
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 from rest_framework.test import APIClient
+
+from api.models import DialogueMatch, DialogueSessionRecord
 
 User = get_user_model()
 
@@ -83,6 +86,24 @@ def _make_hh_payload(**overrides):
 @pytest.fixture
 def auth_client(db):
     user = User.objects.create_user(username="testuser_pq", password="pass1234!")
+    partner = User.objects.create_user(username="testuser_pq_partner")
+    DialogueSessionRecord.objects.create(
+        user=user,
+        session_id="testsessionid123",
+        topic_id=102,
+        topic_title="測試議題",
+        collection_name="nuclear_energy_all",
+        session_state={"user_stance_score": 6.0, "history": []},
+        last_activity_at=timezone.now(),
+    )
+    DialogueMatch.objects.create(
+        topic_id=102,
+        user_a=user,
+        user_b=partner,
+        user_a_score=6.0,
+        user_b_score=2.0,
+        room_id="testroomid456",
+    )
     client = APIClient()
     client.force_authenticate(user=user)
     return client, user
@@ -161,6 +182,29 @@ class TestPostQuestionnaire:
         assert response2.status_code == 201, response2.data
         assert float(response2.data["s_post"]) == pytest.approx(41 / 8)
 
+    def test_topic_103_uses_its_own_reverse_scoring_rules(self, auth_client):
+        """Women-in-service reverses Q2/Q4/Q6/Q8, not the nuclear item set."""
+        client, user = auth_client
+        DialogueSessionRecord.objects.create(
+            user=user,
+            session_id="topic103session",
+            topic_id=103,
+            topic_title="女性義務役",
+            collection_name="military_service_women_news",
+            session_state={"user_stance_score": 5.0, "history": []},
+            last_activity_at=timezone.now(),
+        )
+        response = client.post(
+            "/api/post-questionnaire/",
+            _make_ai_payload(topic_id=103, session_id="topic103session"),
+            format="json",
+        )
+
+        assert response.status_code == 201, response.data
+        # Post order is Q8,Q5,Q3,Q7,Q1,Q4,Q6,Q2, so topic 103 reverses
+        # post items 1,6,7,8: 2+3+4+5+6+6+5+4 = 35.
+        assert float(response.data["s_post"]) == pytest.approx(35 / 8)
+
     def test_discomfort_creates_report(self, auth_client, db):
         """discomfort_flag=True 且 detail 填寫時，應建立 DiscomfortReport。"""
         from api.models import DiscomfortReport
@@ -189,63 +233,118 @@ class TestPostQuestionnaire:
 
 @pytest.mark.django_db
 class TestPostQuestionnaireStanceMetrics:
-    """s_pre snapshot + depolarization metrics (delta_s, stance_centrism)."""
-
-    def _profile(self, user, *, topic_id=102, score):
+    def test_ai_metrics_use_session_snapshot(self, auth_client):
+        client, user = auth_client
+        # A later pre-survey profile must not replace this conversation's 6.0.
         from api.models import UserStanceProfile
 
-        return UserStanceProfile.objects.create(
+        UserStanceProfile.objects.create(
             user=user,
-            topic_id=topic_id,
-            stance_score=score,
-            stance_category="support",
+            topic_id=102,
+            stance_score=2.0,
+            stance_category=UserStanceProfile.StanceCategory.OPPOSE,
         )
-
-    def test_metrics_computed_from_pre_profile(self, auth_client):
-        """有前測 profile 時，s_pre/delta_s/stance_centrism 應正確計算。"""
-        client, user = auth_client
-        self._profile(user, score=6)  # s_pre = 6.0
-        # all raw=4 → s_post = 4.0
         all_four = {f"post_likert_{i}": 4 for i in range(1, 9)}
-        payload = _make_ai_payload(**all_four)
-        response = client.post("/api/post-questionnaire/", payload, format="json")
-        assert response.status_code == 201, response.data
-        data = response.data
-        assert float(data["s_pre"]) == pytest.approx(6.0)
-        assert float(data["s_post"]) == pytest.approx(4.0)
-        # delta_s = s_post - s_pre = 4 - 6 = -2
-        assert float(data["delta_s"]) == pytest.approx(-2.0)
-        # stance_centrism = |4-4| - |6-4| = 0 - 2 = -2 (depolarized)
-        assert float(data["stance_centrism"]) == pytest.approx(-2.0)
 
-    def test_metrics_null_without_pre_profile(self, auth_client):
-        """無前測 profile 時，三個衍生欄位皆為 NULL。"""
+        response = client.post(
+            "/api/post-questionnaire/",
+            _make_ai_payload(**all_four),
+            format="json",
+        )
+
+        assert response.status_code == 201, response.data
+        assert response.data["s_pre"] == pytest.approx(6.0)
+        assert response.data["delta_s"] == pytest.approx(-2.0)
+        assert response.data["stance_centrism"] == pytest.approx(-2.0)
+
+    def test_hh_metrics_use_participants_match_score(self, auth_client):
         client, _ = auth_client
-        payload = _make_ai_payload()
-        response = client.post("/api/post-questionnaire/", payload, format="json")
-        assert response.status_code == 201, response.data
-        assert response.data["s_pre"] is None
-        assert response.data["delta_s"] is None
-        assert response.data["stance_centrism"] is None
-        # s_post is always derivable from the C1 items
-        assert response.data["s_post"] is not None
+        all_four = {f"post_likert_{i}": 4 for i in range(1, 9)}
 
-    def test_metrics_persisted_to_db(self, auth_client):
-        """衍生欄位應寫入 DB（供研究匯出/後台檢視）。"""
-        from api.models import PostDialogueResponse
+        response = client.post(
+            "/api/post-questionnaire/",
+            _make_hh_payload(**all_four),
+            format="json",
+        )
+
+        assert response.status_code == 201, response.data
+        assert response.data["s_pre"] == pytest.approx(6.0)
+        assert response.data["delta_s"] == pytest.approx(-2.0)
+
+    def test_rejects_unknown_or_mismatched_conversation(self, auth_client):
+        client, _ = auth_client
+
+        unknown = client.post(
+            "/api/post-questionnaire/",
+            _make_ai_payload(session_id="not-owned"),
+            format="json",
+        )
+        mismatched = client.post(
+            "/api/post-questionnaire/",
+            _make_ai_payload(room_id="testroomid456"),
+            format="json",
+        )
+
+        assert unknown.status_code == 400
+        assert "session_id" in unknown.data
+        assert mismatched.status_code == 400
+
+
+@pytest.mark.django_db
+class TestPostQuestionnaireClosesSession:
+    """提交後測問卷後，該筆 AI 對話 session 應結束——不該再被
+    /api/dialogue/sessions/latest/ 當成「可繼續」的對話回傳。"""
+
+    def _make_active_session(self, user, session_id="testsessionid123", topic_id=102):
+        record, _ = DialogueSessionRecord.objects.update_or_create(
+            session_id=session_id,
+            defaults={
+                "user": user,
+                "topic_id": topic_id,
+                "topic_title": "測試議題",
+                "collection_name": "nuclear_energy_all",
+                "session_state": {"user_stance_score": 6.0, "history": []},
+                "status": DialogueSessionRecord.Status.ACTIVE,
+                "last_activity_at": timezone.now(),
+            },
+        )
+        return record
+
+    def test_submitting_closes_matching_session_record(self, auth_client):
+        from api.models import DialogueSessionRecord
 
         client, user = auth_client
-        self._profile(user, score=2)  # s_pre = 2.0
-        all_four = {f"post_likert_{i}": 4 for i in range(1, 9)}  # s_post = 4.0
+        self._make_active_session(user)
+
         response = client.post(
-            "/api/post-questionnaire/", _make_ai_payload(**all_four), format="json"
+            "/api/post-questionnaire/", _make_ai_payload(), format="json"
         )
-        assert response.status_code == 201
-        record = PostDialogueResponse.objects.get(id=response.data["id"])
-        assert record.s_pre == pytest.approx(2.0)
-        assert record.delta_s_value == pytest.approx(2.0)  # 4 - 2
-        # |4-4| - |2-4| = 0 - 2 = -2 (moved from extreme toward centre)
-        assert record.stance_centrism_value == pytest.approx(-2.0)
+        assert response.status_code == 201, response.data
+
+        record = DialogueSessionRecord.objects.get(session_id="testsessionid123")
+        assert record.status == DialogueSessionRecord.Status.CLOSED
+
+    def test_closed_session_no_longer_offered_for_restore(self, auth_client):
+        client, user = auth_client
+        self._make_active_session(user)
+
+        response = client.post(
+            "/api/post-questionnaire/", _make_ai_payload(), format="json"
+        )
+        assert response.status_code == 201, response.data
+
+        restore_response = client.get(
+            "/api/dialogue/sessions/latest/?topic_id=102"
+        )
+        assert restore_response.status_code == 404
+
+    def test_hh_submission_without_session_id_does_not_error(self, auth_client):
+        """H-H 組送出時只有 room_id、沒有 session_id，不該因為找不到 session 而出錯。"""
+        client, _ = auth_client
+        response = client.post(
+            "/api/post-questionnaire/", _make_hh_payload(), format="json"
+        )
+        assert response.status_code == 201, response.data
 
 
 @pytest.mark.django_db

@@ -11,9 +11,8 @@ from asgiref.sync import sync_to_async
 from django.utils import timezone
 
 from apps.matching.services.input_gate import is_substantive_message
-from chat.services.embedding import cosine_distance, cosine_similarity, get_embedding
+from chat.services.embedding import cosine_distance
 
-TOPIC_RELEVANCE_THRESHOLD = 0.35
 STALEMATE_THRESHOLD = 0.05
 DIRECTION_THRESHOLD = 0.02
 
@@ -58,40 +57,6 @@ def _mean_embedding(embeddings) -> np.ndarray | None:
     return np.mean(vectors, axis=0)
 
 
-def get_topic_anchor_embedding(topic_description: str) -> list[float]:
-    return get_embedding(topic_description)
-
-
-def check_match_topic_relevance(
-    *,
-    match_id: int,
-    user_id: int,
-    topic_anchor_embedding,
-    window: int = 3,
-) -> dict:
-    from api.models import MatchMessage
-
-    # 滾動窗口的取樣排除短回應：先多撈一些再過濾，才不會因為使用者連說三次
-    # 「好」就把窗口填滿、讓離題分數失去意義。
-    candidates = MatchMessage.objects.filter(
-        match_id=match_id,
-        sender_id=user_id,
-        embedding__isnull=False,
-    ).order_by("-created_at")[: window * _SUBSTANTIVE_OVERFETCH]
-    messages = _substantive(candidates)[:window]
-    mean_embedding = _mean_embedding(message.embedding for message in messages)
-    if mean_embedding is None or topic_anchor_embedding is None:
-        return {"relevance_score": 1.0, "is_off_topic": False}
-
-    score = float(cosine_similarity(mean_embedding, topic_anchor_embedding))
-    if not math.isfinite(score):
-        return {"relevance_score": 1.0, "is_off_topic": False}
-    return {
-        "relevance_score": round(score, 4),
-        "is_off_topic": score < TOPIC_RELEVANCE_THRESHOLD,
-    }
-
-
 def calculate_match_stance_drift(*, match_id: int, user_id: int) -> dict:
     from api.models import DialogueMatch, MatchMessage, MatchStanceDrift, UserStanceProfile
 
@@ -114,9 +79,6 @@ def calculate_match_stance_drift(*, match_id: int, user_id: int) -> dict:
         sender_id=user_id,
         embedding__isnull=False,
     )
-    if last_record is not None:
-        messages = messages.filter(created_at__gt=last_record.measured_at)
-
     # 論述移動度衡量的是「離初始 Q9 立場多遠」。短回應沒有論述內容，
     # 它造成的位移是雜訊，會污染這個過程指標。
     mean_embedding = _mean_embedding(
@@ -260,8 +222,6 @@ def build_stalemate_prompt(keywords: list[str]) -> str:
     return random.choice(_STALEMATE_PROMPTS).format(keyword=keywords[0])
 
 
-aget_topic_anchor_embedding = sync_to_async(get_topic_anchor_embedding, thread_sensitive=False)
-acheck_match_topic_relevance = sync_to_async(check_match_topic_relevance, thread_sensitive=False)
 acalculate_match_stance_drift = sync_to_async(calculate_match_stance_drift, thread_sensitive=False)
 acalculate_ai_session_stance_drift = sync_to_async(calculate_ai_session_stance_drift, thread_sensitive=False)
 adetect_match_stalemate = sync_to_async(detect_match_stalemate, thread_sensitive=False)

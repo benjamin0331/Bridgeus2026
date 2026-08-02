@@ -236,6 +236,18 @@ async def _drain_agent_stream(communicator, timeout=3):
         return chunks, message, saw_thinking
 
 
+class SlowStreamingDialogueAgent:
+    """Contract-compliant fake that takes long enough for a second send to queue."""
+
+    async def astream_respond(self, session, correction: str = ""):
+        content = session.history[-1].content
+        yield (
+            "<judgment>開啟新方向。結構 A。</judgment>"
+            f"<reply>AI reply to: {content}</reply>"
+        )
+        await asyncio.sleep(0.05)
+
+
 async def _access_token_for(user):
     return await sync_to_async(lambda: str(AccessToken.for_user(user)))()
 
@@ -314,6 +326,7 @@ async def test_dialogue_websocket_persists_completed_turn():
     assert end_message["stance_drift"]["measured_at"]
 
     saved_turn = await AIConversation.objects.aget(session_id=session_id)
+    assert end_message["turn_id"] == saved_turn.id
     assert saved_turn.user_id == user.id
     assert saved_turn.topic_id == 102
     assert saved_turn.user_prompt == "核能真的比較穩定嗎？"
@@ -635,6 +648,86 @@ async def test_contract_violation_fails_closed():
         if message["role"] == "agent"
     ][-1]
     assert last_agent_message["content"] == CONTRACT_FALLBACK_TEXT
+
+    await communicator.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_dialogue_websocket_queues_messages_and_replies_in_order():
+    from BridgeUs_Django.asgi import application
+    from apps.matching.services.ai_agent import DialogueSession
+
+    user = await create_user(username="ai_ws_queue_user", password="secret123")
+    session_id = uuid4().hex
+    session = DialogueSession(
+        topic="女性義務兵役討論",
+        topic_description="討論女性是否應納入義務兵役。",
+        agent_stance="提出相反觀點",
+        agent_stance_summary="",
+        user_stance_label="立場尚未明確",
+        user_stance_score=4.0,
+    )
+    await sync_to_async(cache.set)(
+        f"dialogue_session:{session_id}",
+        {
+            "user_id": user.id,
+            "session_id": session_id,
+            "topic_id": 103,
+            "topic_title": "女性義務兵役討論",
+            "collection_name": "military_service_women_news",
+            "survey_context": {},
+            "session": session.to_dict(),
+        },
+    )
+
+    communicator = WebsocketCommunicator(
+        application,
+        f"/ws/dialogue/{session_id}/?token={await _access_token_for(user)}",
+    )
+    # 這個測試要驗的是「第一則還在串流時送第二則」會被佇列接住。兩則是背靠背
+    # 送出的，會撞到 1.5 秒最小送出間隔，所以把 rate limit 放行掉——那條規則
+    # 本身另有 tests_input_gate_ws.py 覆蓋。
+    allow_all = AsyncMock(return_value={"allowed": True, "reason": None, "retry_after": 0})
+    with (
+        patch("api.views.get_dialogue_agent", return_value=SlowStreamingDialogueAgent()),
+        patch("api.consumers.aget_embedding", new=AsyncMock(return_value=make_test_embedding(1))),
+        patch("api.consumers.acheck_rate_limit", new=allow_all),
+    ):
+        assert (await communicator.connect())[0]
+        await communicator.send_json_to({"type": "user_message", "content": "第一則：我想先談成本問題"})
+        await communicator.send_json_to({"type": "user_message", "content": "第二則：也想談核廢料處置"})
+
+        # agent_thinking 是純 UI 指示（回覆先被扣在 ReplyStreamGate 裡驗證，
+        # 前端要有東西可顯示），跟送出順序無關，這裡濾掉只看實際回覆。
+        replies = []
+        while len(replies) < 4:
+            event = await communicator.receive_json_from(timeout=3)
+            if event["type"] != "agent_thinking":
+                replies.append(event)
+
+    assert [item["type"] for item in replies] == [
+        "agent_stream",
+        "agent_stream_end",
+        "agent_stream",
+        "agent_stream_end",
+    ]
+    assert replies[0]["content"] == "AI reply to: 第一則：我想先談成本問題"
+    assert replies[2]["content"] == "AI reply to: 第二則：也想談核廢料處置"
+    saved = [
+        turn
+        async for turn in AIConversation.objects.filter(session_id=session_id).order_by("id")
+    ]
+    assert [turn.user_prompt for turn in saved] == ["第一則：我想先談成本問題", "第二則：也想談核廢料處置"]
+    assert [turn.ai_response for turn in saved] == [
+        "AI reply to: 第一則：我想先談成本問題",
+        "AI reply to: 第二則：也想談核廢料處置",
+    ]
+    assert [replies[1]["turn_id"], replies[3]["turn_id"]] == [
+        saved[0].id,
+        saved[1].id,
+    ]
 
     await communicator.disconnect()
 

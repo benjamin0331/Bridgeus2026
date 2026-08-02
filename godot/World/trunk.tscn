@@ -33,5 +33,5 @@ rotation = 1.5707964
 shape = SubResource("CapsuleShape2D_r8s0m")
 
 [node name="Marker2D" type="Marker2D" parent="." unique_id=292045801]
-position = Vector2(0, -3)
+position = Vector2(0, -25)
 scale = Vector2(1e-05, 1e-05)

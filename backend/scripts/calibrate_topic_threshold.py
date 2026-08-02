@@ -35,9 +35,12 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from chat.services.embedding import cosine_similarity, get_embedding
+from apps.matching.services.topic_relevance import get_topic_relevance_policy
 
-THRESHOLD = 0.35
-TOPIC_ANCHOR = "台灣是否應該擴大發展核能發電"
+TOPIC_ID = 102
+POLICY = get_topic_relevance_policy(TOPIC_ID)
+THRESHOLD = POLICY.threshold
+TOPIC_ANCHOR = POLICY.anchor_text
 
 # -----------------------------------------------------------------------
 # 測試語料

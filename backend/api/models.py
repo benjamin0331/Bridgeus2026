@@ -159,8 +159,15 @@ class DialogueMatch(models.Model):
         on_delete=models.CASCADE,
         related_name="dialogue_matches_as_b",
     )
-    user_a_score = models.DecimalField(max_digits=4, decimal_places=2)
-    user_b_score = models.DecimalField(max_digits=4, decimal_places=2)
+    # 建房當下不一定有 s_pre：Godot 木樁配對是先建房、跳轉之後才填前測問卷
+    # （見 spec §D4）。NULL = 還沒填；不要用 4.00 之類的佔位值，那跟「真的
+    # 填出 4.00」在資料上無法區分。
+    user_a_score = models.DecimalField(
+        max_digits=4, decimal_places=2, null=True, blank=True
+    )
+    user_b_score = models.DecimalField(
+        max_digits=4, decimal_places=2, null=True, blank=True
+    )
     likert_distance = models.DecimalField(max_digits=6, decimal_places=4, default=0)
     semantic_distance = models.DecimalField(max_digits=6, decimal_places=4, default=0)
     match_score = models.DecimalField(max_digits=6, decimal_places=4, default=0)
@@ -185,11 +192,13 @@ class DialogueMatch(models.Model):
                 name="match_users_must_differ",
             ),
             models.CheckConstraint(
-                condition=Q(user_a_score__gte=1) & Q(user_a_score__lte=7),
+                condition=Q(user_a_score__isnull=True)
+                | (Q(user_a_score__gte=1) & Q(user_a_score__lte=7)),
                 name="match_user_a_score_between_1_and_7",
             ),
             models.CheckConstraint(
-                condition=Q(user_b_score__gte=1) & Q(user_b_score__lte=7),
+                condition=Q(user_b_score__isnull=True)
+                | (Q(user_b_score__gte=1) & Q(user_b_score__lte=7)),
                 name="match_user_b_score_between_1_and_7",
             ),
         ]
@@ -333,6 +342,57 @@ class MatchMessage(models.Model):
         return f"match={self.match_id} sender={self.sender_id}"
 
 
+class MessageReaction(models.Model):
+    """A participant's like/dislike reaction to an opponent message."""
+
+    class TargetType(models.TextChoices):
+        AI = "ai", "AI 回應"
+        MATCH = "match", "配對訊息"
+
+    class Value(models.IntegerChoices):
+        LIKE = 1, "讚"
+        DISLIKE = -1, "倒讚"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="message_reactions",
+    )
+    target_type = models.CharField(max_length=8, choices=TargetType.choices)
+    # target_type=ai -> AIConversation.id; target_type=match -> MatchMessage.id
+    target_id = models.BigIntegerField()
+    value = models.SmallIntegerField(choices=Value.choices)
+    topic_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    # session_id for AI, room_id for human matching
+    conversation_id = models.CharField(max_length=64, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "target_type", "target_id"],
+                name="uniq_message_reaction_user_target",
+            ),
+            models.CheckConstraint(
+                condition=Q(value__in=[1, -1]),
+                name="message_reaction_value_like_dislike",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["target_type", "conversation_id"],
+                name="msg_reaction_conv_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"reaction user={self.user_id} {self.target_type}={self.target_id} "
+            f"value={self.value}"
+        )
+
+
 class MatchAISuggestion(models.Model):
     class Category(models.TextChoices):
         REPHRASE = "rephrase", "改述"
@@ -420,10 +480,25 @@ class MatchStanceDrift(models.Model):
 # Post-dialogue questionnaire
 # ---------------------------------------------------------------------------
 
-# C1 reversed items: C1-2→Q5, C1-6→Q4, C1-7→Q6, C1-8→Q2
-_POST_LIKERT_REVERSED = {2, 6, 7, 8}
 # (post_index, pre_question_id) — needed for research cross-referencing
 POST_LIKERT_TO_PRE_QUESTION = {1: 8, 2: 5, 3: 3, 4: 7, 5: 1, 6: 4, 7: 6, 8: 2}
+
+
+def _post_likert_reversed_indices(topic_id: int) -> set[int]:
+    """Resolve reverse-scored post items from the topic's pre-survey config."""
+    from .dialogue_topics import get_dialogue_survey
+
+    survey = get_dialogue_survey(topic_id) or {}
+    reversed_pre_questions = {
+        int(question["id"])
+        for question in survey.get("questions", [])
+        if question.get("reverse_scored")
+    }
+    return {
+        post_index
+        for post_index, pre_question_id in POST_LIKERT_TO_PRE_QUESTION.items()
+        if pre_question_id in reversed_pre_questions
+    }
 
 
 def _likert_field(verbose_name):
@@ -504,7 +579,7 @@ class PostDialogueResponse(models.Model):
     s_pre = models.FloatField(
         null=True,
         blank=True,
-        help_text="前測立場分數快照（1–7）；無前測資料時為 NULL",
+        help_text="該場對話的前測立場分數快照（1–7）",
     )
     delta_s_value = models.FloatField(
         null=True,
@@ -514,7 +589,7 @@ class PostDialogueResponse(models.Model):
     stance_centrism_value = models.FloatField(
         null=True,
         blank=True,
-        help_text="去極化指標 |s_post−4|−|s_pre−4|；< 0 = 去極化，> 0 = 更極化",
+        help_text="去極化指標 |s_post−4|−|s_pre−4|；< 0 = 去極化",
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -538,10 +613,11 @@ class PostDialogueResponse(models.Model):
     # --- Scoring methods ---
 
     def _adjusted_c1_scores(self) -> list[float]:
+        reversed_indices = _post_likert_reversed_indices(self.topic_id)
         scores = []
         for i in range(1, 9):
             raw = getattr(self, f"post_likert_{i}")
-            scores.append(8 - raw if i in _POST_LIKERT_REVERSED else float(raw))
+            scores.append(8 - raw if i in reversed_indices else float(raw))
         return scores
 
     def s_post(self) -> float:
@@ -565,10 +641,11 @@ class PostDialogueResponse(models.Model):
             self.delta_s_value = None
             self.stance_centrism_value = None
             return
-        s_pre = float(s_pre)
-        self.s_pre = round(s_pre, 4)
-        self.delta_s_value = self.delta_s(s_pre)
-        self.stance_centrism_value = self.stance_centrism(s_pre)
+
+        normalized_s_pre = float(s_pre)
+        self.s_pre = round(normalized_s_pre, 4)
+        self.delta_s_value = self.delta_s(normalized_s_pre)
+        self.stance_centrism_value = self.stance_centrism(normalized_s_pre)
 
     def __str__(self):
         return (
@@ -680,6 +757,65 @@ class Issue(models.Model):
         return f"Issue({self.id}) by user={self.author_id}: {self.title[:40]}"
 
 
+class Title(models.Model):
+    """一個頭銜的定義。擁有/解鎖關係另存在 UserTitle——由主功能的成就系統
+    決定誰擁有什麼，這裡只是頭銜本身的名稱與預設顏色。"""
+    name = models.CharField(max_length=50, unique=True)
+    color = models.CharField(max_length=7, null=True, blank=True)  # 預設 hex 色，UserTitle.color 可覆蓋
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
+class UserTitle(models.Model):
+    """使用者擁有某個頭銜的紀錄，外加是否為目前選擇顯示、以及玩家自訂顏色。
+    一個使用者同時只能選一個頭銜——用 partial unique index 在 DB 層擋住
+    （SQLite 3.8+ 與 PostgreSQL 都支援），不只靠 view 端的寫入順序保證。
+    view 端仍要「先清掉舊選擇、再設新的」，否則會撞到這個 constraint。"""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="owned_titles")
+    title = models.ForeignKey(Title, on_delete=models.CASCADE, related_name="holders")
+    unlocked_at = models.DateTimeField(auto_now_add=True)
+    is_selected = models.BooleanField(default=False)
+    color = models.CharField(max_length=7, null=True, blank=True)  # 玩家自訂色，蓋過 Title.color
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["user", "title"], name="user_title_unique"),
+            models.UniqueConstraint(
+                fields=["user"],
+                condition=Q(is_selected=True),
+                name="user_one_selected_title",
+            ),
+        ]
+        ordering = ["unlocked_at"]
+
+    def __str__(self):
+        return f"{self.user_id}:{self.title.name}"
+
+
+class IssueReaction(models.Model):
+    """一位讀者對一則議題的表情回復（5 選 1，emoji 圖在 Godot 端，這裡只存
+    int index）。一人一議題一個，重送 = 覆蓋（見 views.IssueReactionsView）。"""
+    issue = models.ForeignKey(Issue, on_delete=models.CASCADE, related_name="reactions")
+    reactor = models.ForeignKey(User, on_delete=models.CASCADE, related_name="issue_reactions")
+    emoji_index = models.PositiveSmallIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["issue", "reactor"], name="issue_reaction_one_per_reader"
+            ),
+        ]
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"issue={self.issue_id} reactor={self.reactor_id} idx={self.emoji_index}"
+
+
 class CCNDTimelineUnlock(models.Model):
     """Researcher-issued override that unlocks one participant's CCND timeline
     for one conversation ahead of the normal gate.
@@ -732,62 +868,169 @@ class CCNDTimelineUnlock(models.Model):
         )
 
 
-class MessageReaction(models.Model):
-    """A participant's 讚 / 倒讚 on an opponent's message.
+class PlatformDisplaySetting(models.Model):
+    """全站前端顯示設定。刻意只允許一列（pk=1），一律用 load() 取得。
 
-    Targets are polymorphic so the same table records reactions in both dialogue
-    modes: `target_type=ai` → an ``AIConversation`` turn id (the AI reply);
-    `target_type=match` → a ``MatchMessage`` id (the human partner's message).
-    One row per (user, target) — re-reacting updates ``value``; removing the
-    reaction deletes the row. ``value`` is +1 (讚) or -1 (倒讚).
+    入口模式分角色：受試者預設走混合入口（後端依立場分流），研究者預設
+    走分開入口（AI／配對兩張卡）方便測試。
     """
 
-    class TargetType(models.TextChoices):
-        AI = "ai", "AI 回應"
-        MATCH = "match", "配對訊息"
+    class EntryMode(models.TextChoices):
+        MIXED = "mixed", "混合入口"
+        SPLIT = "split", "分開入口"
 
-    class Value(models.IntegerChoices):
-        LIKE = 1, "讚"
-        DISLIKE = -1, "倒讚"
+    participant_entry_mode = models.CharField(
+        max_length=16,
+        choices=EntryMode.choices,
+        default=EntryMode.MIXED,
+        help_text="一般使用者看到的入口形式",
+    )
+    researcher_entry_mode = models.CharField(
+        max_length=16,
+        choices=EntryMode.choices,
+        default=EntryMode.SPLIT,
+        help_text="研究者看到的入口形式",
+    )
+    match_fallback_timeout_minutes = models.PositiveIntegerField(
+        default=5,
+        help_text="配對等待超過這個分鐘數後，詢問使用者要不要改跟 AI 對話",
+    )
+    # related_name="+"：不需要從 User 反查設定紀錄，這裡只是留個最後修改者。
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def save(self, *args, **kwargs):
+        # 單列表：任何 save 都寫在 pk=1，避免出現第二組互相打架的設定。
+        #
+        # ⚠️ 一定要先 load() 拿到現有那列再改欄位，不可以直接建構新實例存檔——
+        # 強制 pk=1 之後 Django 會用這個實例的「所有」欄位值下 UPDATE，
+        # 沒帶到的欄位會被靜默寫回類別預設值，把先前的設定蓋掉且不會報錯。
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def load(cls) -> "PlatformDisplaySetting":
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def __str__(self):
+        return (
+            f"participant={self.participant_entry_mode} "
+            f"researcher={self.researcher_entry_mode}"
+        )
+
+
+class TopicDisplayOverride(models.Model):
+    """單一議題的顯示覆寫。
+
+    沒有對應列＝該議題全部沿用程式碼預設（雙角色可見、門檻用
+    SURVEY_CONFIGS 的值）。門檻欄位為 null 代表「沒被改過」，不是 0。
+    """
+
+    topic_id = models.PositiveIntegerField(unique=True)
+    visible_to_participant = models.BooleanField(default=True)
+    visible_to_researcher = models.BooleanField(default=True)
+    support_threshold = models.FloatField(
+        null=True, blank=True, help_text="null＝沿用 SURVEY_CONFIGS 的預設門檻"
+    )
+    oppose_threshold = models.FloatField(
+        null=True, blank=True, help_text="null＝沿用 SURVEY_CONFIGS 的預設門檻"
+    )
+    # related_name="+"：不需要從 User 反查設定紀錄，這裡只是留個最後修改者。
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"topic={self.topic_id}"
+
+
+class DialogueEntryAssignment(models.Model):
+    """混合入口把某位使用者在某個議題分到哪一組。
+
+    兩個用途：
+    1. 把關依據——混合模式下，直接呼叫 matching/join 或 dialogue/sessions
+       要有對應的指派才放行。純推導做不到，因為配對逾時後極端立場的人
+       也必須能進 AI。
+    2. 實驗資料——「這位受試者被指派到哪組、當時 stance 多少、用哪組門檻
+       算的、有沒有因為配對逾時而轉去 AI」。
+
+    重新填寫問卷會覆寫同一筆（update_or_create）並清空 fallback 欄位。
+    """
+
+    class Route(models.TextChoices):
+        AI = "ai", "AI 對話"
+        MATCH = "match", "真人配對"
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name="message_reactions",
+        related_name="entry_assignments",
     )
-    target_type = models.CharField(max_length=8, choices=TargetType.choices)
-    # AIConversation.id (ai) or MatchMessage.id (match)
-    target_id = models.BigIntegerField()
-    value = models.SmallIntegerField(choices=Value.choices)
-
-    # Denormalized context for research querying (filled at write time).
-    topic_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
-    # session_id (ai) or room_id (match)
-    conversation_id = models.CharField(max_length=64, blank=True, db_index=True)
-
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    topic_id = models.PositiveIntegerField(db_index=True)
+    route = models.CharField(max_length=8, choices=Route.choices, db_index=True)
+    stance_score = models.DecimalField(max_digits=4, decimal_places=2)
+    stance_category = models.CharField(max_length=20)
+    # 指派當下生效的門檻。門檻可被 Supervisor 調整，沒有這兩欄就無法回答
+    # 「這筆樣本是用哪組門檻分流的」。
+    support_threshold = models.FloatField()
+    oppose_threshold = models.FloatField()
+    entry_mode_at_assignment = models.CharField(max_length=16)
+    assigned_at = models.DateTimeField(auto_now_add=True)
+    fallback_offered_at = models.DateTimeField(
+        null=True, blank=True, help_text="第一次被提示可以改跟 AI 對話的時間"
+    )
+    fallback_accepted_at = models.DateTimeField(
+        null=True, blank=True, help_text="使用者接受改跟 AI 對話的時間"
+    )
 
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["user", "target_type", "target_id"],
-                name="uniq_message_reaction_user_target",
+                fields=["user", "topic_id"],
+                name="uniq_entry_assignment_user_topic",
             ),
+            # 跟 UserStanceProfile／MatchQueueEntry 一致。這筆是「為什麼這個人
+            # 被分到這一組」的稽核紀錄，範圍外的分數比在那兩張表更沒有意義。
             models.CheckConstraint(
-                condition=Q(value__in=[1, -1]),
-                name="message_reaction_value_like_dislike",
-            ),
-        ]
-        indexes = [
-            models.Index(
-                fields=["target_type", "conversation_id"],
-                name="msg_reaction_conv_idx",
+                condition=Q(stance_score__gte=1) & Q(stance_score__lte=7),
+                name="entry_assignment_stance_score_between_1_and_7",
             ),
         ]
 
     def __str__(self):
-        return (
-            f"reaction user={self.user_id} {self.target_type}={self.target_id} "
-            f"value={self.value}"
-        )
+        return f"user={self.user_id} topic={self.topic_id} route={self.route}"
+
+
+class GodotEntryTicket(models.Model):
+    """一次性的 Godot 大廳入場券。主功能發，Godot server 用服務金鑰兌換。
+
+    存在的理由：Godot server 只需要知道「這個 peer 是哪個 user」，不需要、也不該
+    持有主功能的長效 access token——長效憑證一旦進了遊戲 server 的記憶體與 log
+    就很難收回。券短效、一次性、只有持服務金鑰的一方能兌換，洩漏後果有界。
+    見 docs/superpowers/specs/2026-07-28-godot-identity-and-match-binding-design.md §5。
+    """
+
+    token = models.CharField(max_length=64, unique=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="godot_tickets",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(db_index=True)
+    redeemed_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"ticket user={self.user_id} redeemed={self.redeemed_at is not None}"

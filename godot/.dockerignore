@@ -1,0 +1,10 @@
+# 本機的 import 快取，image build 時會自己重新產生一份乾淨的（見 Dockerfile）。
+.godot/
+
+# Web 匯出產物（40MB+ 的 build 檔），headless server 用不到，別把它們塞進
+# build context 拖慢 build。
+takeAbridge_godot.*
+
+# 只有本機開發用的密鑰檔，絕對不能進 image。
+.env
+.env.*

@@ -114,6 +114,75 @@
   margin-left: auto;
 }
 
+.message-reactions {
+  display: flex;
+  gap: 0;
+  align-self: flex-end;
+  margin-bottom: 2px;
+}
+
+.reaction-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #9a9188;
+  cursor: pointer;
+  opacity: 0.4;
+  transition:
+    opacity 0.15s,
+    background-color 0.15s,
+    color 0.15s,
+    transform 0.1s;
+}
+
+.message-row:hover .reaction-btn,
+.reaction-btn:hover,
+.reaction-btn.active {
+  opacity: 1;
+}
+
+/* 觸控裝置沒有 hover，上面那條「滑過才浮出」永遠不會觸發，按鈕會一直停在
+   0.4 的低對比狀態。這裡把靜止透明度拉高，讓手機/平板上看得見也點得到。 */
+@media (hover: none) {
+  .reaction-btn {
+    opacity: 0.75;
+  }
+}
+
+.reaction-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: #5c5449;
+}
+
+.reaction-btn:active {
+  transform: scale(0.88);
+}
+
+.reaction-btn.like.active {
+  background: #e3efe0;
+  color: #4c7a3c;
+}
+
+.reaction-btn.dislike.active {
+  background: #f6e3e0;
+  color: #b05540;
+}
+
+.reaction-icon {
+  display: block;
+  pointer-events: none;
+}
+
+.reaction-icon--down {
+  transform: rotate(180deg);
+}
+
 .message-user-info {
   display: flex;
   flex-direction: column;
@@ -487,6 +556,14 @@
   line-height: 1.6;
 }
 
+.matching-status-notice {
+  margin: 4px auto 0;
+  width: min(100%, 760px);
+  color: #475467;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
 .chat-input-area {
   flex-shrink: 0;
   margin-bottom: 5px;
@@ -616,6 +693,7 @@
   display: flex;
   flex-direction: column;
   gap: 20px;
+  overflow-anchor: none;
 }
 
 .panel-toggle-btn {
@@ -940,65 +1018,6 @@
   cursor: not-allowed;
 }
 
-/* --- Message reactions (讚 / 倒讚 on opponent messages) ------------------ */
-.message-reactions {
-  display: flex;
-  gap: 6px;
-  align-self: flex-end;
-  margin-bottom: 2px;
-}
-
-.reaction-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 50%;
-  background-color: #f0f0f0;
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-  opacity: 0.55;
-  transition: opacity 0.15s, background-color 0.15s, border-color 0.15s, transform 0.1s;
-}
-
-.message-row:hover .reaction-btn {
-  opacity: 0.9;
-}
-
-.reaction-btn:hover {
-  opacity: 1;
-  background-color: #e6e6e6;
-  transform: translateY(-1px);
-}
-
-.reaction-btn:disabled {
-  cursor: default;
-  transform: none;
-}
-
-.reaction-btn.active {
-  opacity: 1;
-}
-
-.reaction-btn.active.like {
-  background-color: #e3efe0;
-  border-color: #6f9a5f;
-}
-
-.reaction-btn.active.dislike {
-  background-color: #f4e2df;
-  border-color: #b46a5c;
-}
-
-.reaction-icon {
-  pointer-events: none;
-  filter: grayscale(0.15);
-}
-
 /* Agent typing indicator — the backend holds the whole reply until it has
    passed the output-contract check, so there is a real gap before the first
    chunk arrives. */
@@ -1046,4 +1065,18 @@
     animation: none;
     opacity: 0.5;
   }
+}
+
+.matching-fallback-offer {
+  margin-top: 20px;
+  padding: 16px;
+  border: 1px solid #f0d9a0;
+  border-radius: 10px;
+  background: #fff9ec;
+}
+
+.matching-fallback-offer p {
+  margin: 0 0 12px;
+  font-size: 14px;
+  color: #8a6d3b;
 }
