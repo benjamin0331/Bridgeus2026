@@ -14,18 +14,28 @@ from rest_framework.permissions import BasePermission
 RESEARCHER_GROUP_NAME = "研究者"
 
 
+def user_is_researcher(user) -> bool:
+    """這個使用者算不算研究者。
+
+    權限類別與顯示設定讀取層共用同一份定義，避免兩邊對「誰是研究者」
+    的判斷長歪。注意 simplejwt 的 TokenUser.groups 是 EmptyManager，
+    用它呼叫本函式永遠得到 False——需要角色判斷的 view 必須用預設的
+    JWTAuthentication 拿到真正的 User。
+    """
+    return bool(
+        user
+        and getattr(user, "is_authenticated", False)
+        and user.groups.filter(name=RESEARCHER_GROUP_NAME).exists()
+    )
+
+
 class IsResearcher(BasePermission):
     """使用者要屬於「研究者」Django Group 才有權限。"""
 
     message = "此功能僅限研究者使用。"
 
     def has_permission(self, request, view):
-        user = request.user
-        return bool(
-            user
-            and user.is_authenticated
-            and user.groups.filter(name=RESEARCHER_GROUP_NAME).exists()
-        )
+        return user_is_researcher(request.user)
 
 
 class IsGodotServiceToken(BasePermission):

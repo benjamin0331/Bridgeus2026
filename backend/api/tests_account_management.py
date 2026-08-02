@@ -1,0 +1,191 @@
+"""研究者帳號管理 REST API（前端設定頁用）。
+
+權限一律 IsResearcher（「研究者」Django Group）。升/降研究者＝加入/移出該
+Group，is_staff 由 api/signals.py 的 m2m_changed signal 自動連動。見
+docs/superpowers/specs/2026-07-21-frontend-settings-account-management-design.md
+"""
+
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
+from rest_framework import status
+from rest_framework.test import APITestCase
+
+from api.permissions import RESEARCHER_GROUP_NAME
+
+User = get_user_model()
+
+
+def _make_researcher(username="researcher"):
+    group, _ = Group.objects.get_or_create(name=RESEARCHER_GROUP_NAME)
+    user = User.objects.create_user(username=username, password="pw-strong-123")
+    user.groups.add(group)
+    return user
+
+
+class AccountListCreateTests(APITestCase):
+    def setUp(self):
+        self.researcher = _make_researcher()
+        self.participant = User.objects.create_user(
+            username="participant", password="pw-strong-123"
+        )
+
+    def test_participant_cannot_list_accounts(self):
+        self.client.force_authenticate(user=self.participant)
+        response = self.client.get("/api/accounts/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_researcher_can_list_accounts(self):
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.get("/api/accounts/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        usernames = {row["username"] for row in response.data}
+        self.assertIn("researcher", usernames)
+        self.assertIn("participant", usernames)
+        researcher_row = next(r for r in response.data if r["username"] == "researcher")
+        self.assertTrue(researcher_row["is_researcher"])
+        participant_row = next(r for r in response.data if r["username"] == "participant")
+        self.assertFalse(participant_row["is_researcher"])
+
+    def test_create_participant_account_defaults(self):
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.post(
+            "/api/accounts/",
+            {"username": "newbie", "password": "pw-strong-123"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        created = User.objects.get(username="newbie")
+        self.assertTrue(created.is_active)
+        self.assertFalse(created.is_staff)
+        self.assertFalse(created.groups.filter(name=RESEARCHER_GROUP_NAME).exists())
+
+    def test_create_researcher_account_joins_group_and_gets_staff(self):
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.post(
+            "/api/accounts/",
+            {"username": "newsup", "password": "pw-strong-123", "is_researcher": True},
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        created = User.objects.get(username="newsup")
+        self.assertTrue(created.groups.filter(name=RESEARCHER_GROUP_NAME).exists())
+        self.assertTrue(created.is_staff)  # signal 連動
+
+    def test_create_rejects_weak_password(self):
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.post(
+            "/api/accounts/", {"username": "weak", "password": "123"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(User.objects.filter(username="weak").exists())
+
+    def test_create_rejects_duplicate_username(self):
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.post(
+            "/api/accounts/",
+            {"username": "participant", "password": "pw-strong-123"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class AccountUpdateTests(APITestCase):
+    def setUp(self):
+        self.researcher = _make_researcher()
+        self.other = _make_researcher(username="other_researcher")
+        self.participant = User.objects.create_user(
+            username="participant", password="pw-strong-123"
+        )
+        self.superuser = User.objects.create_superuser(
+            username="root", password="pw-strong-123"
+        )
+        self.client.force_authenticate(user=self.researcher)
+
+    def _url(self, user):
+        return f"/api/accounts/{user.id}/"
+
+    def test_deactivate_and_reactivate_participant(self):
+        response = self.client.patch(self._url(self.participant), {"is_active": False})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.participant.refresh_from_db()
+        self.assertFalse(self.participant.is_active)
+
+        response = self.client.patch(self._url(self.participant), {"is_active": True})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.participant.refresh_from_db()
+        self.assertTrue(self.participant.is_active)
+
+    def test_promote_participant_to_researcher_sets_staff(self):
+        response = self.client.patch(
+            self._url(self.participant), {"is_researcher": True}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.participant.refresh_from_db()
+        self.assertTrue(
+            self.participant.groups.filter(name=RESEARCHER_GROUP_NAME).exists()
+        )
+        self.assertTrue(self.participant.is_staff)
+
+    def test_demote_researcher_clears_staff(self):
+        response = self.client.patch(self._url(self.other), {"is_researcher": False})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.other.refresh_from_db()
+        self.assertFalse(self.other.groups.filter(name=RESEARCHER_GROUP_NAME).exists())
+        self.assertFalse(self.other.is_staff)
+
+    def test_cannot_modify_superuser(self):
+        response = self.client.patch(self._url(self.superuser), {"is_active": False})
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.superuser.refresh_from_db()
+        self.assertTrue(self.superuser.is_active)
+
+    def test_cannot_deactivate_self(self):
+        response = self.client.patch(self._url(self.researcher), {"is_active": False})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.researcher.refresh_from_db()
+        self.assertTrue(self.researcher.is_active)
+
+    def test_cannot_demote_self(self):
+        response = self.client.patch(
+            self._url(self.researcher), {"is_researcher": False}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.researcher.refresh_from_db()
+        self.assertTrue(
+            self.researcher.groups.filter(name=RESEARCHER_GROUP_NAME).exists()
+        )
+
+
+class AccountPasswordResetTests(APITestCase):
+    def setUp(self):
+        self.researcher = _make_researcher()
+        self.participant = User.objects.create_user(
+            username="participant", password="old-pw-123456"
+        )
+        self.superuser = User.objects.create_superuser(
+            username="root", password="pw-strong-123"
+        )
+        self.client.force_authenticate(user=self.researcher)
+
+    def _url(self, user):
+        return f"/api/accounts/{user.id}/reset-password/"
+
+    def test_reset_sets_new_password(self):
+        response = self.client.post(
+            self._url(self.participant), {"password": "brand-new-987654"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.participant.refresh_from_db()
+        self.assertTrue(self.participant.check_password("brand-new-987654"))
+        self.assertFalse(self.participant.check_password("old-pw-123456"))
+
+    def test_reset_rejects_weak_password(self):
+        response = self.client.post(self._url(self.participant), {"password": "123"})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.participant.refresh_from_db()
+        self.assertTrue(self.participant.check_password("old-pw-123456"))
+
+    def test_cannot_reset_superuser_password(self):
+        response = self.client.post(
+            self._url(self.superuser), {"password": "brand-new-987654"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.superuser.refresh_from_db()
+        self.assertTrue(self.superuser.check_password("pw-strong-123"))

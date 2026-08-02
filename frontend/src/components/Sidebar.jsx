@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
+import { useNotifications } from '../context/NotificationsContext';
 
 function Sidebar({ navigate, isTopicPage = false, isResearcher = false }) {
   const [isOpen, setIsOpen] = useState(false);
+  const { hasUnread } = useNotifications();
   const handleNavigate = (path) => {
     navigate(path);
     setIsOpen(false);
@@ -42,7 +44,25 @@ function Sidebar({ navigate, isTopicPage = false, isResearcher = false }) {
           >
             <img src="/Achievement.png" alt="" className="utility-icon" />
           </button>
-          <img src="/star.png" alt="Favorite" className="utility-icon" />
+          <button
+            className="sidebar-icon-btn"
+            type="button"
+            onClick={() => handleNavigate('/kb')}
+            aria-label="觀點知識庫"
+            title="觀點知識庫"
+          >
+            <img src="/star.png" alt="" className="utility-icon" />
+          </button>
+          <button
+            className="sidebar-icon-btn"
+            type="button"
+            onClick={() => handleNavigate('/notifications')}
+            aria-label="消息通知"
+            title="消息通知"
+          >
+            <img src="/bell.png" alt="" className="utility-icon" />
+            {hasUnread && <span className="sidebar-notification-dot" aria-hidden="true" />}
+          </button>
           <button
             className="sidebar-icon-btn"
             type="button"
@@ -52,7 +72,15 @@ function Sidebar({ navigate, isTopicPage = false, isResearcher = false }) {
           >
             <img src="/history.svg" alt="" className="utility-icon" />
           </button>
-          <img src="/settings.png" alt="Settings" className="utility-icon" />
+          <button
+            className="sidebar-icon-btn"
+            type="button"
+            onClick={() => handleNavigate('/settings')}
+            aria-label="設定"
+            title="設定"
+          >
+            <img src="/settings.png" alt="" className="utility-icon" />
+          </button>
           {/* 只有屬於「研究者」Group 的帳號才看得到，實際存取控制在後端
               IsResearcher，這裡只是決定要不要顯示連結。 */}
           {isResearcher && (

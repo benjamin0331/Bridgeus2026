@@ -10,7 +10,7 @@ Knowledge Base Builder (M3)
     python scripts/build_knowledge_base.py --collection nuclear_energy_news --data-dir data/nuclear_energy
     python scripts/build_knowledge_base.py --collection nuclear_energy_news --chunk-size 500
 
-Owner: 葉錦諦 (Data Engineering)
+
 """
 
 import argparse

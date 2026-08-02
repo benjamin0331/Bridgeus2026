@@ -10,17 +10,11 @@ Step 3：加權評分排序（score_and_rank）
 - Step 1 的 messages: list[dict]，每筆含 content（role/side 皆可，不影響篩選）
 - Step 2/3 的 messages 每筆額外含 side / ccnd_semantic_dist / ccnd_stance_shift / message_id
   - side："a" | "b"，對應 DialogueSummary.side_a_stance / side_b_stance
-- ccnd_semantic_dist / ccnd_stance_shift 都是「跟同一位發言者上一則發言之間的
-  差值」，不是全場累積值（累積值會系統性地讓「講得晚」的發言分數偏高，見
-  apps/summary/pipeline/assemble.py 模組 docstring）：
-  - ccnd_semantic_dist：該則發言與同一發言者上一則發言的 embedding cosine
-    distance（1 - cosine_similarity(chat.services.embedding.cosine_similarity)），
-    直接用已存的 MatchMessage.embedding，不必重算。第一則發言記 0.0。
-  - ccnd_stance_shift：該則發言比同一發言者上一則發言多點亮了幾個 CCND 節點
-    （apps.matching.services.semantic_tree.get_lit_node_count 回傳累積不重複
-    點亮的 micro node 數，取相鄰兩則的差），換算成 100/36 分制（36 為假設的
-    滿分點亮節點數，可視實際資料調整）。第一則發言記 0.0。
-  兩者的組裝邏輯見 apps/summary/pipeline/assemble.py::build_messages_for_match()。
+  - ccnd_semantic_dist / ccnd_stance_shift 都是「這則發言相對於同一位發言者
+    上一則發言」的差值，不是累積量——組資料層
+    apps.summary.pipeline.assemble.build_messages_for_match() 負責算好這兩個
+    欄位（該檔案模組 docstring 有完整說明兩者為什麼要用差值，不是累積量）。
+    這裡的 SEMANTIC_DIST_THRESHOLD / MIN_LENGTH 等門檻都是針對差值設計的。
 """
 
 import jieba
@@ -191,7 +185,8 @@ def _normalize(values: list[float]) -> list[float]:
 def score_and_rank(pairs: list[dict], top_n: int = TOP_N) -> list[dict]:
     """
     輸入：extract_valuable_pairs 回傳的配對列表
-    輸出：加上 composite_score / score_detail，依分數降序排列，取 top_n 筆
+    輸出：加上 composite_score / score_detail，依分數降序排列，取 top_n 筆，
+          並確保雙方 speaker_side 盡量都有代表（見 _select_balanced_by_side）
     """
     if not pairs:
         return []

@@ -1,6 +1,6 @@
 # CONTEXT.md — BridgeUs 開發狀態
 
-> 最後更新：2026-07-23
+> 最後更新：2026-08-02
 > 用途：每次對話開始先讀此檔。**「待提交變更」區塊** = 尚未 commit 的工作，下次 commit 直接依此即可；commit 完就把該項移除。
 
 ---
@@ -8,8 +8,8 @@
 ## 🟡 待提交變更（Uncommitted）
 
 > 每完成一項未 commit 的工作就記在這；commit 後刪掉該行。
-- [ ] M6 觀點知識庫沉澱：`apps/summary/pipeline/assemble.py::run_pipeline_for_match()` 補上 `DialogueSummary`（`summary_text`/`side_a_stance`/`side_b_stance`/`quality_score`/`stance_shift_magnitude`）與 `ViewpointNode`（`viewpoint_summary`/`stance_direction`）的填值邏輯（原本這些欄位都是空值，只有 dialogue_id/topic_id 有寫）；新增 `semantic_tree.get_message_lit_nodes()`（回傳該則訊息命中的 CCND 節點 `{"name", "stance"}`，取代原本只回傳名稱的 `get_message_lit_node_names()`）。
-- [ ] M6 觸發漏洞修復：`apps/matching/services/matcher.py::enqueue_for_matching()` 的 `restart_existing_match=True` 分支，原本直接 `active_match.status = CLOSED` 存檔，沒有經過 `_close_locked_match()`，導致沒有註冊 `transaction.on_commit()`、M6 pipeline 永遠不會被觸發（`/matching/request/` API 真實可觸發的路徑）。改成呼叫 `_close_locked_match(active_match, now=now)`。**尚未補測試**（`tests_m6_trigger_on_close.py` 目前只測 `close_match()`，沒覆蓋這條路徑）。
+
+（目前無）
 
 _（未追蹤的資料/設定檔 `.claude/`、`chroma_data/`、`*.csv`、`0530…txt` 不納入 commit。）_
 
@@ -50,12 +50,12 @@ BridgeUs（橋得攏）— AI 驅動的去極化對話平台。
 
 | 模組 | 狀態 | 重點 |
 |------|------|------|
-| M1 認證 | ✅ | JWT（simplejwt）、登入/刷新、前端 LoginPage |
+| M1 認證 | ✅ | JWT（simplejwt）、登入/刷新、前端 LoginPage；Supervisor 帳號管理（「研究者」Group 具 Django Admin 帳號管理權限；加入 Group 自動連動 is_staff；帳號列表顯示 last_login／is_active；刪除刻意不開放，改用停用 is_active）；前端設定頁（齒輪 → `/settings`）研究者帳號管理面板（清單／新增／停用啟用／升降研究者／重設密碼；`/api/accounts/*` 由 IsResearcher 把關；護欄：不能動 superuser、不能停用/取消自己） |
 | M2 議題/立場 | ✅ | `api/dialogue_topics.py` 的 `TOPIC_CONFIGS`/`SURVEY_CONFIGS`；李克特 + 反向題 → stance score → support/neutral/oppose |
 | M3 配對 + AI Agent | ✅（持續調整） | `apps/matching/services/matcher.py`（立場向量配對）、`ai_agent.py`（RAG+Claude、三階段策略、streaming）；近期加了 focus signal 偵測、reasoning mode 升級 |
 | M4 對話室 | ✅ | `api/consumers.py`：H-AI streaming + H-H 配對房 WebSocket；離題/情緒/僵局介入 |
 | M5 NLP/CCND | 🟡 進行中 | 語意樹 `apps/matching/services/semantic_tree.py`（topic-aware anchors）、立場偏移 drift；D3 前端指標列。CCND 視覺化持續中 |
-| M6 摘要/知識庫 | 🟡 | ✅ 對話後問卷（`PostDialogueResponse`）+ debriefing 同意/撤回 + Part F 平台體驗回饋（`PlatformFeedback`）；✅ 觀點知識庫沉澱 pipeline（配對房 CLOSED 時自動觸發，品質篩選→去重→寫入 `DialogueSummary`/`ViewpointNode`，含 `viewpoint_summary` 抓 CCND 點亮節點名稱）；✅ Step 4 人工終審（`ViewpointReviewListView`/`ViewpointReviewDecisionView` + 前端 `ViewpointReviewPage.jsx`）；⬜ `summary_text` 目前是雙方逐字發言紀錄、非 LLM 摘要；⬜ 沒有對外的立場偏移報告 API（`docs/BridgeUs_API_Spec.md` 的 `GET /summary/<session_id>/` 還沒實作 view） |
+| M6 摘要/知識庫 | 🟡 | ✅ 對話後問卷（`PostDialogueResponse`）+ debriefing 同意/撤回 + Part F 平台體驗回饋（`PlatformFeedback`）+ 問卷版立場偏移（`s_pre`/`delta_s`/`stance_centrism` 存檔＋前端結果卡片）；⬜ 語意向量版偏移報告、知識庫沉澱 |
 
 ---
 
@@ -83,16 +83,83 @@ BridgeUs（橋得攏）— AI 驅動的去極化對話平台。
 - 現行函式（`apps/matching/services/hh_analysis.py`）：
   - `calculate_match_stance_drift`（H-H 配對房，用 `MatchMessage` + `UserStanceProfile.q9_embedding`）
   - `calculate_ai_session_stance_drift`（H-AI，用 `survey_context["q9_embedding"]` + `AIConversation`）
-- 增量區間：只算上一筆 drift 之後的新訊息；方向 `DIRECTION_THRESHOLD=0.02`（approaching/diverging/stable，前端不顯示）。
+- 取樣區間：**該用戶在這場對話的全部實質發言**（累積平均，非增量窗口）。
+  H-H 的增量窗口（只算上一筆 drift 之後的新訊息）已在 2026-08-02 併入 feat/Light 時移除，
+  與 H-AI 一致。`MatchStanceDrift` 上一筆仍用來判方向 `DIRECTION_THRESHOLD=0.02`
+  （approaching/diverging/stable，前端不顯示）。
 - **觸發時機（2026-07-05 起 H-H 與 H-AI 一致）**：每則「發言者本人」的新發言就重算其自己的 drift。
   - H-AI：`_update_session_stance_drift`（每輪 agent 回應後）。
   - H-H：`api/consumers.py::_run_stance_drift`（`_run_message_analysis` 內，embedding 存檔後），算完以 WS `match_stance_drift` **只推給發言者**。舊的 200 字/300 秒節流（`_maybe_run_periodic_analysis`）已移除。
   - 僵局偵測（stalemate）**未跟著改**：獨立時間節流 `_STALEMATE_MIN_INTERVAL_SECONDS=300`（`_match_last_stalemate`，single-process）。
 - 舊版 `chat/services/drift.py::calculate_drift` 為 dead code（見上）。
 - 前端 UI 標籤已更名為「論述移動」（數值/欄位不變）。
-- 另有**問卷版**去極化指標：`PostDialogueResponse.stance_centrism()`（`|S_post-4|-|S_pre-4|`），與語意向量版獨立。
+- 另有**問卷版**去極化指標：`PostDialogueResponse`（`s_pre`/`delta_s_value`/`stance_centrism_value` 三欄），與語意向量版獨立。
+  - `s_pre` 來源是**該場對話自己的前測快照**（`_post_dialogue_stance_snapshot`）：
+    H-AI 取 `DialogueSessionRecord.session_state["user_stance_score"]`，
+    H-H 取 `DialogueMatch.user_a_score`/`user_b_score`。找不到對應對話 → 400。
+    之後重填問卷產生的新 `UserStanceProfile` 不會回頭改寫這場對話的 `s_pre`。
+    經 `fill_stance_metrics()` 算出並存檔；無前測值時三欄為 NULL。
+  - `delta_s = s_post − s_pre`（正=偏支持、負=偏反對）；`stance_centrism = |s_post−4|−|s_pre−4|`（< 0 去極化）。output serializer 以 `s_pre`/`s_post`/`delta_s`/`stance_centrism` 回傳。
+  - 前端：問卷送出後由 `SettlementReceipt.jsx` 呈現「結算單」（前後立場分數 + 兩項指標白話解讀 + 投入度評級，可匯出 PNG），再進 debriefing。舊的 `ResultCard` 已移除。後台 `PostDialogueResponseAdmin` 可檢視。
 
 ---
+
+## Input gate（輸入閘門 / token 消耗控制）
+
+LLM 呼叫**之前**的純規則過濾。命中時回靜態字串，零 API 成本。H-H 與 H-AI 共用。
+
+- 模組：`apps/matching/services/input_gate.py`（純規則，無 I/O、無模型推論）、
+  `rate_limit.py`（Django cache → prod Redis）、`input_gate_store.py`（計數落庫）。
+- 判定順序（不可調換）：**0 單字粗口** → 1 短回應白名單 → 2 純數字/符號 →
+  3 字元重複度 <0.3 → 4 語意字元佔比 <0.4 → 5 `len<4` 且前一輪 AI 沒提問。
+  **白名單豁免 2/3/4，但規則 5 仍適用**（「好」在 AI 提問後放行，無脈絡時攔截）。
+  所有門檻是工程性防禦值，不是實驗參數。
+- **規則 0（單字粗口）不看 `prev_ai_is_question`**：AI 剛提問會讓「好」變成合法輪次，
+  但不會讓「幹」變成回答。字彙在 `chat/services/_blacklist.py::STANDALONE_PROFANITY`
+  （幹/操/靠/屌），比對在 `filter.py::find_standalone_profanity()`：剝除標點空白後，
+  整串只由這些字組成才命中 →「幹」「幹幹幹」「幹！！！」「幹 幹 幹」全擋，
+  「幹嘛」「樹幹」「幹部」「操作」「幹，核電根本是騙局」不受影響。
+  這些字**不可**放進 `BLACKLIST`（子字串比對會誤殺上述複合詞）。
+  重複的「幹×n」靠遞進節流累加，第 6 則進冷卻。回覆走專屬的
+  `FALLBACK_PROFANITY_ONLY`（承接情緒導回議題），不是「可以再多說一點嗎」。
+- `prev_ai_is_question` 來自 `AIConversation.ai_turn_is_question`，回應落庫時由策略層寫入：
+  讀 `<judgment>` 的型別代號（C=視角翻轉型→True、E=承接深化型→False），
+  A/B/D 退回句尾問號判斷（TODO：prompt 第十節短碼補欄位）。
+- 攔截的訊息**不進** session_state.history / AIConversation / RAG / embedding /
+  CCND / 對話輪數，只更新計數欄位。四個入口都擋：H-AI WS、H-AI REST reply、
+  H-H WS（含 modify_suggestion 改寫框）、H-H REST messages。
+- 遞進節流：1–2 對話氣泡、3–5 系統提示列、≥6 進 60 秒冷卻（WS `input_cooldown`）。
+  冷卻結束不歸零，需一則有效發言重置。
+- Rate limit（獨立於內容判斷）：最小間隔 1.5s、每分鐘 20 則，per-user，兩種對話室同時生效。
+- 實驗欄位：`DialogueSessionRecord.{invalid_input_count, invalid_input_total,
+  input_attempt_total, invalid_ratio, substantive_turn_count}`；H-H 為 `MatchInputGateStat`
+  （per match×user，同名欄位）。`invalid_ratio` / `substantive_turn_count` 在後測問卷送出時計算。
+  **系統不自動排除樣本**，只產出欄位。
+- NLP 管線：離題偵測、論述移動度、僵局偵測三處一律排除短回應，
+  共用 `input_gate.is_substantive_message()`。離題偵測已搬到
+  `apps/matching/services/topic_relevance.py`（per-topic policy：anchor/threshold/
+  window_size/min_messages 讀 `TOPIC_CONFIGS[...]["off_topic_detection"]`），
+  短回應過濾同樣在那裡做。
+- 前端：相同 fallback 就地累加 `×N` 不新增氣泡；`input_blocked` / `input_cooldown` /
+  `rate_limited` 三種事件；冷卻時停用輸入框並倒數。
+
+```bash
+uv run pytest apps/matching/tests/test_input_gate.py -q   # 規則單元測試（84 項）
+uv run pytest api/tests_input_gate_ws.py -q               # Consumer/REST 整合（17 項）
+uv run pytest chat/tests_filter.py -q                     # 黑名單 + 單字粗口（38 項）
+```
+
+---
+
+## 訊息讚/倒讚（MessageReaction）
+
+參與者可對「對方發言」按讚/倒讚，寫入 DB 供研究分析。H-H 與 H-AI 皆支援。
+
+- 模型：`api/models.py::MessageReaction`（`user` + `target_type`(ai/match) + `target_id` + `value`(±1) + 去正規化 `topic_id`/`conversation_id`）。`(user, target_type, target_id)` 唯一 → 重按同一個=切換/取消，按另一個=改值。
+- target：`ai` → `AIConversation.id`（AI 回覆那筆 turn）；`match` → `MatchMessage.id`（對方發言）。
+- 端點：`GET/POST /api/message-reactions/`（`MessageReactionView`）。POST body `{target_type, target_id, value}`，`value=0` 刪除；只允許對「對方」發言反應（AI turn 需屬於本人 session 且有 ai_response；match 訊息 sender 不可為自己且需為房間成員）。GET `?target_type=&conversation_id=` 回傳本人反應清單供前端初始高亮。
+- **AI turn id 串接**：`_live_history_with_turn_ids()` 讓 latest/detail/reply 回傳的 `history` 每則帶 `turn_id`；WS `agent_stream_end` 也帶 `turn_id`（`consumers.py`）。前端 `TopicChat.jsx` 的 `mapHistoryToMessages`/`mapMatchMessagesToDisplay` 產生 `reactTarget`，`MessageReactions` 元件渲染 👍/👎（樂觀更新、失敗回滾）。
+- 後台 `MessageReactionAdmin` 可檢視。migration `0014_messagereaction`。
 
 ## 測試
 
@@ -100,6 +167,14 @@ BridgeUs（橋得攏）— AI 驅動的去極化對話平台。
 cd backend
 uv run pytest api/tests.py -v                       # api app（含 matching、post-questionnaire、Part F）
 uv run pytest api/tests.py::PlatformFeedbackApiTests -v   # Part F（6 項）
+uv run pytest api/tests_message_reactions.py -v           # 讚/倒讚（11 項）
+uv run pytest api/tests_input_gate_ws.py -v               # Input gate 整合（14 項）
+# ⚠️ 專案根執行 `uv run pytest` 只會收到 apps/matching/tests/（pytest 預設
+#    python_files 是 test_*.py，api/ 底下的 tests_*.py 必須指名檔案才會跑）。
+#    完整套件：
+uv run pytest apps api/tests.py api/tests_websocket.py api/tests_live_contract.py \
+  api/tests_message_reactions.py api/tests_post_questionnaire.py \
+  api/tests_ccnd_timeline_gate.py api/tests_input_gate_ws.py chat/tests_filter.py -q   # 525 passed
 # chat/ 底下的 tests_* 多對應已淘汰服務，屬 legacy
 ```
 
@@ -121,10 +196,13 @@ npm run dev      # Vite，port 5173
 ## 待辦
 
 **近期**
+- [ ] ⚠️ `api/tests.py` 有 50 項失敗（合併前就存在於 feat/Light）：混合入口 gate
+      `_entry_gate_response` 上線後，測試沒建 `DialogueEntryAssignment`，
+      `/api/matching/join/` 與 `/api/dialogue/sessions/` 一律 403。
+      需補 fixture（或在測試把 entry mode 設成 split）。
 - [ ] 問卷初始立場 embedding（Q9）確實填入配對/ session 流程（M2/M3 整合）— 影響 drift 是否有基準
 - [ ] CCND 前端視覺化 / WebSocket 推送收尾
-- [ ] M6：立場偏移量化報告的對外 API/前端呈現（`GET /summary/<session_id>/`，觀點知識庫沉澱本身已完成，見上方模組現況）
-- [ ] M6：`DialogueSummary.summary_text` 改成 LLM 生成摘要（目前是雙方逐字發言紀錄，先頂著）
+- [ ] M6：立場偏移量化報告、觀點知識庫沉澱
 - [ ] 清理 `chat` app dead code（drift/session/stalemate/topic/ai_assist + 對應 tests）
 - [ ] `docs/BridgeUs_API_Spec.md` 更新（新增 `platform-feedback`、`post-questionnaire` 等）
 

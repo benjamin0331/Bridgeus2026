@@ -46,3 +46,9 @@ dev = [
 DJANGO_SETTINGS_MODULE = "BridgeUs_Django.settings"
 asyncio_mode = "auto"
 pythonpath = ["."]
+# `live` hits the real Anthropic API (costs money, needs ANTHROPIC_API_KEY).
+# Excluded by default; run explicitly with `uv run pytest -m live`.
+addopts = "-m 'not live'"
+markers = [
+    "live: smoke tests against the real Anthropic API; excluded from CI",
+]

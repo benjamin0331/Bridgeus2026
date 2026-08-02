@@ -1,0 +1,342 @@
+.sr-page-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 20px;
+  box-sizing: border-box;
+  overflow-y: auto;
+  font-family: "Microsoft JhengHei", "Apple LiGothic Medium", sans-serif;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.15) transparent;
+}
+
+/* margin:auto 垂直置中，且內容超高時頂部仍可捲到（justify-content:center 會切掉頂部）*/
+.sr-envelope,
+.sr-open {
+  margin: auto 0;
+}
+
+.sr-page-wrap::-webkit-scrollbar {
+  width: 6px;
+}
+.sr-page-wrap::-webkit-scrollbar-button,
+.sr-page-wrap::-webkit-scrollbar-button:start,
+.sr-page-wrap::-webkit-scrollbar-button:end {
+  display: none;
+  width: 0;
+  height: 0;
+}
+.sr-page-wrap::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sr-page-wrap::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 10px;
+}
+
+/* ---------- 信封（線條風）---------- */
+.sr-envelope {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  animation: sr-float 3.4s ease-in-out infinite;
+}
+
+.sr-env-svg {
+  width: 260px;
+  height: auto;
+  overflow: visible;
+}
+
+.sr-env-body,
+.sr-env-fold,
+.sr-env-flap {
+  fill: none;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.sr-env-body { stroke: #c4b099; stroke-width: 2.5; }
+.sr-env-fold { stroke: #dccdb8; stroke-width: 2; }
+.sr-env-flap {
+  stroke: #b39a7d;
+  stroke-width: 2.5;
+  transform-box: view-box;
+  transform-origin: 120px 44px;
+  transition: transform 0.6s ease;
+}
+
+.sr-env-hint {
+  color: #9a8f82;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+}
+
+.sr-envelope:hover .sr-env-flap { transform: scaleY(-0.12); }
+
+.sr-envelope.is-opening { animation: none; }
+.sr-envelope.is-opening .sr-env-flap { transform: scaleY(-1); }
+.sr-envelope.is-opening .sr-env-hint { opacity: 0; transition: opacity 0.3s ease; }
+
+@keyframes sr-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+
+/* ---------- 開啟後 ---------- */
+.sr-open {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  animation: sr-slide-in 0.5s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+
+@keyframes sr-slide-in {
+  from { opacity: 0; transform: translateY(24px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* ---------- 收據紙面 ---------- */
+.sr-receipt {
+  width: 440px;
+  max-width: calc(100vw - 40px);
+  background: #fbf8f3;
+  border-radius: 14px;
+  padding: 26px 26px 20px;
+  box-sizing: border-box;
+  box-shadow: 0 14px 44px rgba(83, 62, 44, 0.16);
+  color: #2f2722;
+}
+
+.sr-header { text-align: center; }
+
+.sr-brand {
+  color: #b05540;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+}
+
+.sr-title {
+  margin: 6px 0 4px;
+  font-family: Georgia, "Times New Roman", "Noto Serif TC", serif;
+  font-size: 23px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.sr-meta {
+  color: #9a8f82;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+}
+
+/* 打孔虛線分隔 */
+.sr-perf {
+  height: 1px;
+  margin: 16px 0;
+  background-image: linear-gradient(to right, #cdbfad 0 6px, transparent 6px 12px);
+  background-size: 12px 1px;
+  background-repeat: repeat-x;
+}
+.sr-perf--bottom { margin-top: 18px; }
+
+.sr-section-title {
+  margin-bottom: 14px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(141, 112, 88, 0.18);
+  color: #8d7058;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+}
+
+.sr-page { animation: sr-fade 0.3s ease both; }
+@keyframes sr-fade { from { opacity: 0; } to { opacity: 1; } }
+
+/* 立場前後大字 */
+.sr-scores {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin: 6px 0 10px;
+}
+.sr-score { flex: 1; text-align: center; padding: 12px 6px; border-radius: 12px; background: #f1ebe1; }
+.sr-score-label { display: block; margin-bottom: 6px; color: #9a8f82; font-size: 12px; }
+.sr-score-val { display: block; font-size: 30px; font-weight: 700; line-height: 1; color: #2f2722; }
+.sr-score-val--post { color: #b05540; }
+.sr-score-arrow { flex-shrink: 0; color: #c2b6a5; font-size: 20px; }
+
+.sr-chart { display: block; width: 100%; height: auto; margin: 4px 0 8px; }
+
+/* 指標列 */
+.sr-stat { margin: 12px 0 2px; }
+.sr-stat-head { display: flex; align-items: baseline; justify-content: space-between; }
+.sr-stat-label { font-size: 13.5px; font-weight: 600; color: #4a4038; }
+.sr-stat-num { font-size: 20px; font-weight: 800; }
+.sr-stat-desc { margin: 2px 0 0; color: #837568; font-size: 12px; line-height: 1.5; }
+
+.sr-tone-flat { color: #6f655a; }
+.sr-tone-up { color: #b05540; }
+.sr-tone-down { color: #6f8f5f; }
+.sr-tone-good { color: #4c7a3c; }
+.sr-tone-warn { color: #b05540; }
+
+.sr-note {
+  margin: 12px 0 0;
+  color: #9a8f82;
+  font-size: 11.5px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+/* 評級印章 */
+.sr-grade {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 6px 0 14px;
+
+  /* 印泥顏色：預設印章紅，四個等級各自覆蓋（見下）。沒有投入度資料時
+     computeGrade 回傳 '✓'，湊出來的 .sr-grade-✓ 選不到任何規則，就落在
+     這個預設值上——刻意的，那不是一個等級。 */
+  --sr-seal-ink: #b05540;
+  --sr-seal-ink-soft: rgba(176, 85, 64, 0.15);
+}
+
+/* 只換印泥顏色，不動橡皮章的形（雙線圓框＋歪斜）——收據是紙面風格，
+   換成漸層徽章會跟整張紙打架。等級同時由印章裡的字母與右側頭銜文字表達，
+   顏色只是冗餘編碼，色弱使用者不會因此讀不出等級。 */
+.sr-grade-S { --sr-seal-ink: #a8791f; --sr-seal-ink-soft: rgba(168, 121, 31, 0.15); }
+.sr-grade-A { --sr-seal-ink: #4c7a3c; --sr-seal-ink-soft: rgba(76, 122, 60, 0.15); }
+.sr-grade-B { --sr-seal-ink: #3f7a86; --sr-seal-ink-soft: rgba(63, 122, 134, 0.15); }
+.sr-grade-C { --sr-seal-ink: #8a7d6f; --sr-seal-ink-soft: rgba(138, 125, 111, 0.15); }
+
+.sr-seal {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  border: 3px double var(--sr-seal-ink);
+  color: var(--sr-seal-ink);
+  font-family: Georgia, serif;
+  font-size: 40px;
+  font-weight: 800;
+  transform: rotate(-8deg);
+  box-shadow: inset 0 0 0 2px var(--sr-seal-ink-soft);
+  animation: sr-stamp 0.4s cubic-bezier(0.2, 0.9, 0.3, 1.5) 0.15s both;
+}
+@keyframes sr-stamp {
+  0% { opacity: 0; transform: rotate(-8deg) scale(1.7); }
+  100% { opacity: 1; transform: rotate(-8deg) scale(1); }
+}
+.sr-grade-caption { display: block; color: #9a8f82; font-size: 11px; letter-spacing: 0.12em; }
+.sr-grade-title { display: block; margin-top: 4px; font-size: 20px; font-weight: 800; color: #4a4038; }
+
+/* 花絮 */
+.sr-extra-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(141, 112, 88, 0.12);
+}
+.sr-extra-label { color: #837568; font-size: 13.5px; }
+.sr-extra-badge { font-size: 15px; font-weight: 700; color: #2f2722; }
+
+.sr-donut {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+.sr-donut svg { width: 132px; height: 132px; }
+.sr-donut-legend { display: flex; gap: 18px; font-size: 13px; color: #837568; }
+.sr-donut-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sr-donut-legend b { color: #2f2722; }
+.sr-swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+
+/* ---------- 翻頁 / 動作 ---------- */
+.sr-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 16px;
+}
+.sr-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(141, 112, 88, 0.3);
+  border-radius: 50%;
+  background: #fbf8f3;
+  color: #8d7058;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.15s, opacity 0.15s;
+}
+.sr-nav:hover:not(:disabled) { background: #f0e9df; }
+.sr-nav:disabled { opacity: 0.3; cursor: default; }
+.sr-dots { display: flex; gap: 7px; }
+.sr-dot { width: 7px; height: 7px; border-radius: 50%; background: #d3c7b7; transition: background 0.15s; }
+.sr-dot.active { background: #b05540; }
+
+.sr-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 18px;
+}
+.sr-share {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 44px;
+  padding: 0 24px;
+  border: 1px solid rgba(141, 112, 88, 0.35);
+  border-radius: 22px;
+  background: #fbf8f3;
+  color: #8d7058;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 700;
+  transition: transform 0.1s, box-shadow 0.15s, opacity 0.15s;
+}
+.sr-share:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(83, 62, 44, 0.12); }
+.sr-share:disabled { opacity: 0.6; cursor: default; }
+.sr-share-icon { width: 18px; height: 18px; object-fit: contain; }
+
+/* ---------- 匯出用隱藏容器 ---------- */
+.sr-export-holder {
+  position: fixed;
+  left: -99999px;
+  top: 0;
+  pointer-events: none;
+}
+.sr-receipt--export {
+  width: 460px;
+  max-width: none;
+  box-shadow: none;
+}
+.sr-receipt--export .sr-page { animation: none; }
+.sr-receipt--export .sr-seal { animation: none; }
+.sr-receipt--export .sr-page + .sr-page {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px dashed rgba(141, 112, 88, 0.3);
+}

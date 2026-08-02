@@ -16,7 +16,21 @@ class AIConversation(models.Model):
     session_id = models.CharField(max_length=64, blank=True, db_index=True)
     topic_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
     user_prompt = models.TextField(help_text="使用者的提問")
-    ai_response = models.TextField(blank=True, null=True, help_text="AI 的回覆")
+    ai_response = models.TextField(
+        blank=True,
+        null=True,
+        help_text="AI 的回覆（僅 <reply> 區塊，已由 ReplyStreamGate 剝離判定段）",
+    )
+    # 模型的 <judgment> 區塊：僅供研究分析與除錯，永不推送給受試者。
+    # 與 ai_response 分欄存放，避免判定段污染歷史回灌、CCND 與知識庫下游。
+    internal_judgment = models.TextField(blank=True, default="")
+    # True 表示該輪輸出未滿足 <reply> 輸出契約（gate 從未開閘）。
+    contract_violated = models.BooleanField(default=False)
+    # 這一輪 AI 回應是否以提問收尾。由策略層在落庫時寫入（<judgment> 的型別代號
+    # C=視角翻轉型必為提問、E=承接深化型必不提問），不是事後用正則猜的。
+    # Input gate 讀取 session 最後一則 AI 回覆的這個旗標，決定短回應（「好」）
+    # 是合法的對話輪次，還是無脈絡的低訊息量輸入。
+    ai_turn_is_question = models.BooleanField(default=False)
     dialogue_phase = models.CharField(max_length=32, blank=True)
     # 384-dim embedding of user_prompt (paraphrase-multilingual-MiniLM-L12-v2);
     # populated at write time so stance-drift can read it instead of re-encoding
@@ -60,6 +74,18 @@ class DialogueSessionRecord(models.Model):
     last_activity_at = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    # ── Input gate 計數（實驗資料完整性）────────────────────────────
+    # 連續無效輸入次數，決定遞進節流的層級。任何一則通過閘門的正常發言
+    # 將其重置為 0；冷卻結束**不**歸零。
+    invalid_input_count = models.IntegerField(default=0)
+    # 以下三欄永不歸零，供匯出後由研究端決定樣本排除規則。
+    # 系統本身不自動排除任何樣本。
+    invalid_input_total = models.IntegerField(default=0)
+    input_attempt_total = models.IntegerField(default=0)
+    # 對話結束時（後測問卷送出）計算並落庫；未結束的 session 為 NULL。
+    invalid_ratio = models.FloatField(null=True, blank=True)
+    substantive_turn_count = models.IntegerField(null=True, blank=True)
 
     class Meta:
         indexes = [
@@ -133,8 +159,15 @@ class DialogueMatch(models.Model):
         on_delete=models.CASCADE,
         related_name="dialogue_matches_as_b",
     )
-    user_a_score = models.DecimalField(max_digits=4, decimal_places=2)
-    user_b_score = models.DecimalField(max_digits=4, decimal_places=2)
+    # 建房當下不一定有 s_pre：Godot 木樁配對是先建房、跳轉之後才填前測問卷
+    # （見 spec §D4）。NULL = 還沒填；不要用 4.00 之類的佔位值，那跟「真的
+    # 填出 4.00」在資料上無法區分。
+    user_a_score = models.DecimalField(
+        max_digits=4, decimal_places=2, null=True, blank=True
+    )
+    user_b_score = models.DecimalField(
+        max_digits=4, decimal_places=2, null=True, blank=True
+    )
     likert_distance = models.DecimalField(max_digits=6, decimal_places=4, default=0)
     semantic_distance = models.DecimalField(max_digits=6, decimal_places=4, default=0)
     match_score = models.DecimalField(max_digits=6, decimal_places=4, default=0)
@@ -159,11 +192,13 @@ class DialogueMatch(models.Model):
                 name="match_users_must_differ",
             ),
             models.CheckConstraint(
-                condition=Q(user_a_score__gte=1) & Q(user_a_score__lte=7),
+                condition=Q(user_a_score__isnull=True)
+                | (Q(user_a_score__gte=1) & Q(user_a_score__lte=7)),
                 name="match_user_a_score_between_1_and_7",
             ),
             models.CheckConstraint(
-                condition=Q(user_b_score__gte=1) & Q(user_b_score__lte=7),
+                condition=Q(user_b_score__isnull=True)
+                | (Q(user_b_score__gte=1) & Q(user_b_score__lte=7)),
                 name="match_user_b_score_between_1_and_7",
             ),
         ]
@@ -172,6 +207,47 @@ class DialogueMatch(models.Model):
         return (
             f"match={self.id} room={self.room_id} "
             f"status={self.status}"
+        )
+
+
+class MatchInputGateStat(models.Model):
+    """H-H 配對房的 input gate 計數，per (match, user)。
+
+    H-AI 的等價欄位直接掛在 `DialogueSessionRecord` 上（一個 session 只有一位
+    參與者）；配對房有兩位參與者且各自計數，所以獨立成表而非在
+    `DialogueMatch` 上開兩組欄位。欄位命名刻意與 `DialogueSessionRecord`
+    一致，讓兩個 cohort 的匯出格式對得起來。
+    """
+
+    match = models.ForeignKey(
+        DialogueMatch,
+        on_delete=models.CASCADE,
+        related_name="input_gate_stats",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="match_input_gate_stats",
+    )
+    invalid_input_count = models.IntegerField(default=0)
+    invalid_input_total = models.IntegerField(default=0)
+    input_attempt_total = models.IntegerField(default=0)
+    invalid_ratio = models.FloatField(null=True, blank=True)
+    substantive_turn_count = models.IntegerField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["match", "user"],
+                name="uniq_input_gate_stat_match_user",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"match={self.match_id} user={self.user_id} "
+            f"invalid={self.invalid_input_total}/{self.input_attempt_total}"
         )
 
 
@@ -264,6 +340,57 @@ class MatchMessage(models.Model):
 
     def __str__(self):
         return f"match={self.match_id} sender={self.sender_id}"
+
+
+class MessageReaction(models.Model):
+    """A participant's like/dislike reaction to an opponent message."""
+
+    class TargetType(models.TextChoices):
+        AI = "ai", "AI 回應"
+        MATCH = "match", "配對訊息"
+
+    class Value(models.IntegerChoices):
+        LIKE = 1, "讚"
+        DISLIKE = -1, "倒讚"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="message_reactions",
+    )
+    target_type = models.CharField(max_length=8, choices=TargetType.choices)
+    # target_type=ai -> AIConversation.id; target_type=match -> MatchMessage.id
+    target_id = models.BigIntegerField()
+    value = models.SmallIntegerField(choices=Value.choices)
+    topic_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    # session_id for AI, room_id for human matching
+    conversation_id = models.CharField(max_length=64, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "target_type", "target_id"],
+                name="uniq_message_reaction_user_target",
+            ),
+            models.CheckConstraint(
+                condition=Q(value__in=[1, -1]),
+                name="message_reaction_value_like_dislike",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["target_type", "conversation_id"],
+                name="msg_reaction_conv_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"reaction user={self.user_id} {self.target_type}={self.target_id} "
+            f"value={self.value}"
+        )
 
 
 class MatchAISuggestion(models.Model):
@@ -446,6 +573,25 @@ class PostDialogueResponse(models.Model):
     # Debriefing consent: NULL=pending, True=consent, False=withdrawn
     consent_confirmed = models.BooleanField(null=True, blank=True)
 
+    # --- Derived stance metrics (snapshot, filled at submission) -----------
+    # s_pre = the participant's pre-dialogue stance score (UserStanceProfile
+    # .stance_score at submission time). NULL when no pre-survey profile exists.
+    s_pre = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="該場對話的前測立場分數快照（1–7）",
+    )
+    delta_s_value = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="立場移動量 s_post − s_pre；正=偏支持、負=偏反對",
+    )
+    stance_centrism_value = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="去極化指標 |s_post−4|−|s_pre−4|；< 0 = 去極化",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -483,6 +629,23 @@ class PostDialogueResponse(models.Model):
     def stance_centrism(self, s_pre: float) -> float:
         """< 0 = depolarized, > 0 = polarized further, = 0 = unchanged."""
         return round(abs(self.s_post() - 4) - abs(float(s_pre) - 4), 4)
+
+    def fill_stance_metrics(self, s_pre) -> None:
+        """Snapshot s_pre and the two derived metrics onto the stored columns.
+
+        s_pre is the participant's pre-dialogue stance score (1–7) or None when
+        no pre-survey profile exists — in which case the deltas stay NULL.
+        """
+        if s_pre is None:
+            self.s_pre = None
+            self.delta_s_value = None
+            self.stance_centrism_value = None
+            return
+
+        normalized_s_pre = float(s_pre)
+        self.s_pre = round(normalized_s_pre, 4)
+        self.delta_s_value = self.delta_s(normalized_s_pre)
+        self.stance_centrism_value = self.stance_centrism(normalized_s_pre)
 
     def __str__(self):
         return (
@@ -703,3 +866,171 @@ class CCNDTimelineUnlock(models.Model):
             f"CCNDTimelineUnlock user={self.user_id} "
             f"{self.kind}={self.conversation_id}"
         )
+
+
+class PlatformDisplaySetting(models.Model):
+    """全站前端顯示設定。刻意只允許一列（pk=1），一律用 load() 取得。
+
+    入口模式分角色：受試者預設走混合入口（後端依立場分流），研究者預設
+    走分開入口（AI／配對兩張卡）方便測試。
+    """
+
+    class EntryMode(models.TextChoices):
+        MIXED = "mixed", "混合入口"
+        SPLIT = "split", "分開入口"
+
+    participant_entry_mode = models.CharField(
+        max_length=16,
+        choices=EntryMode.choices,
+        default=EntryMode.MIXED,
+        help_text="一般使用者看到的入口形式",
+    )
+    researcher_entry_mode = models.CharField(
+        max_length=16,
+        choices=EntryMode.choices,
+        default=EntryMode.SPLIT,
+        help_text="研究者看到的入口形式",
+    )
+    match_fallback_timeout_minutes = models.PositiveIntegerField(
+        default=5,
+        help_text="配對等待超過這個分鐘數後，詢問使用者要不要改跟 AI 對話",
+    )
+    # related_name="+"：不需要從 User 反查設定紀錄，這裡只是留個最後修改者。
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def save(self, *args, **kwargs):
+        # 單列表：任何 save 都寫在 pk=1，避免出現第二組互相打架的設定。
+        #
+        # ⚠️ 一定要先 load() 拿到現有那列再改欄位，不可以直接建構新實例存檔——
+        # 強制 pk=1 之後 Django 會用這個實例的「所有」欄位值下 UPDATE，
+        # 沒帶到的欄位會被靜默寫回類別預設值，把先前的設定蓋掉且不會報錯。
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def load(cls) -> "PlatformDisplaySetting":
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def __str__(self):
+        return (
+            f"participant={self.participant_entry_mode} "
+            f"researcher={self.researcher_entry_mode}"
+        )
+
+
+class TopicDisplayOverride(models.Model):
+    """單一議題的顯示覆寫。
+
+    沒有對應列＝該議題全部沿用程式碼預設（雙角色可見、門檻用
+    SURVEY_CONFIGS 的值）。門檻欄位為 null 代表「沒被改過」，不是 0。
+    """
+
+    topic_id = models.PositiveIntegerField(unique=True)
+    visible_to_participant = models.BooleanField(default=True)
+    visible_to_researcher = models.BooleanField(default=True)
+    support_threshold = models.FloatField(
+        null=True, blank=True, help_text="null＝沿用 SURVEY_CONFIGS 的預設門檻"
+    )
+    oppose_threshold = models.FloatField(
+        null=True, blank=True, help_text="null＝沿用 SURVEY_CONFIGS 的預設門檻"
+    )
+    # related_name="+"：不需要從 User 反查設定紀錄，這裡只是留個最後修改者。
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"topic={self.topic_id}"
+
+
+class DialogueEntryAssignment(models.Model):
+    """混合入口把某位使用者在某個議題分到哪一組。
+
+    兩個用途：
+    1. 把關依據——混合模式下，直接呼叫 matching/join 或 dialogue/sessions
+       要有對應的指派才放行。純推導做不到，因為配對逾時後極端立場的人
+       也必須能進 AI。
+    2. 實驗資料——「這位受試者被指派到哪組、當時 stance 多少、用哪組門檻
+       算的、有沒有因為配對逾時而轉去 AI」。
+
+    重新填寫問卷會覆寫同一筆（update_or_create）並清空 fallback 欄位。
+    """
+
+    class Route(models.TextChoices):
+        AI = "ai", "AI 對話"
+        MATCH = "match", "真人配對"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="entry_assignments",
+    )
+    topic_id = models.PositiveIntegerField(db_index=True)
+    route = models.CharField(max_length=8, choices=Route.choices, db_index=True)
+    stance_score = models.DecimalField(max_digits=4, decimal_places=2)
+    stance_category = models.CharField(max_length=20)
+    # 指派當下生效的門檻。門檻可被 Supervisor 調整，沒有這兩欄就無法回答
+    # 「這筆樣本是用哪組門檻分流的」。
+    support_threshold = models.FloatField()
+    oppose_threshold = models.FloatField()
+    entry_mode_at_assignment = models.CharField(max_length=16)
+    assigned_at = models.DateTimeField(auto_now_add=True)
+    fallback_offered_at = models.DateTimeField(
+        null=True, blank=True, help_text="第一次被提示可以改跟 AI 對話的時間"
+    )
+    fallback_accepted_at = models.DateTimeField(
+        null=True, blank=True, help_text="使用者接受改跟 AI 對話的時間"
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "topic_id"],
+                name="uniq_entry_assignment_user_topic",
+            ),
+            # 跟 UserStanceProfile／MatchQueueEntry 一致。這筆是「為什麼這個人
+            # 被分到這一組」的稽核紀錄，範圍外的分數比在那兩張表更沒有意義。
+            models.CheckConstraint(
+                condition=Q(stance_score__gte=1) & Q(stance_score__lte=7),
+                name="entry_assignment_stance_score_between_1_and_7",
+            ),
+        ]
+
+    def __str__(self):
+        return f"user={self.user_id} topic={self.topic_id} route={self.route}"
+
+
+class GodotEntryTicket(models.Model):
+    """一次性的 Godot 大廳入場券。主功能發，Godot server 用服務金鑰兌換。
+
+    存在的理由：Godot server 只需要知道「這個 peer 是哪個 user」，不需要、也不該
+    持有主功能的長效 access token——長效憑證一旦進了遊戲 server 的記憶體與 log
+    就很難收回。券短效、一次性、只有持服務金鑰的一方能兌換，洩漏後果有界。
+    見 docs/superpowers/specs/2026-07-28-godot-identity-and-match-binding-design.md §5。
+    """
+
+    token = models.CharField(max_length=64, unique=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="godot_tickets",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(db_index=True)
+    redeemed_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"ticket user={self.user_id} redeemed={self.redeemed_at is not None}"

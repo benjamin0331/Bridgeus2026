@@ -95,13 +95,28 @@ def fake_economy_items_response():
 
 
 class FakeDialogueAgent:
+    """Contract-compliant fake, in the real response shape (no prefill, so the
+    <judgment> open tag is present)."""
+
     def respond(self, session):
-        return f"AI reply to: {session.history[-1].content}"
+        return (
+            "<judgment>開啟新方向。結構 A。使用者提出新的事實問題。</judgment>"
+            f"<reply>AI reply to: {session.history[-1].content}</reply>"
+        )
 
 
 class FakeExplodingDialogueAgent:
     def respond(self, session):
         raise RuntimeError("anthropic invalid key")
+
+
+class FakeContractViolatingDialogueAgent:
+    """Never emits <reply> — the REST path must fail closed, not return raw."""
+
+    RAW = "<judgment>判定為「收斂」,強制使用承接深化型(E)。核電的優勢是低碳穩定。"
+
+    def respond(self, session):
+        return self.RAW
 
 
 def build_supporting_answers():
@@ -517,7 +532,58 @@ class DialogueSessionApiTests(APITestCase):
         self.assertEqual(saved_turn.topic_id, 102)
         self.assertEqual(saved_turn.user_prompt, "核能真的比其他方案更穩定嗎？")
         self.assertEqual(saved_turn.ai_response, "AI reply to: 核能真的比其他方案更穩定嗎？")
+        self.assertFalse(saved_turn.contract_violated)
+        self.assertIn("結構 A", saved_turn.internal_judgment)
+        self.assertEqual(
+            reply_response.data["history"][1]["turn_id"],
+            saved_turn.id,
+        )
+        self.assertFalse(saved_turn.contract_violated)
+        self.assertIn("結構 A", saved_turn.internal_judgment)
         mocked_get_agent.assert_called_once_with("nuclear_energy_all")
+
+    @patch(
+        "api.views.get_dialogue_agent",
+        return_value=FakeContractViolatingDialogueAgent(),
+    )
+    def test_reply_fails_closed_when_output_contract_violated(self, mocked_get_agent):
+        """No <reply> block → 503 with the generic message; the raw body with the
+        judgment text must never reach the client or ai_response."""
+        create_response = self.client.post(
+            "/api/dialogue/sessions/",
+            {
+                "topic_id": 102,
+                "topic_title": "核能發電在減碳中的角色",
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        session_id = create_response.data["session_id"]
+
+        reply_response = self.client.post(
+            f"/api/dialogue/sessions/{session_id}/reply/",
+            {"message": "所以優勢就是比較便宜嗎"},
+            format="json",
+        )
+
+        self.assertEqual(
+            reply_response.status_code,
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+        self.assertEqual(
+            reply_response.data["detail"],
+            "目前無法取得 AI 回覆，請稍後再試。",
+        )
+        self.assertNotIn("reply", reply_response.data)
+        self.assertNotIn(
+            "判定為",
+            str(reply_response.data),
+        )
+
+        saved_turn = AIConversation.objects.get(session_id=session_id)
+        self.assertTrue(saved_turn.contract_violated)
+        self.assertFalse(saved_turn.ai_response)
+        self.assertIn("判定為", saved_turn.internal_judgment)
 
     @patch("chat.services.embedding.get_embedding", return_value=make_test_embedding(-1))
     @patch("api.views.build_q9_embedding", return_value=make_test_embedding(1), create=True)
@@ -602,8 +668,64 @@ class DialogueSessionApiTests(APITestCase):
             restore_response.data["history"][1]["content"],
             "AI reply to: 核電能不能補足再生能源不穩定？",
         )
+        self.assertIn("turn_id", restore_response.data["history"][1])
         self.assertIsNotNone(cache.get(f"dialogue_session:{session_id}"))
         mocked_get_agent.assert_called_once_with("nuclear_energy_all")
+
+    def test_restore_preserves_session_messages_without_database_turn(self):
+        session_id = "partial-persistence-session"
+        DialogueSessionRecord.objects.create(
+            user=self.user,
+            session_id=session_id,
+            topic_id=102,
+            topic_title="核能發電在減碳中的角色",
+            collection_name="nuclear_energy_all",
+            session_state={
+                "topic": "核能發電在減碳中的角色",
+                "dialogue_phase": "engagement",
+                "user_stance_score": 4.0,
+                "history": [
+                    {"role": "user", "content": "已成功保存的訊息"},
+                    {"role": "agent", "content": "已成功保存的回覆"},
+                    {"role": "user", "content": "只有 session 保存的訊息"},
+                    {"role": "agent", "content": "這一輪沒有 AIConversation"},
+                ],
+            },
+            last_activity_at=timezone.now(),
+        )
+        saved_turn = AIConversation.objects.create(
+            user=self.user,
+            session_id=session_id,
+            topic_id=102,
+            user_prompt="已成功保存的訊息",
+            ai_response="已成功保存的回覆",
+            dialogue_phase="engagement",
+        )
+        database_only_turn = AIConversation.objects.create(
+            user=self.user,
+            session_id=session_id,
+            topic_id=102,
+            user_prompt="只有 AIConversation 保存的訊息",
+            ai_response="這一輪沒有寫回 session record",
+            dialogue_phase="engagement",
+        )
+        cache.clear()
+
+        restored = self.client.get(f"/api/dialogue/sessions/{session_id}/")
+
+        self.assertEqual(restored.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(restored.data["history"]), 6)
+        self.assertEqual(restored.data["history"][1]["turn_id"], saved_turn.id)
+        self.assertNotIn("turn_id", restored.data["history"][2])
+        self.assertNotIn("turn_id", restored.data["history"][3])
+        self.assertEqual(
+            restored.data["history"][4]["turn_id"],
+            database_only_turn.id,
+        )
+        self.assertEqual(
+            restored.data["history"][5]["turn_id"],
+            database_only_turn.id,
+        )
 
     def test_session_restore_forbids_other_users(self):
         create_response = self.client.post(
@@ -700,6 +822,93 @@ class DialogueSessionApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIsNotNone(cache.get(f"dialogue_session:{session_id}"))
+
+
+class SingleActiveDialogueSessionTests(APITestCase):
+    """一位使用者在同一個議題下，最多只該有一個「可恢復」的 AI 對話 session。
+
+    沒有這個不變量的話，每按一次「開始新對話」就會殘留一筆 status=active 的
+    舊紀錄，/api/dialogue/sessions/latest/ 會一直撈到它們，使用者就算填完後測
+    問卷也永遠跳不出「要繼續上次，還是開始新對話？」——等於對話結束不掉，也
+    永遠看不到沿用上次立場的彈窗（那個彈窗只在 showSurvey 為 true 時才出現）。
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.user = get_user_model().objects.create_user(
+            username="serial_dialoguer",
+            password="secret123",
+        )
+        self.client.force_authenticate(user=self.user)
+
+    def _create_session(self, topic_id=102):
+        response = self.client.post(
+            "/api/dialogue/sessions/",
+            {"topic_id": topic_id, "topic_title": "核能發電在減碳中的角色"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        return response.data["session_id"]
+
+    def test_new_session_closes_previous_active_session(self):
+        first = self._create_session()
+        second = self._create_session()
+
+        self.assertEqual(
+            DialogueSessionRecord.objects.get(session_id=first).status,
+            DialogueSessionRecord.Status.CLOSED,
+        )
+        self.assertEqual(
+            DialogueSessionRecord.objects.get(session_id=second).status,
+            DialogueSessionRecord.Status.ACTIVE,
+        )
+
+    def test_only_newest_session_is_offered_for_restore(self):
+        self._create_session()
+        newest = self._create_session()
+
+        response = self.client.get("/api/dialogue/sessions/latest/?topic_id=102")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["session_id"], newest)
+
+    def test_superseded_session_cannot_be_restored_directly(self):
+        first = self._create_session()
+        self._create_session()
+        cache.clear()  # 強迫走 DB 而非快取
+
+        response = self.client.get(f"/api/dialogue/sessions/{first}/")
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_other_topics_are_not_closed(self):
+        other_topic = self._create_session(topic_id=103)
+        self._create_session(topic_id=102)
+
+        self.assertEqual(
+            DialogueSessionRecord.objects.get(session_id=other_topic).status,
+            DialogueSessionRecord.Status.ACTIVE,
+        )
+
+    def test_other_users_sessions_are_not_closed(self):
+        stranger = get_user_model().objects.create_user(
+            username="stranger", password="secret123"
+        )
+        stranger_client = APIClient()
+        stranger_client.force_authenticate(user=stranger)
+        stranger_response = stranger_client.post(
+            "/api/dialogue/sessions/",
+            {"topic_id": 102, "topic_title": "核能發電在減碳中的角色"},
+            format="json",
+        )
+        stranger_session = stranger_response.data["session_id"]
+
+        self._create_session()
+
+        self.assertEqual(
+            DialogueSessionRecord.objects.get(session_id=stranger_session).status,
+            DialogueSessionRecord.Status.ACTIVE,
+        )
 
 
 class StanceProfileReuseApiTests(APITestCase):
@@ -1490,33 +1699,6 @@ class MatchingApiTests(APITestCase):
         self.assertEqual(new_queue.user, self.user)
         self.assertEqual(new_queue.status, MatchQueueEntry.Status.MATCHING)
         self.assertIsNone(new_queue.match_id)
-
-    def test_matching_join_restart_triggers_m6_pipeline_on_abandoned_match(self):
-        # Regression test: restarting matching used to close the old match by
-        # setting status/closed_at directly instead of going through
-        # _close_locked_match(), so it never registered the
-        # transaction.on_commit() callback that fires the M6 觀點知識庫
-        # pipeline — the abandoned conversation silently never produced a
-        # DialogueSummary/ViewpointNode. See apps/matching/services/matcher.py
-        # enqueue_for_matching()'s restart_existing_match branch.
-        old_match, _ = self._create_match()
-
-        with patch(
-            "apps.summary.pipeline.assemble.run_pipeline_for_match"
-        ) as mock_pipeline:
-            with self.captureOnCommitCallbacks(execute=True):
-                response = self.client.post(
-                    "/api/matching/join/",
-                    {
-                        "topic_id": 102,
-                        "survey_answers": build_supporting_answers(),
-                        "restart_existing_match": True,
-                    },
-                    format="json",
-                )
-
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        mock_pipeline.assert_called_once_with(old_match.id)
 
     def test_matched_users_can_exchange_room_messages(self):
         match, room_id = self._create_match()

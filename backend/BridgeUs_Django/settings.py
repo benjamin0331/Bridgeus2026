@@ -251,6 +251,14 @@ STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
+# 使用者上傳內容（目前只有觀點知識庫的本地上傳影片，見
+# apps.summary.models.VideoRecommendation.video_file）。跟 STATIC_ROOT 分開：
+# 那個是部署時打包進 image 的前端/後端靜態資源，這裡是執行期才產生、需要
+# 持久化保存的使用者資料，容器重建時不能跟著消失（正式環境應該掛 volume 或
+# 換成物件儲存，這裡先給本機開發可用的最小可行版本）。
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
 # 讓 DRF 預設使用 JWT 驗證
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (

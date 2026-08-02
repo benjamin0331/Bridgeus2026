@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import api from '../api/client';
+import SettlementReceipt from './SettlementReceipt';
 import './PostQuestionnairePage.css';
 
 // --- Static question data -----------------------------------------------
@@ -81,7 +82,7 @@ function StepC1({ answers, onChange, questions }) {
         <LikertItem
           key={q.index}
           label={`C1-${q.index}`}
-          tag={q.reverse ? '(反向)' : null}
+          
           text={q.text}
           value={answers[q.index]}
           onChange={(v) => onChange(q.index, v)}
@@ -323,6 +324,7 @@ export default function PostQuestionnairePage() {
   const [discomfortDetail, setDiscomfortDetail] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
+  const [result, setResult] = useState(null);
 
   // H-H 組跳過 C-4，實際步驟比較少
   // Steps: 0=C1, 1=C2, 2=C3, 3=C4(ai only)/D(hh), 4=D(ai)/E(hh), 5=E(ai)
@@ -351,6 +353,13 @@ export default function PostQuestionnairePage() {
     const eStep = isHH ? 4 : 5;
     if (step === eStep) return !discomfortFlag || discomfortDetail.trim().length > 0;
     return true;
+  };
+
+  const handleClose = () => {
+    const confirmed = window.confirm('確定要離開問卷嗎？目前填寫的內容將不會被儲存。');
+    if (confirmed) {
+      navigate(-1);
+    }
   };
 
   const handleNext = () => {
@@ -405,10 +414,7 @@ export default function PostQuestionnairePage() {
 
     try {
       const response = await api.post('/api/post-questionnaire/', payload);
-      navigate('/debriefing', {
-        state: { responseId: response.data.id },
-        replace: true,
-      });
+      setResult(response.data);
     } catch (error) {
       const detail =
         error?.response?.data?.detail ||
@@ -423,6 +429,17 @@ export default function PostQuestionnairePage() {
   const isLastStep = step === actualSteps - 1;
   const eStep = isHH ? 4 : 5;
   const dStep = isHH ? 3 : 4;
+
+  if (result) {
+    return (
+      <SettlementReceipt
+        data={result}
+        sessionId={sessionId}
+        roomId={roomId}
+        condition={condition}
+      />
+    );
+  }
 
   if (!topicId && !sessionId && !roomId) {
     return (
@@ -458,7 +475,18 @@ export default function PostQuestionnairePage() {
     <div className="pq-page">
       <div className="pq-container">
         <div className="pq-header">
-          <h2>對話後問卷</h2>
+          <div className="pq-header-top">
+            <h2>對話後問卷</h2>
+            <button
+              type="button"
+              className="pq-close-btn"
+              onClick={handleClose}
+              aria-label="離開問卷並返回對話"
+              title="離開問卷並返回對話"
+            >
+              ×
+            </button>
+          </div>
           <p className="pq-subtitle">感謝你的參與！請依序回答以下問題。</p>
           <div className="pq-step-badge">{getStepLabel()}</div>
           <StepIndicator current={step} total={actualSteps} />

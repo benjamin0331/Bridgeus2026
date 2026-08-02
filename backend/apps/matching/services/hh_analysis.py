@@ -10,10 +10,15 @@ import numpy as np
 from asgiref.sync import sync_to_async
 from django.utils import timezone
 
+from apps.matching.services.input_gate import is_substantive_message
 from chat.services.embedding import cosine_distance
 
 STALEMATE_THRESHOLD = 0.05
 DIRECTION_THRESHOLD = 0.02
+
+# 過濾短回應需要在 Python 端讀 content，所以固定窗口的查詢要先多撈幾倍
+# 才有機會湊滿 N 則實質發言。純防禦性倍率，不是實驗參數。
+_SUBSTANTIVE_OVERFETCH = 5
 
 _STALEMATE_PROMPTS = [
     "對方提到了「{keyword}」，你怎麼看？",
@@ -21,6 +26,19 @@ _STALEMATE_PROMPTS = [
     "關於「{keyword}」，你有什麼不同的想法嗎？",
     "試著回應對方關於「{keyword}」的觀點。",
 ]
+
+
+# 短回應（「好」「同意」「不確定」）合法通過 input gate 並進入 LLM，但對語義
+# 分析只有稀釋作用：它們的 embedding 不帶議題資訊，混進平均向量會把離題分數
+# 與論述移動度往中間拉。以下三處分析一律只採計實質發言。
+# 三處共用 input_gate.is_substantive_message()，避免各自實作而漂移。
+def _substantive(messages, *, attr: str = "content"):
+    """只留下可供語義分析的訊息，保持原本的順序。"""
+    return [
+        message
+        for message in messages
+        if is_substantive_message(getattr(message, attr, "") or "")
+    ]
 
 
 def _mean_embedding(embeddings) -> np.ndarray | None:
@@ -61,8 +79,11 @@ def calculate_match_stance_drift(*, match_id: int, user_id: int) -> dict:
         sender_id=user_id,
         embedding__isnull=False,
     )
+    # 論述移動度衡量的是「離初始 Q9 立場多遠」。短回應沒有論述內容，
+    # 它造成的位移是雜訊，會污染這個過程指標。
     mean_embedding = _mean_embedding(
-        message.embedding for message in messages.order_by("created_at")
+        message.embedding
+        for message in _substantive(messages.order_by("created_at"))
     )
     if mean_embedding is None:
         return {"drift_value": 0.0, "direction": "stable"}
@@ -110,7 +131,10 @@ def calculate_ai_session_stance_drift(
         embedding__isnull=False,
     ).order_by("created_at", "id")
 
-    mean_embedding = _mean_embedding(turn.embedding for turn in turns)
+    # 同 H-H：短回應排除在論述移動度之外（見 _substantive）。
+    mean_embedding = _mean_embedding(
+        turn.embedding for turn in _substantive(turns, attr="user_prompt")
+    )
     if mean_embedding is None:
         return None
 
@@ -141,24 +165,45 @@ def calculate_ai_session_stance_drift(
     return payload
 
 
+def get_message_drift_value(*, match_id: int, user_id: int, as_of) -> float:
+    """回傳某個時間點當下，該使用者最新一筆已持久化的立場偏移量（drift_value，
+    前端標籤「論述移動」）。
+
+    給 M6 觀點知識庫 pipeline（apps/summary/pipeline/quality_filter.py 的
+    ccnd_semantic_dist）用來取得逐則的論述移動量：讀取 api/consumers.py 每則
+    「發言者本人」新發言後透過 calculate_match_stance_drift() 寫入的
+    MatchStanceDrift 記錄，只做唯讀查詢，不重算、不新增 drift 記錄——重算是
+    即時對話室自己的職責，這裡只是替歷史訊息回填当時最近的已知值。
+    """
+    from api.models import MatchStanceDrift
+
+    record = (
+        MatchStanceDrift.objects.filter(
+            match_id=match_id, user_id=user_id, measured_at__lte=as_of
+        )
+        .order_by("-measured_at")
+        .first()
+    )
+    return record.drift_value if record else 0.0
+
+
 def detect_match_stalemate(*, match_id: int, window_size: int = 5) -> dict:
     from api.models import DialogueMatch, MatchMessage
 
     match = DialogueMatch.objects.get(id=match_id)
-    messages_a = list(
-        MatchMessage.objects.filter(
+
+    def _recent_substantive(sender_id: int):
+        # 短回應不計入僵局判定的窗口：兩人互丟「嗯」「好」時語義距離當然
+        # 穩定，那不是論點僵持，只是沒有論點。
+        candidates = MatchMessage.objects.filter(
             match_id=match_id,
-            sender_id=match.user_a_id,
+            sender_id=sender_id,
             embedding__isnull=False,
-        ).order_by("-created_at")[:window_size]
-    )
-    messages_b = list(
-        MatchMessage.objects.filter(
-            match_id=match_id,
-            sender_id=match.user_b_id,
-            embedding__isnull=False,
-        ).order_by("-created_at")[:window_size]
-    )
+        ).order_by("-created_at")[: window_size * _SUBSTANTIVE_OVERFETCH]
+        return _substantive(candidates)[:window_size]
+
+    messages_a = _recent_substantive(match.user_a_id)
+    messages_b = _recent_substantive(match.user_b_id)
     pair_count = min(len(messages_a), len(messages_b))
     if pair_count < 2:
         return {"is_stalemate": False, "distance_trend": [], "std_dev": 0.0}
@@ -201,5 +246,6 @@ def build_stalemate_prompt(keywords: list[str]) -> str:
 
 acalculate_match_stance_drift = sync_to_async(calculate_match_stance_drift, thread_sensitive=False)
 acalculate_ai_session_stance_drift = sync_to_async(calculate_ai_session_stance_drift, thread_sensitive=False)
+aget_message_drift_value = sync_to_async(get_message_drift_value, thread_sensitive=False)
 adetect_match_stalemate = sync_to_async(detect_match_stalemate, thread_sensitive=False)
 aextract_match_opponent_keywords = sync_to_async(extract_match_opponent_keywords, thread_sensitive=False)

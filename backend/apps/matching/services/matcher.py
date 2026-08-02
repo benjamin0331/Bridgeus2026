@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 from .matching_algorithm import (
     MATCHING_ALGORITHM_VERSION,
     ScoredCandidate,
+    calculate_match_score,
     candidate_categories_for,
     choose_best_candidate,
 )
@@ -54,6 +55,10 @@ class MatchingState:
     profile: UserStanceProfile | None = None
     queue_entry: MatchQueueEntry | None = None
     match: DialogueMatch | None = None
+    # Godot 綁定房剛被裁決作廢時的原因。一次性訊號：作廢之後
+    # _godot_return_to_normal 會把人重新排隊或改走 AI，回傳的 state 就不再掛著
+    # 那間房了，原因只能靠這裡帶出去。下一次輪詢就不會再有值。
+    binding_cancel_reason: str | None = None
 
 
 def _as_decimal(score: float | Decimal) -> Decimal:
@@ -66,6 +71,16 @@ def _as_metric_decimal(score: float | Decimal) -> Decimal:
 
 def _can_enter_human_matching(stance_category: str) -> bool:
     return bool(candidate_categories_for(stance_category))
+
+
+def can_enter_human_matching(stance_category: str) -> bool:
+    """公開版本，給混合入口決定分流方向用。
+
+    刻意包一層而不是直接把 _can_enter_human_matching 改名：佇列內部已有
+    多處呼叫，而分流規則必須只有一份定義——兩邊分歧的話，會出現「入口說
+    你該配對、佇列說你不能配對」的死路。
+    """
+    return _can_enter_human_matching(stance_category)
 
 
 def _active_match_queryset(*, user_id: int, topic_id: int):
@@ -613,8 +628,329 @@ def enqueue_for_matching(
         )
 
 
+def record_godot_survey(
+    *,
+    user,
+    match,
+    topic_id: int,
+    stance_score: float,
+    stance_category: str,
+    survey_answers: dict,
+    survey_open_answers: dict,
+):
+    """Godot 綁定房的前測問卷落地。
+
+    跟 enqueue_for_matching 的差別：不排隊、不找候選人——配對已經由遊戲內的木樁
+    決定了。這裡只補「s_pre」這一塊：建 profile、建一筆 MATCHED 的 queue entry
+    （它同時是「這個人填過問卷」的憑證，見 spec §D5），並回填 DialogueMatch 的分數。
+
+    建 queue entry 不只是為了憑證：下游（get_matching_state 的 profile 欄位、
+    M5 分析、M6 pipeline）本來就預期配對房兩邊都有這筆記錄，順手建起來比另外加
+    一個布林欄位更不容易跟既有邏輯打架。
+
+    回傳值語意：成功寫入回傳（重新讀取後的）match；鎖內重驗擋下則回傳 None。
+    呼叫端（GodotSurveyView）必須檢查 None 並回應 409——呼叫端的裁決檢查發生在
+    這個 transaction 之外，那之後到這裡取得鎖的窗口期間，清理指令或另一位的輪詢
+    可能已經把房間取消，不能假設傳進來的 match 快照仍然有效。
+    """
+    from api.godot_binding import godot_binding_info
+
+    decimal_score = _as_decimal(stance_score)
+    q9_embedding = build_q9_embedding(survey_open_answers)
+
+    with transaction.atomic():
+        locked = DialogueMatch.objects.select_for_update().get(pk=match.pk)
+        # 鎖內重驗：呼叫端的裁決檢查發生在 transaction 外，那之後到這裡取得鎖的
+        # 窗口期間，清理指令或另一位的輪詢可能已經把房間取消。不重驗的話會寫出
+        # 「問卷成功但房已作廢、人也沒被重新分流」的孤兒——因為退回一般模式是在
+        # 這筆 MATCHED entry 存在之前跑的，當時會判定這個人沒填完而跳過他。
+        if locked.status != DialogueMatch.Status.ACTIVE:
+            return None
+        if godot_binding_info(locked) is None:
+            return None
+        if user.id not in (locked.user_a_id, locked.user_b_id):
+            return None
+        profile, _ = UserStanceProfile.objects.update_or_create(
+            user=user,
+            topic_id=topic_id,
+            defaults={
+                "stance_score": decimal_score,
+                "stance_category": stance_category,
+                "survey_answers": survey_answers,
+                "survey_open_answers": survey_open_answers,
+                "q9_embedding": q9_embedding,
+            },
+        )
+
+        entry = MatchQueueEntry.objects.filter(
+            user=user,
+            topic_id=topic_id,
+            match=locked,
+            status=MatchQueueEntry.Status.MATCHED,
+        ).first()
+        if entry:
+            # 重填問卷：覆寫同一筆，不要建第二筆（憑證必須是一對一）。
+            entry.profile = profile
+            entry.stance_score = decimal_score
+            entry.save(update_fields=["profile", "stance_score", "updated_at"])
+        else:
+            MatchQueueEntry.objects.create(
+                user=user,
+                topic_id=topic_id,
+                profile=profile,
+                stance_score=decimal_score,
+                status=MatchQueueEntry.Status.MATCHED,
+                match=locked,
+                matched_at=timezone.now(),
+            )
+
+        if locked.user_a_id == user.id:
+            locked.user_a_score = decimal_score
+        else:
+            locked.user_b_score = decimal_score
+        update_fields = ["user_a_score", "user_b_score"]
+        if locked.user_a_score is not None and locked.user_b_score is not None:
+            # 兩邊都填完才算得出來。這兩個指標對 Godot 房是**事後描述**，不是配對
+            # 依據——配對是遊戲內的木樁決定的，不是演算法挑的。但不能永遠留欄位
+            # 預設的 0：真實的 semantic_distance 也可能是 0，留著就跟階段四消滅的
+            # 4.00 佔位值一樣，分析時分不出「沒算」還是「算出來是 0」。
+            profile_a = UserStanceProfile.objects.filter(
+                user_id=locked.user_a_id, topic_id=topic_id
+            ).first()
+            profile_b = UserStanceProfile.objects.filter(
+                user_id=locked.user_b_id, topic_id=topic_id
+            ).first()
+            metrics = calculate_match_score(
+                requester_score=locked.user_a_score,
+                candidate_score=locked.user_b_score,
+                requester_embedding=profile_a.q9_embedding if profile_a else None,
+                candidate_embedding=profile_b.q9_embedding if profile_b else None,
+            )
+            locked.likert_distance = _as_metric_decimal(metrics.likert_distance)
+            locked.semantic_distance = _as_metric_decimal(metrics.semantic_distance)
+            locked.match_score = _as_metric_decimal(metrics.match_score)
+            update_fields += ["likert_distance", "semantic_distance", "match_score"]
+        locked.save(update_fields=update_fields)
+        return locked
+
+
+# Godot 綁定房的問卷階段，對方多久沒有輪詢就判定離開。
+# 階段四已把前端輪詢改成「一路輪到進聊天室為止」，所以問卷期間與等待對方期間
+# 都會持續更新 last_seen；這個門檻是輪詢間隔的數倍，容忍網路抖動與換頁。
+DEFAULT_GODOT_PRESENCE_TIMEOUT_SECONDS = 45
+
+
+def godot_presence_timeout_seconds() -> int:
+    try:
+        return max(
+            0,
+            int(
+                os.getenv(
+                    "GODOT_PRESENCE_TIMEOUT_SECONDS",
+                    str(DEFAULT_GODOT_PRESENCE_TIMEOUT_SECONDS),
+                )
+            ),
+        )
+    except (TypeError, ValueError):
+        return DEFAULT_GODOT_PRESENCE_TIMEOUT_SECONDS
+
+
+def _godot_participant_is_gone(match, user_id: int, *, now, timeout_seconds: int) -> bool:
+    """這位參與者是不是已經離開（超過門檻沒有輪詢）。
+
+    last_seen 為 None 代表「還沒出現過」——房間剛建立的頭幾秒兩個人都是這樣，
+    **不能當成離開**，否則剛跳轉進來還沒開始輪詢的人會被當場判出局。這種情況
+    改用房間的 created_at 起算寬限期。
+    """
+    presence = _presence_state(match)
+    participant = presence["participants"].get(str(user_id), {})
+    last_seen = _parse_presence_datetime(participant.get("last_seen"))
+    reference = last_seen or match.created_at
+    return (now - reference).total_seconds() > timeout_seconds
+
+
+def resolve_godot_survey_gate(*, match, viewer_user_id=None, now=None):
+    """Godot 綁定房在雙方完成前測問卷前的裁決。
+
+    由 get_matching_state() 在輪詢路徑上呼叫——雙方在問卷階段與等待階段都會
+    持續輪詢，那就是這裡用的存在訊號。兩人都關掉網頁時沒有人輪詢，裁決不會
+    觸發，由 close_expired_godot_matches 指令兜底。
+
+    先判離開再判逾時：離開的訊息（「對方已退出」）比「時間到了」對使用者具體。
+
+    viewer_user_id 是正在發出這次請求的人。他顯然還在現場，所以不拿他的
+    last_seen 去判斷——輪詢者自己的 last_seen 要到 mark_match_participant_connected
+    才會更新，而那是在裁決之後。不排除他的話，一個載入較慢、超過門檻才第一次
+    輪詢的人會在自己抵達的瞬間把房間判掉。清理指令沒有 viewer（傳 None），
+    兩邊都檢查，那正是「兩個人都不在」該有的行為。
+    """
+    from api.godot_binding import (
+        BINDING_STATS_KEY,
+        godot_binding_info,
+        match_pretest_state,
+        survey_deadline_of,
+    )
+
+    if godot_binding_info(match) is None:
+        return match
+    if match.status != DialogueMatch.Status.ACTIVE:
+        return match
+
+    pretest = match_pretest_state(match)
+    if pretest["both_done"]:
+        # 都填完了就進聊天室，期限與存在偵測不再適用——之後改由既有的
+        # close_match_if_idle / close_match_if_participant_absent 接手。
+        return match
+
+    current_time = now or timezone.now()
+    timeout_seconds = godot_presence_timeout_seconds()
+    reason = None
+
+    if timeout_seconds > 0:
+        for user_id in (match.user_a_id, match.user_b_id):
+            if user_id == viewer_user_id:
+                continue
+            if _godot_participant_is_gone(
+                match, user_id, now=current_time, timeout_seconds=timeout_seconds
+            ):
+                reason = "godot_partner_left"
+                break
+
+    if reason is None:
+        deadline = survey_deadline_of(match)
+        if deadline is not None and current_time > deadline:
+            reason = "godot_survey_timeout"
+
+    if reason is None:
+        return match
+
+    with transaction.atomic():
+        locked = DialogueMatch.objects.select_for_update().get(pk=match.pk)
+        if locked.status != DialogueMatch.Status.ACTIVE:
+            return locked
+        # 在鎖內重讀填卷狀態：從上面那次鎖外讀取到取得鎖之間，對方可能剛送出
+        # 問卷、把房間補成雙方都完成。沿用鎖外的 pretest 會作廢一間其實已經
+        # 完成的房，而且那位剛送出的人還會因為過期狀態被跳過退回一般模式，
+        # 變成手上有 s_pre 卻無路可走的孤兒。
+        locked_pretest = match_pretest_state(locked)
+        if locked_pretest["both_done"]:
+            return locked
+        stats = _stats_dict(locked).copy()
+        binding = dict(stats.get(BINDING_STATS_KEY) or {})
+        binding["cancel_reason"] = reason
+        binding["cancelled_at"] = _isoformat(current_time)
+        stats[BINDING_STATS_KEY] = binding
+        locked.stats = stats
+        locked.status = DialogueMatch.Status.CANCELLED
+        locked.closed_at = current_time
+        locked.save(update_fields=["stats", "status", "closed_at"])
+
+    # 房間作廢後才退回一般模式：已填問卷的人有 stance 資料可以重新分流。
+    # 這裡是階段四 §D3 刻意壓抑的分流規則恢復生效的地方。
+    for user_id, done in (
+        (locked.user_a_id, locked_pretest["user_a_done"]),
+        (locked.user_b_id, locked_pretest["user_b_done"]),
+    ):
+        if done:
+            try:
+                _godot_return_to_normal(
+                    user_id=user_id, topic_id=locked.topic_id, match=locked
+                )
+            except Exception:
+                # 房間已經 CANCELLED 且不可重試（_get_active_match 找不到它了），
+                # 一個人失敗不能拖累另一個人，也不該讓輪詢請求整個 500。
+                logger.exception(
+                    "Godot 房作廢後退回一般模式失敗 user=%s topic=%s match=%s",
+                    user_id, locked.topic_id, locked.id,
+                )
+    return locked
+
+
+def _godot_return_to_normal(*, user_id: int, topic_id: int, match) -> None:
+    """把已填過問卷的參與者退回一般模式。
+
+    §D3 在 Godot 房裡刻意不套用「中立→AI」分流（問卷是配對成立後才填的，這時
+    判定某人該去 AI 會把已配好的兩人卡死）。但房間作廢之後那個顧慮消失了——
+    這個人現在是單獨一個人，本來就該照他的立場走正常分流。
+    """
+    from api.models import DialogueEntryAssignment
+
+    profile = (
+        UserStanceProfile.objects.filter(user_id=user_id, topic_id=topic_id)
+        .order_by("-updated_at", "-id")
+        .first()
+    )
+    if profile is None:
+        return
+
+    # 只取消「這間房」的 MATCHED entry。MATCHED entry 是 match_pretest_state
+    # 判斷「填過前測問卷」的憑證（見 spec §D5），波及同使用者同議題的其他房，
+    # 會讓那些房的前測紀錄憑空消失——歷史資料被靜默改寫，研究上讀不出來。
+    MatchQueueEntry.objects.filter(
+        user_id=user_id,
+        topic_id=topic_id,
+        match=match,
+        status=MatchQueueEntry.Status.MATCHED,
+    ).update(status=MatchQueueEntry.Status.CANCELLED, cancelled_at=timezone.now())
+
+    if _can_enter_human_matching(profile.stance_category):
+        enqueue_for_matching(
+            user=profile.user,
+            topic_id=topic_id,
+            stance_score=float(profile.stance_score),
+            stance_category=profile.stance_category,
+            survey_answers=profile.survey_answers,
+            survey_open_answers=profile.survey_open_answers,
+        )
+        route = DialogueEntryAssignment.Route.MATCH
+    else:
+        route = DialogueEntryAssignment.Route.AI
+
+    DialogueEntryAssignment.objects.filter(
+        user_id=user_id, topic_id=topic_id
+    ).update(route=route)
+
+
 def get_matching_state(*, user, topic_id: int) -> MatchingState:
+    from api.godot_binding import mark_cancel_notice_seen, pending_cancel_notice_for
+
     active_match = _get_active_match(user_id=user.id, topic_id=topic_id)
+    godot_cancel_reason = None
+    if active_match:
+        # Godot 綁定房在雙方填完問卷前，適用的是問卷裁決而不是一般的缺席/閒置關房
+        # （那兩者的預設值分別是 180s／600s，跟問卷階段的語意不同）。
+        resolved = resolve_godot_survey_gate(
+            match=active_match, viewer_user_id=user.id
+        )
+        if resolved.status != DialogueMatch.Status.ACTIVE:
+            # 作廢原因要在這裡抓下來：接下來 _godot_return_to_normal 已經把這個人
+            # 重新排隊或改走 AI，底下回傳的 state 不會再掛著這間房，原因就消失了。
+            # 觸發裁決的只會是其中一個請求，所以要走「逐人確認」名單——抓到之後
+            # 立刻標記已通知，否則觸發者接下來會透過下面補查的路徑再收到一次。
+            godot_cancel_reason = pending_cancel_notice_for(resolved, user.id)
+            if godot_cancel_reason:
+                mark_cancel_notice_seen(resolved, user.id)
+        active_match = resolved
+
+    if godot_cancel_reason is None:
+        # 沒有從裁決拿到原因時，看看有沒有「最近作廢、這位使用者還沒被告知」的
+        # Godot 房。觸發裁決的只會是其中一個請求（清理指令取消時一個都沒有），
+        # 另一位要靠這條路徑才收得到通知。
+        recent_cancelled = (
+            DialogueMatch.objects.filter(
+                topic_id=topic_id,
+                status=DialogueMatch.Status.CANCELLED,
+            )
+            .filter(Q(user_a_id=user.id) | Q(user_b_id=user.id))
+            .order_by("-closed_at", "-id")
+            .first()
+        )
+        if recent_cancelled is not None:
+            pending = pending_cancel_notice_for(recent_cancelled, user.id)
+            if pending:
+                mark_cancel_notice_seen(recent_cancelled, user.id)
+                godot_cancel_reason = pending
+
     if active_match:
         active_match = close_match_if_participant_absent(match=active_match)
     if active_match and active_match.status == DialogueMatch.Status.ACTIVE:
@@ -641,6 +977,7 @@ def get_matching_state(*, user, topic_id: int) -> MatchingState:
             profile=queue_entry.profile if queue_entry else None,
             queue_entry=queue_entry,
             match=active_match,
+            binding_cancel_reason=godot_cancel_reason,
         )
 
     queue_entry = (
@@ -659,6 +996,7 @@ def get_matching_state(*, user, topic_id: int) -> MatchingState:
             status=MatchQueueEntry.Status.MATCHING,
             profile=queue_entry.profile,
             queue_entry=queue_entry,
+            binding_cancel_reason=godot_cancel_reason,
         )
 
     queue_entry = (
@@ -673,6 +1011,7 @@ def get_matching_state(*, user, topic_id: int) -> MatchingState:
             profile=queue_entry.profile,
             queue_entry=queue_entry,
             match=queue_entry.match,
+            binding_cancel_reason=godot_cancel_reason,
         )
 
     profile = (
@@ -681,7 +1020,11 @@ def get_matching_state(*, user, topic_id: int) -> MatchingState:
         .first()
     )
     if profile and not _can_enter_human_matching(profile.stance_category):
-        return MatchingState(status=AI_RECOMMENDED_STATUS, profile=profile)
+        return MatchingState(
+            status=AI_RECOMMENDED_STATUS,
+            profile=profile,
+            binding_cancel_reason=godot_cancel_reason,
+        )
 
     if queue_entry:
         return MatchingState(
@@ -689,9 +1032,10 @@ def get_matching_state(*, user, topic_id: int) -> MatchingState:
             profile=queue_entry.profile,
             queue_entry=queue_entry,
             match=queue_entry.match,
+            binding_cancel_reason=godot_cancel_reason,
         )
 
-    return MatchingState(status="idle", profile=profile)
+    return MatchingState(status="idle", profile=profile, binding_cancel_reason=godot_cancel_reason)
 
 
 def cancel_matching(*, user, topic_id: int) -> MatchQueueEntry:

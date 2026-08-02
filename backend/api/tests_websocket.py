@@ -32,14 +32,220 @@ def disable_hh_ai_assist_env(monkeypatch):
 
 
 class FakeStreamingDialogueAgent:
-    async def astream_respond(self, session):
-        yield f"AI reply to: {session.history[-1].content}"
+    """Contract-compliant fake, in the real stream shape.
+
+    The model rejects assistant prefill, so the stream carries the full
+    "<judgment>…</judgment>" tag pair (see ai_agent.astream_respond).
+    """
+
+    async def astream_respond(self, session, correction: str = ""):
+        yield (
+            "<judgment>開啟新方向。結構 A。使用者提出新的事實問題。</judgment>"
+            f"<reply>AI reply to: {session.history[-1].content}</reply>"
+        )
+
+
+class LeakyStreamingDialogueAgent:
+    """判定段 + 正文的真實輸出形狀。
+
+    `with_open_tag=True`  → 現況（無 prefill，串流含 <judgment> 開標籤）
+    `with_open_tag=False` → 若未來模型支援 prefill 時的形狀（不含開標籤）
+    兩種形狀都必須被 gate 正確攔截。
+    """
+
+    JUDGMENT = (
+        "使用者在收斂到成本這個子問題。判定為「收斂」,"
+        "強制使用承接深化型(E)。"
+    )
+    REPLY = "核電的優勢是低碳穩定,不是便宜。"
+
+    def __init__(self, chunk_size: int = 7, with_open_tag: bool = True):
+        self.chunk_size = chunk_size
+        self.with_open_tag = with_open_tag
+
+    async def astream_respond(self, session, correction: str = ""):
+        payload = (
+            f"{'<judgment>' if self.with_open_tag else ''}"
+            f"{self.JUDGMENT}</judgment>"
+            f"<reply>{self.REPLY}</reply>"
+        )
+        for i in range(0, len(payload), self.chunk_size):
+            yield payload[i:i + self.chunk_size]
+
+
+class MimickedTagDialogueAgent:
+    """判定段內文自己寫出 <reply> 字面字串（第十節在 prompt 裡就有這個字串）。
+
+    單段式 gate 會在這裡提前開閘，把後面的判定文字全部推給前端。
+    """
+
+    MIMICRY = "本輪 <reply> 只寫 3 句,結尾不拋問題。"
+    REPLY = "核電的優勢是低碳穩定,不是便宜。"
+
+    def __init__(self, chunk_size: int = 3):
+        self.chunk_size = chunk_size
+
+    async def astream_respond(self, session, correction: str = ""):
+        payload = (
+            f"<judgment>判定為「收斂」,強制使用承接深化型(E)。{self.MIMICRY}"
+            f"</judgment><reply>{self.REPLY}</reply>"
+        )
+        for i in range(0, len(payload), self.chunk_size):
+            yield payload[i:i + self.chunk_size]
+
+
+class LeakInReplyDialogueAgent:
+    """Tag boundary holds, but judgment language lands inside <reply>.
+
+    First call leaks; the corrected retry (correction text appended to the user
+    message) comes back clean. Records what it was called with so the test can
+    prove the retry actually carried the correction.
+    """
+
+    LEAKY_REPLY = (
+        "內部判斷：使用者這一輪是在開啟新方向——提供了一段具體的政策現況背景，"
+        "等待我回應。 這個現況說明台灣的核電政策一直在政治可行性和現實需求之間拉扯。"
+    )
+    CLEAN_REPLY = (
+        "核二、核三被評估為具再運轉可行性，並不等於安全無虞可以直接重啟，"
+        "這只是技術評估的第一步。"
+    )
+
+    def __init__(self, chunk_size: int = 5):
+        self.chunk_size = chunk_size
+        self.call_count = 0
+        self.corrections = []
+
+    async def astream_respond(self, session, correction: str = ""):
+        self.call_count += 1
+        self.corrections.append(correction)
+        body = self.CLEAN_REPLY if correction else self.LEAKY_REPLY
+        payload = (
+            "<judgment>開新方向|A|使用者貼入政策背景</judgment>"
+            f"<reply>{body}</reply>"
+        )
+        for i in range(0, len(payload), self.chunk_size):
+            yield payload[i:i + self.chunk_size]
+
+
+class UnsalvageableLeakDialogueAgent:
+    """Leaks on both attempts, and the body cannot be salvaged."""
+
+    RAW_REPLY = "內部判斷：本輪強制使用承接深化型(E)。判定為「收斂」。"
+
+    def __init__(self):
+        self.call_count = 0
+
+    async def astream_respond(self, session, correction: str = ""):
+        self.call_count += 1
+        yield (
+            "<judgment>收斂|E|測試</judgment>"
+            f"<reply>{self.RAW_REPLY}</reply>"
+        )
+
+
+class SalvageableLeakDialogueAgent:
+    """Leaks on both attempts, but the body after the first sentence is clean."""
+
+    LEAKY_REPLY = (
+        "內部判斷：使用者這一輪是在開啟新方向。"
+        "核二、核三被評估為具再運轉可行性，並不等於安全無虞可以直接重啟，"
+        "後面還有自主安全檢查與再運轉計畫審查，核廢料最終處置也仍無著落。"
+    )
+    SALVAGED = (
+        "核二、核三被評估為具再運轉可行性，並不等於安全無虞可以直接重啟，"
+        "後面還有自主安全檢查與再運轉計畫審查，核廢料最終處置也仍無著落。"
+    )
+
+    def __init__(self):
+        self.call_count = 0
+
+    async def astream_respond(self, session, correction: str = ""):
+        self.call_count += 1
+        yield (
+            "<judgment>開新方向|A|測試</judgment>"
+            f"<reply>{self.LEAKY_REPLY}</reply>"
+        )
+
+
+class ContractViolatingDialogueAgent:
+    """Never emits <reply> — the gate must fail closed and leak nothing."""
+
+    RAW = "判定為「收斂」,強制使用承接深化型(E)。核電的優勢是低碳穩定,不是便宜。"
+
+    def __init__(self, chunk_size: int = 5):
+        self.chunk_size = chunk_size
+        self.call_count = 0
+
+    async def astream_respond(self, session, correction: str = ""):
+        self.call_count += 1
+        for i in range(0, len(self.RAW), self.chunk_size):
+            yield self.RAW[i:i + self.chunk_size]
+
+
+FORBIDDEN_IN_STREAM = [
+    "判定為",
+    "承接深化型",
+    "<judgment>",
+    "</judgment>",
+    "<reply>",
+    "</reply>",
+]
+
+
+async def _setup_ai_session(user, session_id):
+    """Seed the cache with an active H-AI dialogue session record."""
+    from apps.matching.services.ai_agent import DialogueSession
+
+    session = DialogueSession(
+        topic="台灣核能議題討論",
+        topic_description="討論台灣是否應使用核能。",
+        agent_stance="較反對核電",
+        agent_stance_summary="以反方角度提出核安與核廢料疑慮。",
+        user_stance_label="較支持核電",
+        user_stance_score=6.5,
+    )
+    await sync_to_async(cache.set)(
+        f"dialogue_session:{session_id}",
+        {
+            "user_id": user.id,
+            "session_id": session_id,
+            "topic_id": 102,
+            "topic_title": "台灣核能議題討論",
+            "collection_name": "nuclear_energy_all",
+            "survey_context": {"q9_embedding": make_test_embedding(1)},
+            "session": session.to_dict(),
+        },
+    )
+
+
+async def _drain_agent_stream(communicator, timeout=3):
+    """Collect every agent_stream chunk up to agent_stream_end.
+
+    Returns (chunks, end_message, saw_thinking).
+    """
+    chunks = []
+    saw_thinking = False
+    while True:
+        message = await communicator.receive_json_from(timeout=timeout)
+        if message["type"] == "agent_thinking":
+            saw_thinking = True
+            continue
+        if message["type"] == "agent_stream":
+            chunks.append(message["content"])
+            continue
+        return chunks, message, saw_thinking
 
 
 class SlowStreamingDialogueAgent:
-    async def astream_respond(self, session):
+    """Contract-compliant fake that takes long enough for a second send to queue."""
+
+    async def astream_respond(self, session, correction: str = ""):
         content = session.history[-1].content
-        yield f"AI reply to: {content}"
+        yield (
+            "<judgment>開啟新方向。結構 A。</judgment>"
+            f"<reply>AI reply to: {content}</reply>"
+        )
         await asyncio.sleep(0.05)
 
 
@@ -105,9 +311,13 @@ async def test_dialogue_websocket_persists_completed_turn():
         await communicator.send_json_to(
             {"type": "user_message", "content": "核能真的比較穩定嗎？"}
         )
+        thinking_message = await communicator.receive_json_from(timeout=3)
         stream_message = await communicator.receive_json_from(timeout=3)
         end_message = await communicator.receive_json_from(timeout=3)
 
+    # The reply is held until it passes validation, so the client is told to
+    # show a typing indicator first.
+    assert thinking_message == {"type": "agent_thinking"}
     assert stream_message == {
         "type": "agent_stream",
         "content": "AI reply to: 核能真的比較穩定嗎？",
@@ -117,10 +327,328 @@ async def test_dialogue_websocket_persists_completed_turn():
     assert end_message["stance_drift"]["measured_at"]
 
     saved_turn = await AIConversation.objects.aget(session_id=session_id)
+    assert end_message["turn_id"] == saved_turn.id
     assert saved_turn.user_id == user.id
     assert saved_turn.topic_id == 102
     assert saved_turn.user_prompt == "核能真的比較穩定嗎？"
     assert saved_turn.ai_response == "AI reply to: 核能真的比較穩定嗎？"
+    assert saved_turn.contract_violated is False
+
+    await communicator.disconnect()
+
+
+# ═══════════════════════════════════════════════════════════
+# Output contract: the <judgment> block must never reach the participant
+# ═══════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+@pytest.mark.parametrize("chunk_size", [1, 2, 3, 5, 7, 13, 1000])
+@pytest.mark.parametrize("with_open_tag", [True, False])
+async def test_judgment_block_never_reaches_the_client(chunk_size, with_open_tag):
+    """Tag-splitting stress test. chunk_size=1 is the worst case: every tag is
+    split across as many chunks as it has characters. Both stream shapes (with
+    and without the <judgment> open tag) must be gated identically."""
+    from BridgeUs_Django.asgi import application
+
+    user = await create_user(
+        username=f"gate_user_{chunk_size}_{int(with_open_tag)}",
+        password="secret123",
+    )
+    session_id = uuid4().hex
+    await _setup_ai_session(user, session_id)
+
+    token = await _access_token_for(user)
+    communicator = WebsocketCommunicator(
+        application,
+        f"/ws/dialogue/{session_id}/?token={token}",
+    )
+
+    with (
+        patch(
+            "api.views.get_dialogue_agent",
+            return_value=LeakyStreamingDialogueAgent(
+                chunk_size=chunk_size,
+                with_open_tag=with_open_tag,
+            ),
+        ),
+        patch(
+            "api.consumers.aget_embedding",
+            new=AsyncMock(return_value=make_test_embedding(-1)),
+        ),
+    ):
+        connected, _ = await communicator.connect()
+        assert connected
+
+        await communicator.send_json_to(
+            {"type": "user_message", "content": "所以優勢就是比較便宜嗎"}
+        )
+        chunks, end_message, saw_thinking = await _drain_agent_stream(communicator)
+
+    assert end_message["type"] == "agent_stream_end"
+
+    streamed = "".join(chunks)
+    assert streamed == "核電的優勢是低碳穩定,不是便宜。"
+    for token_text in FORBIDDEN_IN_STREAM:
+        assert token_text not in streamed
+
+    saved_turn = await AIConversation.objects.aget(session_id=session_id)
+    assert saved_turn.ai_response == "核電的優勢是低碳穩定,不是便宜。"
+    assert saved_turn.contract_violated is False
+
+    # The judgment block is retained for research, but only in its own column.
+    assert saved_turn.internal_judgment
+    assert "判定為" in saved_turn.internal_judgment
+    assert "<judgment>" not in saved_turn.internal_judgment
+    assert "</judgment>" not in saved_turn.internal_judgment
+
+    # History is what gets replayed into the next turn's system prompt: if the
+    # judgment block lands here, the model learns it is normal to emit one.
+    record = await sync_to_async(cache.get)(f"dialogue_session:{session_id}")
+    last_agent_message = [
+        message
+        for message in record["session"]["history"]
+        if message["role"] == "agent"
+    ][-1]
+    assert last_agent_message["content"] == "核電的優勢是低碳穩定,不是便宜。"
+    for token_text in FORBIDDEN_IN_STREAM:
+        assert token_text not in last_agent_message["content"]
+
+    await communicator.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_reply_tag_mimicked_inside_judgment_does_not_leak():
+    """End-to-end version of the two-stage gating case: the model writes the
+    literal "<reply>" inside its judgment, which a single-stage gate would treat
+    as the opening tag."""
+    from BridgeUs_Django.asgi import application
+
+    user = await create_user(username="gate_mimicry_user", password="secret123")
+    session_id = uuid4().hex
+    await _setup_ai_session(user, session_id)
+
+    token = await _access_token_for(user)
+    communicator = WebsocketCommunicator(
+        application,
+        f"/ws/dialogue/{session_id}/?token={token}",
+    )
+
+    with (
+        patch(
+            "api.views.get_dialogue_agent",
+            return_value=MimickedTagDialogueAgent(),
+        ),
+        patch(
+            "api.consumers.aget_embedding",
+            new=AsyncMock(return_value=make_test_embedding(-1)),
+        ),
+    ):
+        connected, _ = await communicator.connect()
+        assert connected
+
+        await communicator.send_json_to(
+            {"type": "user_message", "content": "所以優勢就是比較便宜嗎"}
+        )
+        chunks, end_message, saw_thinking = await _drain_agent_stream(communicator)
+
+    assert end_message["type"] == "agent_stream_end"
+
+    streamed = "".join(chunks)
+    assert streamed == MimickedTagDialogueAgent.REPLY
+    assert MimickedTagDialogueAgent.MIMICRY not in streamed
+    for token_text in FORBIDDEN_IN_STREAM + ["本輪", "只寫 3 句"]:
+        assert token_text not in streamed
+
+    saved_turn = await AIConversation.objects.aget(session_id=session_id)
+    assert saved_turn.ai_response == MimickedTagDialogueAgent.REPLY
+    assert saved_turn.contract_violated is False
+    assert "本輪" in saved_turn.internal_judgment
+
+    await communicator.disconnect()
+
+
+async def _run_single_turn(username, agent, message="所以優勢就是比較便宜嗎", timeout=5):
+    """Drive one H-AI turn end-to-end; return (chunks, end_message, saw_thinking,
+    session_id, user)."""
+    from BridgeUs_Django.asgi import application
+
+    user = await create_user(username=username, password="secret123")
+    session_id = uuid4().hex
+    await _setup_ai_session(user, session_id)
+
+    token = await _access_token_for(user)
+    communicator = WebsocketCommunicator(
+        application,
+        f"/ws/dialogue/{session_id}/?token={token}",
+    )
+
+    with (
+        patch("api.views.get_dialogue_agent", return_value=agent),
+        patch(
+            "api.consumers.aget_embedding",
+            new=AsyncMock(return_value=make_test_embedding(-1)),
+        ),
+    ):
+        connected, _ = await communicator.connect()
+        assert connected
+        await communicator.send_json_to({"type": "user_message", "content": message})
+        chunks, end_message, saw_thinking = await _drain_agent_stream(
+            communicator, timeout=timeout
+        )
+
+    await communicator.disconnect()
+    return chunks, end_message, saw_thinking, session_id, user
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_in_reply_leak_triggers_corrected_retry():
+    """5d: judgment language inside <reply> → corrected retry → clean output."""
+    agent = LeakInReplyDialogueAgent()
+    chunks, end_message, saw_thinking, session_id, _ = await _run_single_turn(
+        "gate_inreply_user",
+        agent,
+        message="台灣的核電政策現況是這樣的：核二、核三已被評估為具再運轉可行性……",
+    )
+
+    assert end_message["type"] == "agent_stream_end"
+    assert saw_thinking is True
+
+    # Exactly two calls: the leaky one and the corrected retry.
+    assert agent.call_count == 2
+    assert agent.corrections[0] == ""
+    assert "違反格式契約" in agent.corrections[1]
+
+    streamed = "".join(chunks)
+    assert streamed == LeakInReplyDialogueAgent.CLEAN_REPLY
+    # The first attempt must never have reached the client.
+    assert "內部判斷" not in streamed
+    assert "使用者這一輪" not in streamed
+    assert "開啟新方向" not in streamed
+
+    saved_turn = await AIConversation.objects.aget(session_id=session_id)
+    assert saved_turn.ai_response == LeakInReplyDialogueAgent.CLEAN_REPLY
+    # A clean retry is a satisfied contract, not a violation.
+    assert saved_turn.contract_violated is False
+
+    record = await sync_to_async(cache.get)(f"dialogue_session:{session_id}")
+    last_agent_message = [
+        message
+        for message in record["session"]["history"]
+        if message["role"] == "agent"
+    ][-1]
+    assert last_agent_message["content"] == LeakInReplyDialogueAgent.CLEAN_REPLY
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_persistent_in_reply_leak_is_salvaged():
+    """Both attempts leak, but the body after the judgment sentence is usable:
+    show the salvaged text, still flag the turn as violated."""
+    agent = SalvageableLeakDialogueAgent()
+    chunks, _, _, session_id, _ = await _run_single_turn(
+        "gate_salvage_user", agent
+    )
+
+    assert agent.call_count == 2      # no third API call
+    streamed = "".join(chunks)
+    assert streamed == SalvageableLeakDialogueAgent.SALVAGED
+    assert "內部判斷" not in streamed
+    assert "開啟新方向" not in streamed
+
+    saved_turn = await AIConversation.objects.aget(session_id=session_id)
+    assert saved_turn.ai_response == SalvageableLeakDialogueAgent.SALVAGED
+    # Salvaged output is still the product of a violation — research must see it.
+    assert saved_turn.contract_violated is True
+    assert "內部判斷" in saved_turn.internal_judgment
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_unsalvageable_in_reply_leak_falls_back():
+    from api.consumers import CONTRACT_FALLBACK_TEXT
+
+    agent = UnsalvageableLeakDialogueAgent()
+    chunks, _, _, session_id, _ = await _run_single_turn(
+        "gate_unsalvageable_user", agent
+    )
+
+    assert agent.call_count == 2
+    assert chunks == [CONTRACT_FALLBACK_TEXT]
+    assert UnsalvageableLeakDialogueAgent.RAW_REPLY not in "".join(chunks)
+
+    saved_turn = await AIConversation.objects.aget(session_id=session_id)
+    assert saved_turn.ai_response == CONTRACT_FALLBACK_TEXT
+    assert saved_turn.contract_violated is True
+    assert "內部判斷" in saved_turn.internal_judgment
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_contract_violation_fails_closed():
+    """When <reply> never opens, the participant sees a fallback line and the
+    raw output is never streamed, stored as ai_response, or replayed."""
+    from BridgeUs_Django.asgi import application
+    from api.consumers import CONTRACT_FALLBACK_TEXT
+
+    user = await create_user(username="gate_violation_user", password="secret123")
+    session_id = uuid4().hex
+    await _setup_ai_session(user, session_id)
+
+    agent = ContractViolatingDialogueAgent()
+    token = await _access_token_for(user)
+    communicator = WebsocketCommunicator(
+        application,
+        f"/ws/dialogue/{session_id}/?token={token}",
+    )
+
+    with (
+        patch("api.views.get_dialogue_agent", return_value=agent),
+        patch(
+            "api.consumers.aget_embedding",
+            new=AsyncMock(return_value=make_test_embedding(-1)),
+        ),
+    ):
+        connected, _ = await communicator.connect()
+        assert connected
+
+        await communicator.send_json_to(
+            {"type": "user_message", "content": "所以優勢就是比較便宜嗎"}
+        )
+        chunks, end_message, saw_thinking = await _drain_agent_stream(communicator, timeout=5)
+
+    assert end_message["type"] == "agent_stream_end"
+
+    # The whole call is retried once before giving up.
+    assert agent.call_count == 2
+
+    assert chunks == [CONTRACT_FALLBACK_TEXT]
+    streamed = "".join(chunks)
+    assert ContractViolatingDialogueAgent.RAW not in streamed
+    for token_text in ["判定為", "承接深化型"]:
+        assert token_text not in streamed
+
+    saved_turn = await AIConversation.objects.aget(session_id=session_id)
+    assert saved_turn.contract_violated is True
+    assert saved_turn.ai_response == CONTRACT_FALLBACK_TEXT
+    assert "判定為" not in saved_turn.ai_response
+
+    record = await sync_to_async(cache.get)(f"dialogue_session:{session_id}")
+    last_agent_message = [
+        message
+        for message in record["session"]["history"]
+        if message["role"] == "agent"
+    ][-1]
+    assert last_agent_message["content"] == CONTRACT_FALLBACK_TEXT
 
     await communicator.disconnect()
 
@@ -159,15 +687,26 @@ async def test_dialogue_websocket_queues_messages_and_replies_in_order():
         application,
         f"/ws/dialogue/{session_id}/?token={await _access_token_for(user)}",
     )
+    # 這個測試要驗的是「第一則還在串流時送第二則」會被佇列接住。兩則是背靠背
+    # 送出的，會撞到 1.5 秒最小送出間隔，所以把 rate limit 放行掉——那條規則
+    # 本身另有 tests_input_gate_ws.py 覆蓋。
+    allow_all = AsyncMock(return_value={"allowed": True, "reason": None, "retry_after": 0})
     with (
         patch("api.views.get_dialogue_agent", return_value=SlowStreamingDialogueAgent()),
         patch("api.consumers.aget_embedding", new=AsyncMock(return_value=make_test_embedding(1))),
+        patch("api.consumers.acheck_rate_limit", new=allow_all),
     ):
         assert (await communicator.connect())[0]
-        await communicator.send_json_to({"type": "user_message", "content": "第一則"})
-        await communicator.send_json_to({"type": "user_message", "content": "第二則"})
+        await communicator.send_json_to({"type": "user_message", "content": "第一則：我想先談成本問題"})
+        await communicator.send_json_to({"type": "user_message", "content": "第二則：也想談核廢料處置"})
 
-        replies = [await communicator.receive_json_from(timeout=3) for _ in range(4)]
+        # agent_thinking 是純 UI 指示（回覆先被扣在 ReplyStreamGate 裡驗證，
+        # 前端要有東西可顯示），跟送出順序無關，這裡濾掉只看實際回覆。
+        replies = []
+        while len(replies) < 4:
+            event = await communicator.receive_json_from(timeout=3)
+            if event["type"] != "agent_thinking":
+                replies.append(event)
 
     assert [item["type"] for item in replies] == [
         "agent_stream",
@@ -175,16 +714,20 @@ async def test_dialogue_websocket_queues_messages_and_replies_in_order():
         "agent_stream",
         "agent_stream_end",
     ]
-    assert replies[0]["content"] == "AI reply to: 第一則"
-    assert replies[2]["content"] == "AI reply to: 第二則"
+    assert replies[0]["content"] == "AI reply to: 第一則：我想先談成本問題"
+    assert replies[2]["content"] == "AI reply to: 第二則：也想談核廢料處置"
     saved = [
         turn
         async for turn in AIConversation.objects.filter(session_id=session_id).order_by("id")
     ]
-    assert [turn.user_prompt for turn in saved] == ["第一則", "第二則"]
+    assert [turn.user_prompt for turn in saved] == ["第一則：我想先談成本問題", "第二則：也想談核廢料處置"]
     assert [turn.ai_response for turn in saved] == [
-        "AI reply to: 第一則",
-        "AI reply to: 第二則",
+        "AI reply to: 第一則：我想先談成本問題",
+        "AI reply to: 第二則：也想談核廢料處置",
+    ]
+    assert [replies[1]["turn_id"], replies[3]["turn_id"]] == [
+        saved[0].id,
+        saved[1].id,
     ]
 
     await communicator.disconnect()
@@ -231,9 +774,9 @@ async def test_match_room_websocket_persists_and_broadcasts_message():
     assert response_a["type"] == "match_message"
     assert response_a == response_b
     payload = response_a["message"]
+    anon_ids = assign_anonymous_ids(match.room_id, [match.user_a_id, match.user_b_id])
     assert payload["room_id"] == match.room_id
     assert payload["sender_id"] == alice.id
-    anon_ids = assign_anonymous_ids(match.room_id, [match.user_a_id, match.user_b_id])
     assert payload["sender_name"] == anon_ids[alice.id]
     assert payload["content"] == "我想先談核安。"
 

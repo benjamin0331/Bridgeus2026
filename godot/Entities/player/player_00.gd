@@ -20,12 +20,6 @@ var issue_body := ""
 # 因為新議題的後端 id 要等作者的 backend POST 回來才知道。0 = 未知/未存後端。
 var backend_issue_id: int = 0
 
-# 後端 user id（M3 配對建房需要，見 game.gd _do_seat 與 Backend.gd request_topic_match）。
-# 由 authority 在 _ready() 從 Backend.user_id 帶入；透過 MultiplayerSynchronizer 同步
-# （spawn=true，晚進的人也拿得到），這樣 server 端才查得到「這個 peer 對應哪個後端使用者」。
-# guest_login 測試帳號沒有對應 id，會是 0——只在本機測試情境出現，正式流程不會。
-var backend_user_id: int = 0
-
 # 頭上的表情回復（權威＝議題作者持有）。廣播與補送方式與議題相同：
 # apply_reactions() 廣播給連線中的人，request_issue_sync 補送給晚進者。
 # 公開（無底線）因為 game.gd 要讀它做補送，跟 issue_title/banner_text 一致。
@@ -82,9 +76,6 @@ func _ready():
 	var spawn = get_parent().get_node_or_null("SpawnPoint")
 	if spawn:
 		position = spawn.position
-	# 後端 user id：同理必須由 authority 自己設（見上方欄位註解），才能透過
-	# synchronizer 正確同步給其他 peer；guest 測試帳號沒有對應 id，維持 0。
-	backend_user_id = Backend.user_id
 	# 隨機外觀：數 SpriteFrames 裡有幾個 char_N_idle（加新角色不用改這裡），擲一個。
 	var count = 0
 	for n in $AnimatedSprite2D.sprite_frames.get_animation_names():

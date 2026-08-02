@@ -91,7 +91,8 @@ def _analysis_response_schema(anchors: list[dict[str, str]]) -> dict:
                         },
                         "stance": {
                             "type": "string",
-                            "description": "支持、反對、中立或混合。",
+                            "enum": sorted(STANCE_LABELS),
+                            "description": "這句話對這個節點主張的立場：支持、反對、無關或中立。",
                         },
                         "confidence": {
                             "type": "number",
@@ -650,7 +651,11 @@ def build_openai_request(
             "- 如果輸入太模糊，輸出 items: []。",
             "",
             "stance 規則：",
-            "- stance 只能用：支持、反對、中立、混合。",
+            "- stance 只能用：支持、反對、無關、中立 四者之一。",
+            "- 支持：語氣認同、贊成這個節點的主張。",
+            "- 反對：語氣質疑、反駁這個節點的主張。",
+            "- 無關：這句話其實跟這個節點的主張無關，只是附和、離題或無法歸類。",
+            "- 中立：跟主張有關，但純粹敘述事實、無法判斷支持或反對。",
             "- 根據使用者語氣判斷，不要過度推論。",
             "",
             "輸出品質要求：",
@@ -972,6 +977,95 @@ def parse_openai_response(response_body: dict[str, Any]) -> dict[str, Any]:
         raise OpenAIApiError(f"OpenAI response JSON parse failed: {exc}") from exc
 
 
+STANCE_LABELS = {"支持", "反對", "無關", "中立"}
+
+
+def _stance_schema() -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "stance": {
+                "type": "string",
+                "enum": sorted(STANCE_LABELS),
+                "description": "這句話對指定節點主題的立場：支持、反對或中立。",
+            },
+        },
+        "required": ["stance"],
+        "additionalProperties": False,
+    }
+
+
+def classify_stance_with_openai(
+    *,
+    text: str,
+    context_label: str = "",
+    api_key: str | None = None,
+    model: str | None = None,
+) -> str:
+    """Ask OpenAI whether `text` leans 支持/反對/中立 on `context_label` (the CCND
+    node this message was just classified under). Used by
+    nuclear_node_classifier, whose local BERT model only predicts topic/cluster
+    and has no stance signal of its own. Falls back to "中立" on any failure
+    (missing key, network/timeout error, malformed response) so a stance
+    lookup hiccup never blocks node creation — the node still gets created,
+    just without a support/oppose color.
+    """
+    cleaned = clean_text(text)
+    if not cleaned:
+        return "中立"
+
+    resolved_api_key = api_key if api_key is not None else get_openai_api_key()
+    if not resolved_api_key:
+        return "中立"
+
+    prompt_text = "\n".join(
+        [
+            f"你是立場分類 agent。判斷這句話對「{context_label or '目前討論主題'}」這個議題節點的立場。",
+            "只能回答：支持、反對、無關、中立 四者之一。",
+            "支持：語氣認同、贊成、正面評價。",
+            "反對：語氣質疑、反駁、負面評價。",
+            "無關：這句話其實跟這個節點的主張無關，只是附和、離題或無法歸類。",
+            "中立：跟主張有關，但純粹敘述事實、無法判斷支持或反對。",
+            "",
+            "使用者輸入：",
+            cleaned,
+        ]
+    )
+
+    request_body = {
+        "model": model or get_openai_model(),
+        "input": [{"role": "user", "content": prompt_text}],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "stance_classification",
+                "strict": True,
+                "schema": _stance_schema(),
+            }
+        },
+    }
+
+    endpoint = "https://api.openai.com/v1/responses"
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(request_body, ensure_ascii=False).encode("utf-8"),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {resolved_api_key}",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=_openai_timeout_seconds()) as response:
+            response_body = json.loads(response.read().decode("utf-8"))
+        parsed = parse_openai_response(response_body)
+        stance = clean_text(parsed.get("stance"))
+        return stance if stance in STANCE_LABELS else "中立"
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OpenAIApiError, ValueError):
+        return "中立"
+
+
 def get_openai_api_key() -> str:
     return clean_text(os.getenv("OPENAI_API_KEY"))
 
@@ -1040,7 +1134,15 @@ def analyze_with_openai(
     }
 
 
-LOCAL_CLASSIFIER_TOPIC_IDS = {102}
+LOCAL_CLASSIFIER_TOPIC_IDS = {102, 103}
+
+# Each locally-classified topic gets its own trained macro/micro pipeline
+# module (different weights, different class->anchor mapping) — one entry
+# per topic_id in LOCAL_CLASSIFIER_TOPIC_IDS.
+_LOCAL_CLASSIFIER_MODULES = {
+    102: "apps.matching.services.nuclear_node_classifier",
+    103: "apps.matching.services.women_conscription_node_classifier",
+}
 
 # MIN_CONFIDENCE (0.55) was tuned for an LLM's self-reported meta-confidence,
 # which tends to run high. The local classifier's confidence is a raw softmax
@@ -1062,15 +1164,17 @@ def analyze_text_for_tree(
     anchors: list[dict[str, str]] | None = None,
     anchor_descriptions: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Dispatch node analysis by topic: topic 102 (nuclear energy) uses the
-    locally fine-tuned classifier pipeline; every other topic keeps using the
-    generative OpenAI path.
+    """Dispatch node analysis by topic: topics in LOCAL_CLASSIFIER_TOPIC_IDS
+    each use their own locally fine-tuned classifier pipeline; every other
+    topic keeps using the generative OpenAI path.
     """
     resolved_anchors = anchors or FIXED_ANCHORS
     if uses_local_classifier(topic_id):
-        from apps.matching.services import nuclear_node_classifier
+        import importlib
 
-        candidate_items = nuclear_node_classifier.build_candidate_items(text, resolved_anchors)
+        classifier_module = importlib.import_module(_LOCAL_CLASSIFIER_MODULES[topic_id])
+
+        candidate_items = classifier_module.build_candidate_items(text, resolved_anchors)
         return {
             **validate_analysis_items(
                 {"items": candidate_items},
@@ -1198,7 +1302,7 @@ def get_message_lit_nodes(
     source_message_id: str,
 ) -> list[dict[str, str]]:
     """回傳某位參與者在 source_message_id 那則訊息點亮（命中）的所有 CCND 節點，
-    每筆為 {"name": node_name, "stance": 支持/反對/中立/混合}。
+    每筆為 {"name": node_name, "stance": 支持/反對/無關/中立}。
 
     給 M6 觀點知識庫 pipeline（apps/summary/pipeline/assemble.py）用來組
     ViewpointNode.viewpoint_summary（join 所有 name）與 stance_direction
@@ -1290,6 +1394,37 @@ def semantic_tree_payload(
         "analysisStatus": analysis_status,
         "message": message,
         "analyzedCount": analyzed_count,
+    }
+
+
+def approved_match_tree_payload(*, match: DialogueMatch, root_name: str) -> dict[str, Any]:
+    """給知識庫『對話詳情』頁用：回傳雙方（A/B）各自的 CCND 語意樹。
+
+    跟 semantic_tree_payload() 不同——那個是給聊天室/歷史紀錄用，永遠只回傳
+    『目前登入使用者自己那一側』（current_user_id 決定），因為那些情境下
+    瀏覽的人就是對話當事人之一。這裡瀏覽的人是任何登入使用者（已審核通過
+    的對話對所有人開放），沒有『自己那一側』的概念，所以兩側都給，交給
+    ConversationTreePanel 的 matching 模式切換顯示。
+    """
+    state = get_semantic_tree_state(match, root_name=root_name)
+    trees = [
+        _owner_payload(state["participants"][OWNER_USER_A], label="A方", is_current_user=False),
+        _owner_payload(state["participants"][OWNER_USER_B], label="B方", is_current_user=False),
+    ]
+    return {
+        "room_id": match.room_id,
+        "match_id": match.id,
+        "topic_id": match.topic_id,
+        "semanticMode": MATCH_TREE_MODE,
+        "treeData": trees[0]["treeData"],
+        "trees": trees,
+        "anchors": state["anchors"],
+        "analysisHistory": trees[0]["analysisHistory"],
+        "analyzedMessageIds": trees[0]["analyzedSourceIds"],
+        "analyzedSourceIds": trees[0]["analyzedSourceIds"],
+        "analysisStatus": "ready",
+        "message": "",
+        "analyzedCount": len(trees[0]["analyzedSourceIds"]) + len(trees[1]["analyzedSourceIds"]),
     }
 
 

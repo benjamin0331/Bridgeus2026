@@ -8,11 +8,11 @@ import './PlatformFeedbackPage.css';
 
 // F1–F5：功能體驗（7 點量表，1＝非常不滿意，7＝非常滿意）
 const F_LIKERT_QUESTIONS = [
-  { key: 'ux_matching', label: 'F1', text: '問卷填寫與配對等待的流程', tag: '配對機制' },
-  { key: 'ux_chatroom', label: 'F2', text: '對話室的操作與訊息傳遞', tag: '對話室體驗' },
-  { key: 'ux_nlp_intervention', label: 'F3', text: '系統提示（如情緒提醒、離題引導）', tag: 'NLP 介入' },
-  { key: 'ux_ccnd', label: 'F4', text: '概念認知網路圖（右側思維導圖）', tag: 'CCND' },
-  { key: 'ux_overall', label: 'F5', text: '整體平台的操作流暢度', tag: '系統可用性' },
+  { key: 'ux_matching', label: 'F1', text: '問卷填寫與配對等待的流程' },
+  { key: 'ux_chatroom', label: 'F2', text: '對話室的操作與訊息傳遞' },
+  { key: 'ux_nlp_intervention', label: 'F3', text: '系統提示（如情緒提醒、離題引導）'},
+  { key: 'ux_ccnd', label: 'F4', text: '概念認知網路圖（右側思維導圖）' },
+  { key: 'ux_overall', label: 'F5', text: '整體平台的操作流暢度' },
 ];
 
 const SATISFACTION_VALUES = [1, 2, 3, 4, 5, 6, 7];

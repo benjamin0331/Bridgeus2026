@@ -100,7 +100,7 @@
 
 .achievement-card--locked .achievement-name {
   color: #8f847a;
-  font-size: 16px;
+  font-size: 20px;
 }
 
 .achievement-card--locked .achievement-how {
@@ -110,7 +110,7 @@
 .achievement-locked-tag {
   flex-shrink: 0;
   color: #a79c90;
-  font-size: 16px;
+  font-size: 20px;
   font-weight: 700;
 }
 

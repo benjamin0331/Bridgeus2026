@@ -1,6 +1,11 @@
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
+from django.contrib.auth.models import Group, User
+from django.contrib.auth.validators import UnicodeUsernameValidator
+from django.contrib.auth.password_validation import validate_password as dj_validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
+
 from apps.summary.models import VideoRecommendation, ViewpointNode
 
 from .dialogue_topics import get_dialogue_survey
@@ -8,6 +13,7 @@ from .models import (
     AIConversation,
     DiscomfortReport,
     MatchMessage,
+    PlatformDisplaySetting,
     PlatformFeedback,
     PostDialogueResponse,
 )
@@ -42,6 +48,10 @@ class ViewpointNodeReviewSerializer(serializers.ModelSerializer):
     """
 
     dialogue_id = serializers.CharField(source="summary.dialogue_id", read_only=True)
+    # summary_id 本身（DialogueSummary 的 PK），跟 dialogue_id（DialogueMatch
+    # 的 id，字串形式）是兩回事：前端審核清單用這個欄位把同一場對話產生的
+    # 多筆觀點歸類在一起審核，不用另外自己拼字串比對 dialogue_id。
+    dialogue_summary_id = serializers.IntegerField(source="summary_id", read_only=True)
     reviewed_by_username = serializers.CharField(
         source="reviewed_by.username", read_only=True, default=None
     )
@@ -51,6 +61,7 @@ class ViewpointNodeReviewSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "dialogue_id",
+            "dialogue_summary_id",
             "topic_id",
             "dimension",
             "speaker_side",
@@ -71,16 +82,134 @@ class ViewpointNodeReviewSerializer(serializers.ModelSerializer):
 
 
 class ViewpointNodeReviewDecisionSerializer(serializers.Serializer):
-    # reset：把已通過/未通過的節點退回「待審核」，讓它重新走一次審核流程
-    # （不是在通過/未通過之間直接切換，是真的送回佇列從頭審）。
     action = serializers.ChoiceField(choices=["approve", "reject", "reset"])
     notes = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class ViewpointHighlightSerializer(serializers.Serializer):
+    """知識庫首頁「熱門對話」卡片、以及「觀看更多」清單用的公開唯讀欄位——
+    只允許已通過人工審核（review_status=approved）的 ViewpointNode 走這條
+    序列化，見 views.KnowledgeBaseHighlightsView / KnowledgeBaseViewpointBrowseView。
+
+    帶 user_input_text/ai_response_text 這組原始逐字稿：知識庫「對話詳情」頁
+    已經改成顯示完整逐字稿 + CCND 樹（KnowledgeBaseConversationDetailView），
+    這裡只是把同一個隱私範圍決定延伸到小卡本身——只有走過人工審核通過的
+    節點才會用這條序列化，一般使用者只看得到「已核准可公開」的內容。"""
+
+    id = serializers.IntegerField()
+    dialogue_summary_id = serializers.IntegerField()
+    topic_id = serializers.IntegerField()
+    topic_title = serializers.CharField()
+    dimension = serializers.CharField()
+    dimension_name = serializers.CharField()
+    speaker_side = serializers.CharField(allow_blank=True)
+    stance_direction = serializers.CharField(allow_blank=True)
+    viewpoint_summary = serializers.CharField(allow_blank=True)
+    user_input_text = serializers.CharField(allow_blank=True)
+    ai_response_text = serializers.CharField(allow_blank=True)
+    citation_count = serializers.IntegerField()
+    composite_score = serializers.FloatField(allow_null=True)
+    created_at = serializers.DateTimeField()
+
+
+class ApprovedDialogueMessageSerializer(serializers.Serializer):
+    """知識庫對話詳情頁的逐字稿——只標示 A/B 方，不帶 sender_id/使用者名稱，
+    維持跟即時聊天室同一套匿名精神（見 apps.matching.services.anonymity）：
+    這裡任何登入使用者都能看，但看到的仍然是「A 方說了什麼」而不是「誰說的」。
+    """
+
+    id = serializers.CharField()
+    side = serializers.CharField()
+    sender_label = serializers.CharField()
+    content = serializers.CharField()
+    created_at = serializers.DateTimeField()
+
+
+class DialogueSummaryDetailSerializer(serializers.Serializer):
+    """知識庫「熱門對話」卡片點進去的對話紀錄。除了 DialogueSummary 已沉澱的
+    摘要欄位，也回傳完整逐字稿（messages，僅標示 A/B 方）跟雙方的 CCND 語意樹
+    （semantic_tree），讓前端可以用跟聊天室一致的「訊息串 + CCND 樹狀圖」呈現，
+    不再只是精簡摘要卡片。逐字稿不帶 sender_id/使用者名稱，維持匿名。"""
+
+    dialogue_summary_id = serializers.IntegerField()
+    topic_id = serializers.IntegerField()
+    topic_title = serializers.CharField()
+    summary_text = serializers.CharField(allow_blank=True)
+    side_a_stance = serializers.CharField(allow_blank=True)
+    side_b_stance = serializers.CharField(allow_blank=True)
+    quality_score = serializers.FloatField(allow_null=True)
+    stance_shift_magnitude = serializers.FloatField(allow_null=True)
+    created_at = serializers.DateTimeField()
+    viewpoints = ViewpointHighlightSerializer(many=True)
+    messages = ApprovedDialogueMessageSerializer(many=True)
+    # 用 DictField 而不是 MatchingRoomSemanticTreeSerializer：那個類別定義在
+    # 這個檔案更後面，這裡直接參照會在 import 當下 NameError；反正這裡只做
+    # 序列化輸出（不需要驗證輸入），值也已經是 approved_match_tree_payload()
+    # 組好的正確結構，DictField 原樣透傳即可。
+    semantic_tree = serializers.DictField()
+
+
+class VideoRecommendationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VideoRecommendation
+        fields = [
+            "id",
+            "title",
+            "url",
+            "thumbnail_url",
+            "description",
+            "topic_id",
+            "created_at",
+        ]
+
+
+class VideoRecommendationAdminSerializer(serializers.ModelSerializer):
+    """研究者專用：知識庫影片管理面板（前端設定頁）用，比公開的
+    VideoRecommendationSerializer 多帶 is_published/display_order——這兩個
+    欄位控制影片會不會出現在知識庫首頁、排序順序，只有研究者需要看/改。
+
+    video_file 是研究者從設定頁本地上傳的影片檔；url 改成非必填——上傳
+    video_file 時由 VideoRecommendationAdminListCreateView.perform_create()
+    自動從檔案路徑補上 url，呼叫端不用自己算。兩者都沒帶才會擋在
+    validate()（總要有個能播放的來源）。"""
+
+    class Meta:
+        model = VideoRecommendation
+        fields = [
+            "id",
+            "title",
+            "url",
+            "video_file",
+            "thumbnail_url",
+            "description",
+            "topic_id",
+            "is_published",
+            "display_order",
+            "created_at",
+        ]
+        read_only_fields = ["id", "created_at"]
+        extra_kwargs = {"url": {"required": False}}
+
+    def validate(self, attrs):
+        has_url = bool(attrs.get("url") or getattr(self.instance, "url", ""))
+        has_file = bool(attrs.get("video_file") or getattr(self.instance, "video_file", None))
+        if not has_url and not has_file:
+            raise serializers.ValidationError("請上傳影片檔案，或填寫影片網址。")
+        return attrs
 
 
 class AIConversationSerializer(serializers.ModelSerializer):
     class Meta:
         model = AIConversation
         fields = '__all__'
+
+
+class MessageReactionSerializer(serializers.Serializer):
+    """讚/倒讚 on an opponent's message. value 0 = remove the reaction."""
+
+    target_type = serializers.ChoiceField(choices=["ai", "match"])
+    target_id = serializers.IntegerField(min_value=1)
+    value = serializers.ChoiceField(choices=[1, -1, 0])
 
 
 class DialogueSessionCreateSerializer(serializers.Serializer):
@@ -121,56 +250,6 @@ class DialogueTopicTrendingSerializer(serializers.Serializer):
     id = serializers.IntegerField()
     title = serializers.CharField(max_length=255)
     hits = serializers.IntegerField()
-
-
-class ViewpointHighlightSerializer(serializers.Serializer):
-    """知識庫首頁「熱門對話」卡片用的公開唯讀欄位——只允許已通過人工審核
-    （review_status=approved）的 ViewpointNode 走這條序列化，見
-    views.KnowledgeBaseHighlightsView。不重用 ViewpointNodeReviewSerializer，
-    因為那個是研究者審核用，會帶 user_input_text 等未經篩選的原始逐字稿。"""
-
-    id = serializers.IntegerField()
-    topic_id = serializers.IntegerField()
-    topic_title = serializers.CharField()
-    dimension = serializers.CharField()
-    dimension_name = serializers.CharField()
-    speaker_side = serializers.CharField(allow_blank=True)
-    stance_direction = serializers.CharField(allow_blank=True)
-    viewpoint_summary = serializers.CharField(allow_blank=True)
-    citation_count = serializers.IntegerField()
-    composite_score = serializers.FloatField(allow_null=True)
-    created_at = serializers.DateTimeField()
-
-
-class DialogueSummaryDetailSerializer(serializers.Serializer):
-    """知識庫「熱門對話」卡片點進去的對話紀錄——只回傳 DialogueSummary 已沉澱
-    的摘要欄位，不帶 ViewpointNode.user_input_text/ai_response_text 原始逐字
-    稿，避免把真實參與者的對話內容直接開放給任何登入使用者看。"""
-
-    dialogue_summary_id = serializers.IntegerField()
-    topic_id = serializers.IntegerField()
-    topic_title = serializers.CharField()
-    summary_text = serializers.CharField(allow_blank=True)
-    side_a_stance = serializers.CharField(allow_blank=True)
-    side_b_stance = serializers.CharField(allow_blank=True)
-    quality_score = serializers.FloatField(allow_null=True)
-    stance_shift_magnitude = serializers.FloatField(allow_null=True)
-    created_at = serializers.DateTimeField()
-    viewpoints = ViewpointHighlightSerializer(many=True)
-
-
-class VideoRecommendationSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = VideoRecommendation
-        fields = [
-            "id",
-            "title",
-            "url",
-            "thumbnail_url",
-            "description",
-            "topic_id",
-            "created_at",
-        ]
 
 
 class DialogueSurveyQuestionSerializer(serializers.Serializer):
@@ -282,6 +361,28 @@ class MatchingStateSerializer(serializers.Serializer):
     other_user_name = serializers.CharField(max_length=150, required=False, allow_null=True)
     presence = serializers.JSONField(required=False, allow_null=True)
     absence_deadline = serializers.DateTimeField(required=False, allow_null=True)
+    fallback_offer = serializers.JSONField(required=False, allow_null=True)
+    binding_source = serializers.CharField(
+        max_length=16, required=False, allow_null=True
+    )
+    survey_required = serializers.BooleanField(required=False)
+    survey_deadline = serializers.DateTimeField(required=False, allow_null=True)
+    partner_state = serializers.CharField(
+        max_length=16, required=False, allow_null=True
+    )
+    binding_cancel_reason = serializers.CharField(
+        max_length=32, required=False, allow_null=True
+    )
+
+
+class GodotSurveySerializer(serializers.Serializer):
+    """Godot 綁定房的前測問卷。不含 restart_existing_match——這條路徑不排隊。"""
+
+    topic_id = serializers.IntegerField()
+    survey_answers = serializers.DictField(child=serializers.IntegerField())
+    survey_open_answers = serializers.DictField(
+        child=serializers.CharField(allow_blank=True), required=False, default=dict
+    )
 
 
 class MatchMessageSerializer(serializers.ModelSerializer):
@@ -450,9 +551,21 @@ class PostDialogueResponseSerializer(serializers.Serializer):
                 {"discomfort_detail": "選擇「是」時請描述不適情況。"}
             )
 
-        if not attrs.get("session_id") and not attrs.get("room_id"):
+        session_id = attrs.get("session_id")
+        room_id = attrs.get("room_id")
+        if condition == "ai" and (not session_id or room_id):
             raise serializers.ValidationError(
-                "session_id 與 room_id 至少需提供其中一個。"
+                {
+                    "session_id": "H-AI 組必須只提供 session_id。",
+                    "room_id": "H-AI 組不可提供 room_id。",
+                }
+            )
+        if condition == "hh" and (not room_id or session_id):
+            raise serializers.ValidationError(
+                {
+                    "room_id": "H-H 組必須只提供 room_id。",
+                    "session_id": "H-H 組不可提供 session_id。",
+                }
             )
 
         return attrs
@@ -513,6 +626,12 @@ class PlatformFeedbackOutputSerializer(serializers.ModelSerializer):
 
 class PostDialogueResponseOutputSerializer(serializers.ModelSerializer):
     s_post = serializers.SerializerMethodField()
+    # Derived stance metrics (aliased from the stored *_value snapshot columns)
+    delta_s = serializers.FloatField(source="delta_s_value", read_only=True)
+    stance_centrism = serializers.FloatField(
+        source="stance_centrism_value",
+        read_only=True,
+    )
     pre_question_map = serializers.SerializerMethodField()
 
     def get_s_post(self, obj):
@@ -536,7 +655,159 @@ class PostDialogueResponseOutputSerializer(serializers.ModelSerializer):
             "opponent_judgment",
             "post_open_comprehension", "post_open_feedback",
             "discomfort_flag", "consent_confirmed",
-            "s_post", "pre_question_map",
+            "s_pre", "s_post", "delta_s", "stance_centrism",
+            "pre_question_map",
             "created_at",
         ]
         read_only_fields = fields
+
+
+class AccountListSerializer(serializers.ModelSerializer):
+    """帳號管理清單／回傳用（唯讀）。is_researcher 由「研究者」Group 推導。"""
+
+    is_researcher = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "username",
+            "is_active",
+            "is_researcher",
+            "is_superuser",
+            "last_login",
+            "date_joined",
+        ]
+        read_only_fields = fields
+
+    def get_is_researcher(self, obj):
+        return any(g.name == RESEARCHER_GROUP_NAME for g in obj.groups.all())
+
+
+class AccountCreateSerializer(serializers.Serializer):
+    username = serializers.CharField(max_length=150, validators=[UnicodeUsernameValidator()])
+    password = serializers.CharField(write_only=True)
+    is_researcher = serializers.BooleanField(required=False, default=False)
+
+    def validate_username(self, value):
+        if User.objects.filter(username=value).exists():
+            raise serializers.ValidationError("這個帳號名稱已經有人用了。")
+        return value
+
+    def validate_password(self, value):
+        try:
+            dj_validate_password(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(list(exc.messages))
+        return value
+
+    def create(self, validated_data):
+        is_researcher = validated_data.pop("is_researcher", False)
+        user = User.objects.create_user(
+            username=validated_data["username"],
+            password=validated_data["password"],
+        )
+        if is_researcher:
+            group, _ = Group.objects.get_or_create(name=RESEARCHER_GROUP_NAME)
+            user.groups.add(group)  # signal 會把 is_staff 設成 True
+        return user
+
+
+class AccountUpdateSerializer(serializers.Serializer):
+    is_active = serializers.BooleanField(required=False)
+    is_researcher = serializers.BooleanField(required=False)
+
+
+class PasswordResetSerializer(serializers.Serializer):
+    password = serializers.CharField(write_only=True)
+
+    def validate_password(self, value):
+        try:
+            dj_validate_password(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(list(exc.messages))
+        return value
+
+
+class PlatformDisplaySettingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PlatformDisplaySetting
+        fields = [
+            "participant_entry_mode",
+            "researcher_entry_mode",
+            "match_fallback_timeout_minutes",
+            "updated_at",
+        ]
+        read_only_fields = ["updated_at"]
+
+    def validate_match_fallback_timeout_minutes(self, value):
+        if not 1 <= value <= 120:
+            raise serializers.ValidationError("等待時間需介於 1 到 120 分鐘。")
+        return value
+
+
+class TopicDisplayOverrideSerializer(serializers.Serializer):
+    """單一議題的顯示覆寫。四個欄位都選填；門檻傳 null＝還原成程式碼預設值。
+
+    門檻驗證必須看「套用後的實際結果」而不是只看這次送來的欄位：只送
+    support=3.0 但目前 oppose 是 3.5 的話，合起來是不合法的，得擋下來。
+    """
+
+    visible_to_participant = serializers.BooleanField(required=False)
+    visible_to_researcher = serializers.BooleanField(required=False)
+    support_threshold = serializers.FloatField(required=False, allow_null=True)
+    oppose_threshold = serializers.FloatField(required=False, allow_null=True)
+
+    def validate(self, attrs):
+        from .display_settings import default_stance_thresholds, get_stance_thresholds
+
+        topic_id = self.context["topic_id"]
+        survey_config = get_dialogue_survey(topic_id) or {}
+        scale_config = survey_config.get("scale", {})
+        scale_min = float(scale_config.get("min", 1))
+        scale_max = float(scale_config.get("max", 7))
+
+        current_support, current_oppose = get_stance_thresholds(topic_id=topic_id)
+        default_support, default_oppose = default_stance_thresholds(topic_id=topic_id)
+
+        def resolve(field, current, default):
+            if field not in attrs:
+                return current
+            value = attrs[field]
+            return default if value is None else float(value)
+
+        support = resolve("support_threshold", current_support, default_support)
+        oppose = resolve("oppose_threshold", current_oppose, default_oppose)
+
+        for label, value in (("支持門檻", support), ("反對門檻", oppose)):
+            if not scale_min <= value <= scale_max:
+                raise serializers.ValidationError(
+                    f"{label}需介於 {scale_min} 到 {scale_max} 之間。"
+                )
+
+        if oppose >= support:
+            raise serializers.ValidationError("反對門檻必須小於支持門檻。")
+
+        return attrs
+
+
+class DialogueEntrySerializer(serializers.Serializer):
+    """混合入口的輸入。
+
+    刻意不收 topic_title / topic_description / user_initial_argument——
+    那些一律由後端從 TOPIC_CONFIGS 與問卷 Q9 補齊，少一組可被客戶端
+    竄改的輸入。
+    """
+
+    topic_id = serializers.IntegerField()
+    survey_answers = serializers.DictField(
+        child=serializers.IntegerField(min_value=1, max_value=7),
+    )
+    survey_open_answers = serializers.DictField(
+        child=serializers.CharField(
+            allow_blank=True,
+            trim_whitespace=False,
+            max_length=2000,
+        ),
+        required=False,
+    )

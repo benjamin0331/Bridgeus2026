@@ -44,6 +44,23 @@ urlpatterns = [
         views.KnowledgeBaseConversationDetailView.as_view(),
     ),
     path('summary/videos/', views.VideoRecommendationListView.as_view()),
+    # 研究者專用：知識庫影片管理面板（前端設定頁）
+    path(
+        'summary/videos/admin/',
+        views.VideoRecommendationAdminListCreateView.as_view(),
+    ),
+    path(
+        'summary/videos/admin/<int:pk>/',
+        views.VideoRecommendationAdminDetailView.as_view(),
+    ),
+    path('accounts/', views.AccountListCreateView.as_view()),
+    path('accounts/<int:pk>/', views.AccountDetailView.as_view()),
+    path('accounts/<int:pk>/reset-password/', views.AccountPasswordResetView.as_view()),
+    path('settings/display/', views.DisplaySettingsView.as_view()),
+    path(
+        'settings/display/topics/<int:topic_id>/',
+        views.DisplaySettingsTopicView.as_view(),
+    ),
     path('dialogue/topics/', views.DialogueTopicListView.as_view()),
     path('dialogue/topics/trending/', views.DialogueTopicTrendingView.as_view()),
     path(
@@ -54,6 +71,8 @@ urlpatterns = [
         'dialogue/topics/<int:topic_id>/stance-profile/',
         views.DialogueStanceProfileView.as_view(),
     ),
+    path('dialogue/entry/', views.DialogueEntryView.as_view()),
+    path('dialogue/entry/fallback/', views.DialogueEntryFallbackView.as_view()),
     path('dialogue/sessions/', views.DialogueSessionCreateView.as_view()),
     path(
         'dialogue/sessions/latest/',
@@ -78,6 +97,7 @@ urlpatterns = [
     path('matching/join/', views.MatchingJoinView.as_view()),
     path('matching/status/', views.MatchingStatusView.as_view()),
     path('matching/cancel/', views.MatchingCancelView.as_view()),
+    path('matching/godot-survey/', views.GodotSurveyView.as_view()),
     path(
         'matching/rooms/<str:room_id>/messages/',
         views.MatchingRoomMessagesView.as_view(),
@@ -110,12 +130,15 @@ urlpatterns = [
         'platform-feedback/',
         views.PlatformFeedbackView.as_view(),
     ),
-    path('guest/', views.GuestLoginView.as_view()),
+    path('message-reactions/', views.MessageReactionView.as_view()),
     path('issues/', views.IssueListCreateView.as_view()),
+    path('me/', views.MeView.as_view()),
     path('titles/me/', views.TitleMeView.as_view()),
     path(
         'issues/<int:issue_id>/reactions/',
         views.IssueReactionsView.as_view(),
     ),
+    path('godot/tickets/', views.GodotTicketIssueView.as_view()),
+    path('godot/tickets/redeem/', views.GodotTicketRedeemView.as_view()),
     path('godot/match-rooms/', views.GodotMatchRoomView.as_view()),
 ]
