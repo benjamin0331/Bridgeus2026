@@ -139,7 +139,7 @@ class AIConversationSerializer(serializers.ModelSerializer):
 
 
 class MessageReactionSerializer(serializers.Serializer):
-    """Like/dislike an opponent message; value=0 removes the reaction."""
+    """讚/倒讚 on an opponent's message. value 0 = remove the reaction."""
 
     target_type = serializers.ChoiceField(choices=["ai", "match"])
     target_id = serializers.IntegerField(min_value=1)
@@ -296,6 +296,27 @@ class MatchingStateSerializer(serializers.Serializer):
     presence = serializers.JSONField(required=False, allow_null=True)
     absence_deadline = serializers.DateTimeField(required=False, allow_null=True)
     fallback_offer = serializers.JSONField(required=False, allow_null=True)
+    binding_source = serializers.CharField(
+        max_length=16, required=False, allow_null=True
+    )
+    survey_required = serializers.BooleanField(required=False)
+    survey_deadline = serializers.DateTimeField(required=False, allow_null=True)
+    partner_state = serializers.CharField(
+        max_length=16, required=False, allow_null=True
+    )
+    binding_cancel_reason = serializers.CharField(
+        max_length=32, required=False, allow_null=True
+    )
+
+
+class GodotSurveySerializer(serializers.Serializer):
+    """Godot 綁定房的前測問卷。不含 restart_existing_match——這條路徑不排隊。"""
+
+    topic_id = serializers.IntegerField()
+    survey_answers = serializers.DictField(child=serializers.IntegerField())
+    survey_open_answers = serializers.DictField(
+        child=serializers.CharField(allow_blank=True), required=False, default=dict
+    )
 
 
 class MatchMessageSerializer(serializers.ModelSerializer):
@@ -534,6 +555,7 @@ class PlatformFeedbackOutputSerializer(serializers.ModelSerializer):
 
 class PostDialogueResponseOutputSerializer(serializers.ModelSerializer):
     s_post = serializers.SerializerMethodField()
+    # Derived stance metrics (aliased from the stored *_value snapshot columns)
     delta_s = serializers.FloatField(source="delta_s_value", read_only=True)
     stance_centrism = serializers.FloatField(
         source="stance_centrism_value",

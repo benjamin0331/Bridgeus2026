@@ -8,7 +8,12 @@ behaviour at chunk boundaries, which is where a naive implementation breaks.
 
 import pytest
 
-from apps.matching.services.ai_agent import ReplyStreamGate
+from apps.matching.services.ai_agent import (
+    _JUDGMENT_LEAK_PATTERNS,
+    ReplyStreamGate,
+    detect_judgment_leak,
+    salvage_reply,
+)
 
 _JUDGMENT_BODY = (
     "使用者在收斂到成本這個子問題。判定為「收斂」,"
@@ -217,3 +222,205 @@ def test_gate_holds_back_short_buffer_until_more_arrives():
     tail, ok = gate.finish()
     assert ok is True
     assert tail == "核電"
+
+
+# ═══════════════════════════════════════════════════════════
+# In-reply judgment language (second leak shape)
+#
+# The tag boundary holds, but the model writes judgment vocabulary *inside*
+# <reply>. Tag parsing cannot see this; only the keyword check can.
+# ═══════════════════════════════════════════════════════════
+
+# The reported case, verbatim from the participant's screen.
+REPORTED_LEAK_REPLY = (
+    "內部判斷：使用者這一輪是在開啟新方向——提供了一段具體的政策現況背景，"
+    "等待我回應。 這個現況其實說明了一件事：台灣的核電政策一直在「政治可行性」"
+    "和「現實需求」之間拉扯，但核二、核三被評估為「具再運轉可行性」，並不等於"
+    "「安全無虞可以直接重啟」——這只是技術評估的第一步，後面還有自主安全檢查、"
+    "再運轉計畫審查，以及最根本的問題：核廢料的最終處置場址至今仍沒有著落。 "
+    "政策轉彎本身不能替核廢料問題解套。"
+)
+REPORTED_LEAK_SALVAGED_PREFIX = "這個現況其實說明了一件事"
+
+
+def _wrap(reply: str) -> str:
+    return f"<judgment>收斂|E|測試</judgment><reply>{reply}</reply>"
+
+
+def test_reported_in_reply_leak_is_rejected():
+    gate = ReplyStreamGate()
+    gate.feed(_wrap(REPORTED_LEAK_REPLY))
+    tail, ok = gate.finish()
+
+    assert ok is False
+    assert tail == ""                       # nothing emitted even on the tail
+    assert gate.leak_pattern == "內部判斷"    # first pattern in the text
+    assert gate.reply == REPORTED_LEAK_REPLY  # kept intact for salvage
+
+
+def test_type_name_in_reply_is_rejected():
+    gate = ReplyStreamGate()
+    gate.feed(_wrap("這一輪我採用承接深化型,直接給你我的判斷:核廢料處置確實無解。"))
+    _, ok = gate.finish()
+    assert ok is False
+    assert gate.leak_pattern == "強制使用" or gate.leak_pattern == "承接深化型"
+
+
+@pytest.mark.parametrize("pattern", _JUDGMENT_LEAK_PATTERNS)
+def test_every_leak_pattern_is_detected(pattern):
+    """Each entry in the list must actually be caught end-to-end."""
+    gate = ReplyStreamGate()
+    gate.feed(_wrap(f"核電的優勢是低碳穩定。{pattern}。這是正文的其他部分。"))
+    tail, ok = gate.finish()
+
+    assert ok is False
+    assert tail == ""
+    assert gate.leak_pattern is not None
+    assert gate.leak_pattern in pattern or pattern in gate.leak_pattern
+
+
+@pytest.mark.parametrize("pattern", _JUDGMENT_LEAK_PATTERNS)
+def test_detect_judgment_leak_returns_the_hit(pattern):
+    assert detect_judgment_leak(f"前綴{pattern}後綴") is not None
+
+
+def test_clean_reply_passes():
+    gate = ReplyStreamGate()
+    gate.feed(_wrap(EXPECTED_REPLY))
+    tail, ok = gate.finish()
+    assert ok is True
+    assert gate.leak_pattern is None
+    assert tail == ""       # already emitted during feed
+    assert gate.reply == EXPECTED_REPLY
+
+
+# ── 5b: false-positive regression corpus ────────────────────────────────────
+
+def _load_live_reply_samples():
+    import json
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent / "fixtures" / "live_reply_samples.json"
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle)["samples"]
+
+
+# Captured before the live corpus existed. Kept in code because the JSON file is
+# regenerated on every live run — these three must survive that.
+SEED_REPLY_SAMPLES = [
+    {
+        "source": "api_aiconversation id=1 (2026-06-24)",
+        "reply": (
+            "好，這場對話就到這裡。\n\n"
+            "你對核電的疑慮是真實的，核廢料處理和安全風險確實是支持核電的一方"
+            "必須正面面對的問題，不是能輕易帶過的。我的立場是核電在台灣當前的"
+            "能源轉型中仍有其位置，但這不代表反對核電的考量沒有道理。\n\n"
+            "如果之後有機會繼續討論，歡迎再來。"
+        ),
+    },
+    {
+        "source": "prefill probe 2026-08-01",
+        "reply": (
+            "核電的成本問題很複雜：建造成本高且工期長，但運營後的邊際發電成本"
+            "相對低廉，這兩個數字常常被分開引用來支持不同結論。"
+        ),
+    },
+    {
+        "source": "salvageable body of the reported in-reply leak",
+        "reply": (
+            "這個現況其實說明了一件事：台灣的核電政策一直在「政治可行性」和"
+            "「現實需求」之間拉扯，但核二、核三被評估為「具再運轉可行性」，"
+            "並不等於「安全無虞可以直接重啟」——這只是技術評估的第一步，"
+            "後面還有自主安全檢查、再運轉計畫審查，以及最根本的問題："
+            "核廢料的最終處置場址至今仍沒有著落。 政策轉彎本身不能替核廢料"
+            "問題解套。"
+        ),
+    },
+]
+
+LIVE_REPLY_SAMPLES = SEED_REPLY_SAMPLES + _load_live_reply_samples()
+
+
+def test_live_reply_corpus_is_not_empty():
+    """Guards against the corpus silently emptying and the check below passing
+    for the wrong reason."""
+    assert len(LIVE_REPLY_SAMPLES) >= 25
+
+
+@pytest.mark.parametrize(
+    "sample",
+    LIVE_REPLY_SAMPLES,
+    ids=[s["source"] for s in LIVE_REPLY_SAMPLES],
+)
+def test_no_false_positive_on_real_replies(sample):
+    """Real replies participants legitimately saw must never be blocked.
+
+    A false positive is worse than the bug: it turns a good turn into an error
+    message. If this fails, report the pattern and the sentence — do not widen
+    the sentence or narrow the pattern list without deciding that deliberately.
+    """
+    hit = detect_judgment_leak(sample["reply"])
+    assert hit is None, (
+        f"false positive: pattern {hit!r} matched a legitimate reply from "
+        f"{sample['source']!r}\n---\n{sample['reply']}"
+    )
+
+
+def test_no_false_positive_on_ordinary_nuclear_debate_prose():
+    """Hand-written sentences that sit close to the pattern vocabulary without
+    being judgment language."""
+    benign = [
+        "核電的成本要看你把除役和最終處置算不算進去。",
+        "你判斷的依據是什麼？我想知道你用哪些數字。",
+        "這個決定本輪立法院會期應該不會處理完。",
+        "使用者付費的原則在電價上其實一直沒有落實。",
+        "德國的案例說明了一件事：廢核之後的替代方案必須先到位。",
+        "我承認我的立場有弱點，核廢料的最終處置確實還沒有解答。",
+        "我們可以換個方向討論，談談電網韌性。",
+        "深化能源轉型的討論比爭論單一技術更有意義。",
+    ]
+    for sentence in benign:
+        assert detect_judgment_leak(sentence) is None, sentence
+
+
+# ── 5c: salvage ─────────────────────────────────────────────────────────────
+
+def test_salvage_recovers_body_after_judgment_sentence():
+    salvaged = salvage_reply(REPORTED_LEAK_REPLY)
+
+    assert salvaged is not None
+    assert salvaged.startswith(REPORTED_LEAK_SALVAGED_PREFIX)
+    assert detect_judgment_leak(salvaged) is None
+    assert len(salvaged) >= 40
+    assert "內部判斷" not in salvaged
+    assert "使用者這一輪" not in salvaged
+    assert "開啟新方向" not in salvaged
+
+
+def test_salvage_returns_none_when_everything_is_judgment():
+    text = (
+        "內部判斷：使用者這一輪是在開啟新方向。"
+        "本輪強制使用承接深化型(E)。判定為「收斂」。"
+    )
+    assert salvage_reply(text) is None
+
+
+def test_salvage_returns_none_when_remainder_too_short():
+    assert salvage_reply("內部判斷：這是判定。太短了。") is None
+
+
+def test_salvage_returns_none_without_sentence_boundary():
+    assert salvage_reply("內部判斷：使用者這一輪是在開啟新方向而且沒有句號") is None
+
+
+def test_salvage_leaves_clean_text_recoverable():
+    """A clean reply is never fed to salvage in production, but if it were, the
+    function must not corrupt it into something misleading."""
+    salvaged = salvage_reply(
+        "核電的優勢是低碳穩定，不是便宜。"
+        "真正的爭點在於核廢料的最終處置場址至今仍沒有著落，"
+        "而這件事不會因為機組本身通過安全檢查就自動獲得解決。"
+    )
+    assert salvaged is not None
+    assert salvaged.startswith("真正的爭點")
+    assert detect_judgment_leak(salvaged) is None

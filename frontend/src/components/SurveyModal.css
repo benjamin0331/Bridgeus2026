@@ -47,6 +47,18 @@
   line-height: 1.5;
 }
 
+.survey-countdown {
+  display: inline-block;
+  margin-bottom: 25px;
+  font-size: 13px;
+  font-weight: bold;
+  color: #676767;
+}
+
+.survey-countdown--urgent {
+  color: #b42318;
+}
+
 .survey-grid {
   display: flex;
   flex-direction: column;

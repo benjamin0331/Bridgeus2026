@@ -11,6 +11,16 @@ const _TOPIC_TRUNKS := {
 	"women_soldier": ["Entities/R_1", "Entities/R_2"],
 }
 var _occupancy := {}   # trunk_path:String -> peer_id:int（僅 server 使用）
+var _matching_topics := {}   # topic:String -> true，建房 HTTP 在途中；防插隊與重入
+var _peer_users := {}   # peer_id:int -> 後端 user_id:int（僅 server 使用，不同步——
+                        # 身份的真值只能放 server；任何 client 可寫的同步屬性都可冒充）
+var _ticket := ""       # client 端：join 前向宿主頁拉到的入場券，連上後遞給 server
+var _redeem_pending := {}   # peer_id -> session 序號；兌換 HTTP 在途中。
+                            # 節點要等 HTTP 回來才生，光靠 get_node_or_null 擋不住
+                            # 同幀連發（後端允許一人同時持有多張有效券）。
+var _redeem_seq := 0        # 單調遞增；用來分辨「同一個 peer id 的不同連線階段」——
+                            # 斷線後新 peer 可能拿到同一個 id，沒有這個序號的話
+                            # 上一位的兌換結果會被寫成新來者的身份。
 var _title_ids: Array = []   # 頭銜下拉選單 index → 後端 title_id（0 = 假頭銜，不回寫後端）
 
 @onready var host_btn = $CanvasLayer/UI_Root/HostButton
@@ -26,6 +36,7 @@ var _title_ids: Array = []   # 頭銜下拉選單 index → 後端 title_id（0 
 func _ready():
 	_resolve_connection_settings()
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
+	multiplayer.connection_failed.connect(_on_connection_failed)
 
 	# 常駐 headless server（見 godot-web-deployment-spec.md §4）：只跑連線與配對邏輯，
 	# 不代表任何玩家、不生自己的身體、不叫身份交接（沒有 window 可讀、也沒有真人要登入）。
@@ -47,20 +58,12 @@ func _ready():
 	if OS.has_feature("web"):
 		host_btn.hide()
 
-	# 身份交接：優先用主功能登入的真 JWT（window.bridgeus_token，見 Backend.gd）。
-	# 桌面開發、或還沒從主功能進來時，acquire_token_from_host() 回 false，
-	# 退回訪客登入方便本機測試——純測試用，不是正式使用者，正式環境不會走到這條。
+	# 身份交接：主功能登入的 JWT（window.bridgeus_token）只給 client 自己打
+	# 議題/頭銜 API 用。對遊戲 server 的身份識別走一次性入場券（見 _on_join_pressed）。
+	# 拿不到 token（桌面開發、直開 export）就沒有後端持久化功能，純本地遊玩——
+	# 訪客登入已移除，不會再產生無主帳號。
 	if Backend.acquire_token_from_host():
-		print("已取得主功能登入 token，user_id=%d" % Backend.user_id)
-		_fetch_banner_options()   # 真登入才有頭銜；訪客/桌面維持假頭銜
-	else:
-		# ponytail: 暱稱先寫死「訪客」；之後有登入輸入框再換成玩家輸入。
-		Backend.guest_login("訪客", func(code, data):
-			if code == 201:
-				print("訪客登入成功（測試用）")
-			else:
-				push_warning("訪客登入失敗 code=%d data=%s" % [code, data])
-		)
+		_fetch_banner_options()   # 真登入才有頭銜；本地模式維持假頭銜
 
 # --- 連線位址解析 -----------------------------------------------------------
 # 桌面開發固定連本機；Web 版優先讀主功能交接的 window.bridgeus_ws_url
@@ -81,6 +84,13 @@ func _is_dedicated_server() -> bool:
 	return "--server" in OS.get_cmdline_args() or DisplayServer.get_name() == "headless"
 
 func _start_dedicated_server() -> void:
+	# 正式部署漏設金鑰要顯性失敗。否則玩家連得上、走得動，只有配對時被告知
+	# 「請從主功能頁面進入」——那句話指向使用者不指向 ops，設定錯誤會被誤判成
+	# 使用者問題。dedicated server 沒有金鑰就等於不能建房，沒有存在意義。
+	if Backend.service_token == "":
+		push_error("[dedicated server] 未設定 GODOT_SERVICE_TOKEN，無法建立配對房間，拒絕啟動")
+		get_tree().quit(1)
+		return
 	var error = peer.create_server(DEFAULT_PORT)
 	if error != OK:
 		push_error("[dedicated server] 無法啟動 WebSocket 伺服器，錯誤碼：%d" % error)
@@ -132,33 +142,95 @@ func _on_host_pressed() -> void:
 
 # 2. Join 點擊方法
 func _on_join_pressed() -> void:
+	# Web 版必須先拿到入場券才連線；拿不到就別連——沒有券的連線只會被
+	# dedicated server 踢掉，先擋在這裡才能給出有用的錯誤訊息。
+	if OS.has_feature("web"):
+		join_btn.disabled = true
+		# 型別標註不是裝飾：request_entry_ticket() 是 coroutine，漏寫 await 會綁到
+		# Signal，宣告成 String 才會當場報錯而不是默默往下走。
+		var ticket: String = await Backend.request_entry_ticket()
+		join_btn.disabled = false
+		if ticket == "":
+			# 失敗原因對受試者要可行動——他看不到 console，「重新登入」跟
+			# 「叫研究員來」是不同的處置（見 Backend.last_ticket_error）。
+			match Backend.last_ticket_error:
+				"no_host":
+					_notify("請從主功能頁面進入大廳，不要直接開啟遊戲檔案")
+				"denied":
+					_notify("登入狀態已失效，請回主功能頁面重新登入")
+				"timeout":
+					_notify("連線逾時，請稍後再試；持續失敗請告知研究人員")
+				"busy":
+					_notify("正在取得入場券，請稍候")
+				_:
+					_notify("無法取得入場券，請從主功能頁面進入大廳並確認已登入")
+			return
+		_ticket = ticket
 	var error = peer.create_client(_ws_url)
 	if error != OK:
 		print("無法連接 WebSocket，錯誤碼：", error)
+		_ticket = ""   # 用完即丟，跟流程其他地方一致——連不上就別留著半用的券
+		_notify("無法建立連線，請稍後再試")
 		return
 
 	multiplayer.multiplayer_peer = peer
 	print("正在嘗試連線到：", _ws_url)
 	hide_buttons()
 
-	# 等真正握手完成（connected_to_server 訊號）再申請生身體，取代固定 0.2s
+	# 等真正握手完成（connected_to_server 訊號）再遞券申請生身體，取代固定 0.2s
 	# 猜測值——真實網路延遲（尤其 Cloudflare Tunnel 代理）下 200ms 不一定夠。
 	multiplayer.connected_to_server.connect(_on_connected_to_server, CONNECT_ONE_SHOT)
 
 func _on_connected_to_server() -> void:
-	var my_id = multiplayer.get_unique_id()
-	request_spawn.rpc_id(1, my_id)
+	# 遞券給 server 換身份＋身體。桌面開發連本機 host 時 _ticket 是空字串，
+	# server 端（無服務金鑰的本機模式）會放行、無身份 spawn（見 submit_ticket）。
+	submit_ticket.rpc_id(1, _ticket)
+	_ticket = ""   # 一次性，用掉就丟
 	# 等身體生出來後，向所有人索取已提交的議題，補上「我加入前就貼出」的那些。
-	# （這段 0.2s 不是握手等待，是給 MultiplayerSpawner 初始複製一點時間，維持原樣。）
+	# （這段 0.2s 不是握手等待，是給 MultiplayerSpawner 初始複製一點時間。
+	#   正式環境 spawn 前多了一趟 server→Django 的兌換 HTTP（本機 <50ms），
+	#   仍在餘裕內；若實測晚到，議題同步本來就有 request_issue_sync 補救。）
 	await get_tree().create_timer(0.2).timeout
 	request_issue_sync.rpc()
 
-# 3. 遠端申請角色生成的傳送門（只有 Server 1 號會執行它）
-@rpc("any_peer", "call_local")
-func request_spawn(id):
-	if multiplayer.is_server():
-		print("Server 收到申請！準備幫玩家生成網路 ID: ", id)
+# 3. 遞券申請生成（只有 server 會處理）。取代舊的 request_spawn(id)——那個版本
+#    信任 client 自報的 id，可以冒名或洗版；現在 id 一律取 get_remote_sender_id()，
+#    身份一律由券兌換而來，client 沒有任何可自報的欄位。
+@rpc("any_peer", "reliable")
+func submit_ticket(ticket: String) -> void:
+	if not multiplayer.is_server():
+		return
+	var id = multiplayer.get_remote_sender_id()
+	if get_node_or_null(str(id)) != null or _redeem_pending.has(id):
+		return   # 已有身體或兌換在途中，防重複——同一幀連送兩張有效券不能兩次都通過
+	# 本機開發 host（沒有服務金鑰）：無身份 spawn，純本地遊玩。
+	# 建房需要真實 user_id，_peer_users 沒有這個 peer → 坐木樁會被拒，正確。
+	if Backend.service_token == "":
 		_spawn_player(id)
+		return
+	# 正式（dedicated server）：券兌換成功才有身體，失敗就踢。
+	# session 序號防兩種競態：(1) 同一 peer 連送多張券導致重複 spawn——已被
+	# 上面的 _redeem_pending 擋住；(2) peer 斷線後同一個 id 被新來者重用，
+	# 舊那張券的兌換結果晚回來時不能寫成新來者的身份（見欄位宣告處註解）。
+	_redeem_seq += 1
+	var my_seq = _redeem_seq
+	_redeem_pending[id] = my_seq
+	Backend.redeem_ticket(ticket, func(user_id):
+		# 這期間 peer 可能已斷線（項目被 _on_peer_disconnected 清掉），
+		# 或斷線後有新 peer 拿到同一個 id（序號已被換掉）——兩種都不能寫入。
+		if _redeem_pending.get(id) != my_seq:
+			return
+		_redeem_pending.erase(id)
+		if user_id <= 0:
+			if multiplayer.multiplayer_peer and id in multiplayer.get_peers():
+				multiplayer.multiplayer_peer.disconnect_peer(id)
+			return
+		# 兌換是非同步 HTTP，回來時 peer 可能已自己斷線——別替幽靈生身體。
+		if not (id in multiplayer.get_peers()):
+			return
+		_peer_users[id] = user_id
+		_spawn_player(id)
+	)
 
 # 4. 唯一的生成角色方法（由 Server 執行，Spawner 會自動空投給所有人）
 func _spawn_player(id):
@@ -194,6 +266,22 @@ func request_issue_sync():
 func hide_buttons():
 	host_btn.hide()
 	join_btn.hide()
+
+# 連不上時把入口還給玩家。沒有這段的話按鈕已經被 hide_buttons() 藏起來，
+# 玩家只剩重整一途——而重整要再付一次 WASM 冷啟動。
+func _on_connection_failed() -> void:
+	# 換一顆全新的 peer：舊的 socket 未必已回到 DISCONNECTED，沿用會讓下一次
+	# create_client 回 ERR_ALREADY_IN_USE。
+	multiplayer.multiplayer_peer = null
+	peer = WebSocketMultiplayerPeer.new()
+	# one-shot 只在訊號真的發出時才解除；連線失敗時它還掛著，不斷開的話
+	# 第二次按 Join 會重複連接。
+	if multiplayer.connected_to_server.is_connected(_on_connected_to_server):
+		multiplayer.connected_to_server.disconnect(_on_connected_to_server)
+	_ticket = ""
+	host_btn.visible = not OS.has_feature("web")
+	join_btn.show()
+	_notify("無法連線到伺服器，請稍後再試")
 
 # 空心跳：內容不重要，重點是「有資料在傳」讓代理層（Cloudflare）不判定閒置。
 @rpc("any_peer", "unreliable")
@@ -375,9 +463,22 @@ func request_unseat() -> void:
 
 # server-only：指派到第一個空木樁；已在座位者忽略；都滿則拒絕。
 func _do_seat(peer_id: int, topic: String) -> void:
+	# 先擋沒有資格的請求者，而不是等湊成一對才用 user_ids.has(0) 把兩個人一起退座——
+	# 那條路徑會連無辜的另一位一起趕走，等於讓不送券的 client 無限癱瘓配對。
+	if get_node_or_null(str(peer_id)) == null:
+		return   # 沒有身體（沒走過 submit_ticket）就沒有坐的資格，靜默忽略
+	if Backend.service_token != "" and not _peer_users.has(peer_id):
+		# 正式模式下沒有已驗證身份 → 明確拒絕請求者本人，不動別人的座位。
+		_seat_notify(peer_id, "配對需要正式登入身份，請從主功能頁面進入")
+		return
 	if _occupancy.values().has(peer_id):
 		return   # 不可同時佔兩個座位
 	var trunks: Array = _TOPIC_TRUNKS.get(topic, [])
+	if _matching_topics.has(topic):
+		# 這個議題正在建房（HTTP 在途）。此時讓人插隊坐上空出來的樁，會導致
+		# 回呼的座位驗證失敗、連帶把已經配對成功的另一位也退掉。擋在門口乾淨得多。
+		_seat_notify(peer_id, "這個議題正在配對中，請稍候再試")
+		return
 	var free_trunk := ""
 	for t in trunks:
 		if not _occupancy.has(t):
@@ -385,10 +486,7 @@ func _do_seat(peer_id: int, topic: String) -> void:
 			break
 	if free_trunk == "":
 		# rpc_id 對自己(host)不會本地執行 → 目標是自己時直接呼叫。
-		if peer_id == multiplayer.get_unique_id():
-			seat_denied("位置已滿")
-		else:
-			seat_denied.rpc_id(peer_id, "位置已滿")
+		_seat_notify(peer_id, "位置已滿")
 		return
 	_occupancy[free_trunk] = peer_id
 	apply_seat.rpc(peer_id, free_trunk)
@@ -398,23 +496,94 @@ func _do_seat(peer_id: int, topic: String) -> void:
 		if _occupancy.has(t):
 			occupants.append(_occupancy[t])
 	if occupants.size() == 2 and occupants[0] != occupants[1]:
-		# 後端只在 server 端呼叫一次（兩位都打會建兩間房）。傳的是後端 user_id
-		# （player.backend_user_id），不是 Godot peer_id——後端 match-rooms 端點
-		# 認 user_id，見 integration §3.3 與 Backend.gd request_topic_match。
-		var user_ids := []
+		_try_start_match(topic, occupants)
+
+# server-only：只送拒絕訊息，不動座位（用於還沒坐上就被擋下的請求）。
+# 順手擋掉已離線的 peer——rpc_id 給不存在的 peer 會在 server log 噴錯。
+func _seat_notify(pid: int, msg: String) -> void:
+	if pid == multiplayer.get_unique_id():
+		seat_denied(msg)
+	elif pid in multiplayer.get_peers():
+		seat_denied.rpc_id(pid, msg)
+
+# server-only：拒絕並退座一位玩家。配對的各種失敗路徑共用，
+# 免得「rpc_id 對自己不會本地執行」的分支寫三遍。
+func _seat_deny_and_unseat(pid: int, msg: String) -> void:
+	_seat_notify(pid, msg)
+	_do_unseat(pid)
+
+# server-only：兩根木樁都坐滿 → 驗證 → 標記在途 → 非同步建房。
+func _try_start_match(topic: String, occupants: Array) -> void:
+	# 後端只在 server 端呼叫一次（兩位都打會建兩間房）。user_id 一律取自
+	# server 端身份表 _peer_users——不讀 player 節點上的同步屬性（client 可寫
+	# 的同步屬性＝可冒充的身份，見 spec §D2）。
+	var user_ids := []
+	for pid in occupants:
+		user_ids.append(_peer_users.get(pid, 0))
+	# 縱深防禦第二道：主要防線已在 _do_seat 開頭擋掉沒身份的請求者，正常情況
+	# 不該走到這裡；留著是防本機開發模式（兩邊都沒身份仍會湊成一對）或任何漏網。
+	if user_ids.has(0):
+		# 正式環境走到這裡代表部署設定有問題（GODOT_SERVICE_TOKEN 未設或兌換失敗），
+		# 但玩家看到的訊息是「請重新登入」——會讓所有人白白重登。要留給 ops 一個信號。
+		push_warning("配對中止：peer 缺少已驗證身份 user_ids=%s" % [user_ids])
 		for pid in occupants:
-			var pl = get_node_or_null(str(pid))
-			if pl:
-				user_ids.append(pl.backend_user_id)
-		Backend.request_topic_match(topic, user_ids)
+			_seat_deny_and_unseat(pid, "配對需要正式登入身份，請從主功能頁面進入")
+		return
+	# 同一位使用者開兩個分頁會兌換成兩個 peer、同一個 user_id。後端會 400
+	# （user_ids 相同的檢查），但在這裡先擋，訊息才說得清楚（見 spec §7.1.1）。
+	if user_ids[0] == user_ids[1]:
 		for pid in occupants:
-			# rpc_id 對自己(host)不會本地執行 → 目標是自己時直接呼叫。
-			if pid == multiplayer.get_unique_id():
-				match_found()
-			else:
-				match_found.rpc_id(pid)
-		# 配對成功、交給後端導去網頁聊天室後，把這兩位的人物清掉、還原木樁。
-		_finish_match(topic, occupants)
+			_seat_deny_and_unseat(pid, "不能與自己配對，請關閉多餘的分頁")
+		return
+	_matching_topics[topic] = true
+	Backend.request_topic_match(topic, user_ids, _on_match_room_created.bind(topic, occupants))
+
+# server-only：建房 HTTP 回來。注意 Callable.bind() 是把參數接在**後面**，
+# 所以 request_topic_match 呼叫 callback.call(code, data) 之後，簽名是
+# (code, data, topic, occupants)。
+func _on_match_room_created(code: int, data: Dictionary, topic: String, occupants: Array) -> void:
+	# 注意：旗標不在這裡統一放掉。失敗路徑各自放，成功路徑要一路押到
+	# _finish_match 的 1.5 秒善後做完為止——那段期間座位還佔著，提早放掉
+	# 等於留一個窄版的同一個競態（有人斷線 → 第三人坐上 → 又觸發一次配對）。
+	if code != 200 and code != 201:
+		_matching_topics.erase(topic)
+		push_error("配對建房失敗 code=%d" % code)
+		for pid in occupants:
+			_seat_deny_and_unseat(pid, "配對建立失敗，請稍後再試")
+		return
+	var room_id: String = str(data.get("room_id", ""))
+	var topic_id: int = int(data.get("topic_id", 0))
+	if room_id == "" or topic_id <= 0:
+		# 2xx 但沒有房間資訊（舊版部署、代理攔截、契約改動）。不能往下走：
+		# _finish_match 會刪掉兩位的身體，玩家又回到沒有身體的空世界。
+		_matching_topics.erase(topic)
+		push_error("配對建房回應缺少 room_id/topic_id，視為失敗：%s" % [data])
+		for pid in occupants:
+			_seat_deny_and_unseat(pid, "配對建立失敗，請稍後再試")
+		return
+	# 座位重新驗證：HTTP 在途期間有人按取消或斷線的話，peer id 早就不代表座位了。
+	# 只有「現在誰坐在這個議題的樁上」才是真的。
+	var seated := []
+	for t in _TOPIC_TRUNKS[topic]:
+		if _occupancy.has(t):
+			seated.append(_occupancy[t])
+	for pid in occupants:
+		if not seated.has(pid):
+			# 這一對已經不成立。還坐著的那位退座重來，不要把他單方面送進房間。
+			_matching_topics.erase(topic)
+			for other in occupants:
+				if seated.has(other):
+					_seat_deny_and_unseat(other, "對方已取消配對，請重新選擇")
+			return
+	for pid in occupants:
+		# rpc_id 對自己(host)不會本地執行 → 目標是自己時直接呼叫。
+		if pid == multiplayer.get_unique_id():
+			match_found(topic_id, room_id)
+		elif pid in multiplayer.get_peers():
+			match_found.rpc_id(pid, topic_id, room_id)
+	# 配對成功、交給後端導去網頁聊天室後，把這兩位的人物清掉、還原木樁——旗標要
+	# 撐到那邊做完才放（見上方註解），所以這裡不 erase。
+	_finish_match(topic, occupants)
 
 # server-only：釋放該 peer 的座位。
 func _do_unseat(peer_id: int) -> void:
@@ -430,6 +599,8 @@ func _do_unseat(peer_id: int) -> void:
 
 func _on_peer_disconnected(id: int) -> void:
 	if multiplayer.is_server():
+		_peer_users.erase(id)   # 身份表跟著 peer 走；殘留會讓下一個拿到同 id 的人冒名
+		_redeem_pending.erase(id)   # 未決兌換也要跟著清；序號機制另外擋住晚到的回呼寫錯身份
 		_do_unseat(id)   # 等待中玩家斷線 → 釋放位子，別卡死配對
 		# 斷線（含直接關分頁——WS 連線只是被動掉線，沒有任何「離開」訊號）不會
 		# 自動清掉這個人的角色：MultiplayerSpawner 只有 server 端 queue_free()
@@ -442,13 +613,19 @@ func _on_peer_disconnected(id: int) -> void:
 # ponytail: 原型固定 2 人；正式版若要支援重連/回主世界，這裡再改成別的善後。
 func _finish_match(topic: String, peer_ids: Array) -> void:
 	await get_tree().create_timer(1.5).timeout
+	# 只清這兩位實際佔著的樁，不是整個議題的——這 1.5 秒內若有第三位玩家坐上
+	# 空出來的樁，無條件清空會把他的座位一起清掉（人還坐著、樁卻顯示是空的）。
 	for t in _TOPIC_TRUNKS[topic]:
-		_occupancy.erase(t)
-		clear_trunk.rpc(t)
+		if _occupancy.has(t) and peer_ids.has(_occupancy[t]):
+			_occupancy.erase(t)
+			clear_trunk.rpc(t)
 	for pid in peer_ids:
 		var p = get_node_or_null(str(pid))
 		if p:
 			p.queue_free()   # server free → MultiplayerSpawner 複製移除給所有 peer
+	# 善後做完才解除在途旗標——從建房 HTTP 送出到這裡，這個議題的座位一直
+	# 處於「已配對、待清理」的狀態，不該讓新的人插進來。
+	_matching_topics.erase(topic)
 
 @rpc("authority", "call_local", "reliable")
 func clear_trunk(trunk_path: String) -> void:
@@ -479,11 +656,24 @@ func apply_unseat(peer_id: int, trunk_path: String) -> void:
 	if peer_id == multiplayer.get_unique_id():
 		_show_waiting(false)
 
-# 只有配對到的兩位收到：關等待視窗、提示（真正跳轉聊天室由後端接手）。
+# 只有配對到的兩位收到：關等待視窗、通知宿主頁跳轉到配對聊天室。
+# topic_id/room_id 來自後端建房回應（server 轉發，client 不能自己編）。
 @rpc("authority", "reliable")
-func match_found() -> void:
+func match_found(topic_id: int, room_id: String) -> void:
 	_show_waiting(false)
-	_notify("配對成功，準備進入聊天室…")
+	_notify("配對成功，正在前往聊天室…")
+	if OS.has_feature("web") and topic_id > 0:
+		# 用 JSON.stringify 組 payload：room_id 是後端 uuid4().hex（僅 [0-9a-f]），
+		# 但不靠這個假設——經過序列化就不存在字串拼接的跳脫問題。
+		# targetOrigin 用當前 origin：iframe 與宿主頁同源（部署拓樸如此），
+		# 不用 '*'，訊息不會漏給其他來源的視窗。
+		var payload := JSON.stringify({
+			"type": "bridgeus_match",
+			"topic_id": topic_id,
+			"room_id": room_id,
+		})
+		JavaScriptBridge.eval(
+			"window.parent.postMessage(%s, window.location.origin)" % payload, true)
 
 @rpc("authority", "reliable")
 func seat_denied(msg: String) -> void:

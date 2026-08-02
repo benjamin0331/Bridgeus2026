@@ -116,29 +116,28 @@
 
 .message-reactions {
   display: flex;
-  gap: 6px;
+  gap: 0;
   align-self: flex-end;
   margin-bottom: 2px;
 }
 
 .reaction-btn {
   display: inline-flex;
-  width: 30px;
-  height: 30px;
   align-items: center;
   justify-content: center;
+  width: 28px;
+  height: 28px;
   padding: 0;
-  border: 1px solid transparent;
+  border: none;
   border-radius: 50%;
-  background-color: #f0f0f0;
+  background: transparent;
+  color: #9a9188;
   cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-  opacity: 0.55;
+  opacity: 0.4;
   transition:
     opacity 0.15s,
     background-color 0.15s,
-    border-color 0.15s,
+    color 0.15s,
     transform 0.1s;
 }
 
@@ -148,23 +147,40 @@
   opacity: 1;
 }
 
+/* 觸控裝置沒有 hover，上面那條「滑過才浮出」永遠不會觸發，按鈕會一直停在
+   0.4 的低對比狀態。這裡把靜止透明度拉高，讓手機/平板上看得見也點得到。 */
+@media (hover: none) {
+  .reaction-btn {
+    opacity: 0.75;
+  }
+}
+
 .reaction-btn:hover {
-  background-color: #e6e6e6;
-  transform: translateY(-1px);
+  background: rgba(0, 0, 0, 0.06);
+  color: #5c5449;
 }
 
-.reaction-btn.active.like {
-  border-color: #6f9a5f;
-  background-color: #e3efe0;
+.reaction-btn:active {
+  transform: scale(0.88);
 }
 
-.reaction-btn.active.dislike {
-  border-color: #b46a5c;
-  background-color: #f4e2df;
+.reaction-btn.like.active {
+  background: #e3efe0;
+  color: #4c7a3c;
+}
+
+.reaction-btn.dislike.active {
+  background: #f6e3e0;
+  color: #b05540;
 }
 
 .reaction-icon {
+  display: block;
   pointer-events: none;
+}
+
+.reaction-icon--down {
+  transform: rotate(180deg);
 }
 
 .message-user-info {
@@ -540,9 +556,61 @@
   line-height: 1.6;
 }
 
+.matching-status-notice {
+  margin: 4px auto 0;
+  width: min(100%, 760px);
+  color: #475467;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
 .chat-input-area {
   flex-shrink: 0;
   margin-bottom: 5px;
+}
+
+/* Input gate 系統提示列（3–5 次無效輸入）與冷卻倒數（≥6 次）。
+   刻意做成輸入框上方的細長條，而不是對話氣泡——它不是 AI 的發言，
+   也不佔對話輪數。 */
+.input-gate-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  padding: 10px 14px;
+  border: 1px solid #d8cfc2;
+  border-radius: 12px;
+  background-color: #faf6f0;
+  color: #5a4a3a;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.input-gate-notice.cooldown {
+  border-color: #d3c0a8;
+  background-color: #f6eee2;
+}
+
+.input-gate-notice-dismiss {
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  color: #7a6248;
+  font-size: 13px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* 相同 fallback 被重複觸發時就地累加，不新增氣泡。 */
+.message-repeat-count {
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background-color: rgba(0, 0, 0, 0.08);
+  color: #6b6b6b;
+  font-size: 12px;
+  vertical-align: middle;
 }
 
 .chat-input-wrapper {
@@ -948,6 +1016,55 @@
 .ai-end-dialogue-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* Agent typing indicator — the backend holds the whole reply until it has
+   passed the output-contract check, so there is a real gap before the first
+   chunk arrives. */
+.agent-thinking-bubble {
+  min-height: 1.4em;
+}
+
+.agent-typing {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+}
+
+.agent-typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: currentColor;
+  opacity: 0.35;
+  animation: agent-typing-blink 1.2s infinite ease-in-out;
+}
+
+.agent-typing-dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.agent-typing-dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes agent-typing-blink {
+  0%, 80%, 100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 0.9;
+    transform: translateY(-2px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-typing-dot {
+    animation: none;
+    opacity: 0.5;
+  }
 }
 
 .matching-fallback-offer {

@@ -11,10 +11,32 @@ function SurveyModal({
   isSubmitting = false,
   submitError = '',
   onSubmit,
+  deadline = null,
 }) {
   const navigate = useNavigate();
   const [selectedAnswers, setSelectedAnswers] = useState({});
   const [openAnswers, setOpenAnswers] = useState({});
+
+  // 只有 Godot 強制綁定的問卷有期限；一般入口不傳這個 prop，不顯示倒數。
+  // 歸零時前端不自己判定作廢——單一真值來源在後端（階段五的裁決），兩邊時鐘
+  // 不一致的話會出現「一方以為還有時間、一方已經作廢」。
+  const [remainingMs, setRemainingMs] = useState(null);
+
+  useEffect(() => {
+    if (!deadline) {
+      setRemainingMs(null);
+      return undefined;
+    }
+    const target = new Date(deadline).getTime();
+    if (Number.isNaN(target)) {
+      setRemainingMs(null);
+      return undefined;
+    }
+    const tick = () => setRemainingMs(Math.max(0, target - Date.now()));
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, [deadline]);
 
   const surveyTitle = survey?.title || '立場檢測問卷';
   const surveySubtitle = survey?.subtitle || '正在整理問卷內容...';
@@ -74,6 +96,12 @@ function SurveyModal({
         <div className="survey-header">
           <h2>{surveyTitle}</h2>
           <p>{surveySubtitle}</p>
+          {remainingMs !== null && (
+            <span className={remainingMs <= 60000 ? 'survey-countdown survey-countdown--urgent' : 'survey-countdown'}>
+              剩餘 {String(Math.floor(remainingMs / 60000)).padStart(2, '0')}:
+              {String(Math.floor((remainingMs % 60000) / 1000)).padStart(2, '0')}
+            </span>
+          )}
         </div>
 
         <div className="survey-grid">

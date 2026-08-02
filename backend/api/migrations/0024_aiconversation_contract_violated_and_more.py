@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('api', '0021_add_message_reactions_and_stance_metrics'),
+        ('api', '0023_remove_dialoguematch_match_user_a_score_between_1_and_7_and_more'),
     ]
 
     operations = [

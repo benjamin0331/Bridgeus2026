@@ -88,6 +88,7 @@ urlpatterns = [
     path('matching/join/', views.MatchingJoinView.as_view()),
     path('matching/status/', views.MatchingStatusView.as_view()),
     path('matching/cancel/', views.MatchingCancelView.as_view()),
+    path('matching/godot-survey/', views.GodotSurveyView.as_view()),
     path(
         'matching/rooms/<str:room_id>/messages/',
         views.MatchingRoomMessagesView.as_view(),
@@ -121,7 +122,6 @@ urlpatterns = [
         views.PlatformFeedbackView.as_view(),
     ),
     path('message-reactions/', views.MessageReactionView.as_view()),
-    path('guest/', views.GuestLoginView.as_view()),
     path('issues/', views.IssueListCreateView.as_view()),
     path('me/', views.MeView.as_view()),
     path('titles/me/', views.TitleMeView.as_view()),
@@ -129,5 +129,7 @@ urlpatterns = [
         'issues/<int:issue_id>/reactions/',
         views.IssueReactionsView.as_view(),
     ),
+    path('godot/tickets/', views.GodotTicketIssueView.as_view()),
+    path('godot/tickets/redeem/', views.GodotTicketRedeemView.as_view()),
     path('godot/match-rooms/', views.GodotMatchRoomView.as_view()),
 ]

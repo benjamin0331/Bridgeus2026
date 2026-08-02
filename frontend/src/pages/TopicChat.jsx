@@ -102,9 +102,24 @@ function mapHistoryToMessages(history, userName) {
       type: isAgent ? 'agent' : 'user',
       userName: isAgent ? 'BridgeUs' : userName,
       text: message.content,
+      // Only the AI reply (opponent) is reactable, and only once we know its
+      // AIConversation turn id.
       reactTarget: isAgent && turnId ? { type: 'ai', id: turnId } : null,
     };
   });
+}
+
+// 相同內容的系統／AI 訊息不再新增 DOM 節點，就地更新最後一則並附加計數。
+// 原本七則相同的 fallback 會被渲染成七個獨立氣泡；現在是一則加上「×7」。
+// 只比對最後一則：中間隔了使用者發言的重複提示是不同語境，應該分開呈現。
+function appendOrCoalesce(previousMessages, incoming) {
+  const last = previousMessages[previousMessages.length - 1];
+  if (last && last.type === incoming.type && last.text === incoming.text) {
+    const next = previousMessages.slice(0, -1);
+    next.push({ ...last, repeatCount: (last.repeatCount || 1) + 1 });
+    return next;
+  }
+  return [...previousMessages, incoming];
 }
 
 function formatTimestamp(value) {
@@ -210,11 +225,29 @@ function mapMatchMessagesToDisplay(messages, userId) {
       userName: isCurrentUser ? MATCH_SELF_NAME : MATCH_PARTNER_NAME,
       text: message.content,
       timestamp: message.created_at,
+      // Only the partner's messages are reactable.
       reactTarget: isCurrentUser
         ? null
         : { type: 'match', id: Number(message.id) },
     };
   });
+}
+
+function ThumbIcon({ down = false }) {
+  return (
+    <svg
+      className={`reaction-icon${down ? ' reaction-icon--down' : ''}`}
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      aria-hidden="true"
+    >
+      <path
+        fill="currentColor"
+        d="M2 21h3V9H2v12zm20-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L13.17 1 6.59 7.59C6.22 7.96 6 8.45 6 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1z"
+      />
+    </svg>
+  );
 }
 
 function MessageReactions({ target, value, onReact }) {
@@ -226,21 +259,21 @@ function MessageReactions({ target, value, onReact }) {
     <div className="message-reactions">
       <button
         type="button"
-        className={`reaction-btn ${value === 1 ? 'active like' : ''}`}
+        className={`reaction-btn like${value === 1 ? ' active' : ''}`}
         onClick={() => onReact(target, 1)}
-        aria-label="讚"
+        aria-label="Like"
         aria-pressed={value === 1}
       >
-        <span className="reaction-icon">👍</span>
+        <ThumbIcon />
       </button>
       <button
         type="button"
-        className={`reaction-btn ${value === -1 ? 'active dislike' : ''}`}
+        className={`reaction-btn dislike${value === -1 ? ' active' : ''}`}
         onClick={() => onReact(target, -1)}
-        aria-label="倒讚"
+        aria-label="Unlike"
         aria-pressed={value === -1}
       >
-        <span className="reaction-icon">👎</span>
+        <ThumbIcon down />
       </button>
     </div>
   );
@@ -283,15 +316,23 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const [aiStanceDrift, setAiStanceDrift] = useState(null);
   const [isSending, setIsSending] = useState(false);
   const [isAgentStreaming, setIsAgentStreaming] = useState(false);
+  const [isAgentThinking, setIsAgentThinking] = useState(false);
   const [isAiSendCoolingDown, setIsAiSendCoolingDown] = useState(false);
   const [chatError, setChatError] = useState('');
   const [isSessionRestoring, setIsSessionRestoring] = useState(false);
   const [pendingRestoredSession, setPendingRestoredSession] = useState(null);
+  // Input gate：系統提示列（3–5 次無效輸入）與冷卻倒數（≥6 次）。
+  const [inputGateNotice, setInputGateNotice] = useState(null);
+  const [cooldownSeconds, setCooldownSeconds] = useState(0);
 
   const [matchingState, setMatchingState] = useState(null);
   const [isMatchingStateLoading, setIsMatchingStateLoading] = useState(isMatchingMode);
   const [isMatchingActionLoading, setIsMatchingActionLoading] = useState(false);
   const [matchingError, setMatchingError] = useState('');
+  // Godot 房作廢的通知。刻意不重用 matchingError：那個會被輪詢裡的
+  // 「status 不是 matching 就清空」邏輯抹掉，而且它的渲染條件排除了
+  // status === 'matched'——倖存者若立刻被重新配對就永遠看不到訊息。
+  const [bindingNotice, setBindingNotice] = useState('');
   const [matchMessages, setMatchMessages] = useState([]);
   const [matchStanceDrift, setMatchStanceDrift] = useState(null);
   const [semanticTreePayload, setSemanticTreePayload] = useState(null);
@@ -308,6 +349,8 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const [showScrollToBottomButton, setShowScrollToBottomButton] = useState(false);
 
   const [isRightPanelOpen, setIsRightPanelOpen] = useState(false);
+
+  // 讚/倒讚 on opponents' messages, keyed by `${type}:${id}` → 1 | -1.
   const [reactions, setReactions] = useState({});
 
   const messagesContainerRef = useRef(null);
@@ -335,11 +378,18 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const currentIssue = issues?.find((item) => item.id === parseInt(id, 10));
   const displayUserName = user?.name || '公民';
   const matchPartnerName = MATCH_PARTNER_NAME;
+  // Godot 綁定房：自己填完問卷了（survey_required 是 false），但對方還沒填
+  // （partner_state 是 pending）——不能直接放行進聊天室，要先擋在等待畫面。
+  const isGodotWaitingForPartner =
+    matchingState?.binding_source === 'godot' &&
+    matchingState?.survey_required === false &&
+    matchingState?.partner_state === 'pending';
   const isMatchChatReady = Boolean(
     isMatchingMode &&
       !showSurvey &&
       matchingState?.status === 'matched' &&
-      matchingState?.room_id,
+      matchingState?.room_id &&
+      !isGodotWaitingForPartner,
   );
   const matchMessageIdsSignature = useMemo(
     () => matchMessages.map((message) => message.id).filter(Boolean).join(','),
@@ -408,6 +458,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
 
     const key = reactionKey(target);
     const previousValue = reactionsRef.current[key] || 0;
+    // 再按一次同一顆＝取消（toggle）。
     const nextValue = previousValue === clickedValue ? 0 : clickedValue;
     const optimistic = { ...reactionsRef.current };
     if (nextValue === 0) {
@@ -425,6 +476,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
         value: nextValue,
       });
     } catch {
+      // 失敗就回滾。
       const reverted = { ...reactionsRef.current };
       if (previousValue === 0) {
         delete reverted[key];
@@ -623,6 +675,21 @@ function TopicChat({ user, issues, issuesLoaded }) {
         return;
       }
 
+      // Input gate。H-H 一律走系統提示列——被攔截的訊息不轉發給對方，
+      // 也不該在自己這邊偽造成一則已送出的對話訊息。
+      if (data.type === 'input_blocked' || data.type === 'rate_limited') {
+        setInputGateNotice({ id: `gate-${Date.now()}`, message: data.content });
+        setMatchChatError('');
+        return;
+      }
+
+      if (data.type === 'input_cooldown') {
+        setInputGateNotice(null);
+        setCooldownSeconds(data.seconds || 0);
+        setMatchChatError('');
+        return;
+      }
+
       if (data.type === 'error') {
         setMatchChatError(data.content || '配對聊天室連線發生錯誤。');
       }
@@ -645,6 +712,18 @@ function TopicChat({ user, issues, issuesLoaded }) {
   useEffect(() => {
     isSendingRef.current = isSending;
   }, [isSending]);
+
+  // 冷卻倒數。計數在後端，這裡只負責把輸入框停用到倒數結束；
+  // 重新整理頁面不會繞過冷卻，後端仍會擋下第一則訊息並重推 input_cooldown。
+  useEffect(() => {
+    if (cooldownSeconds <= 0) {
+      return undefined;
+    }
+    const timer = setInterval(() => {
+      setCooldownSeconds((seconds) => (seconds <= 1 ? 0 : seconds - 1));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [cooldownSeconds]);
 
   useEffect(() => {
     isChatPageMountedRef.current = true;
@@ -701,9 +780,13 @@ function TopicChat({ user, issues, issuesLoaded }) {
   ]);
 
   useEffect(() => {
+    // Godot 綁定房在問卷期間仍要維持 room 追蹤：那段時間的輪詢同時是倒數的
+    // 時間來源、以及（階段五）判斷對方還在不在的心跳。一般入口維持原本行為
+    // ——問卷還沒送出前本來就還沒有房。
+    const keepRoom = !showSurvey || matchingState?.binding_source === 'godot';
     activeMatchRef.current = {
-      roomId: showSurvey ? null : matchingState?.room_id || null,
-      status: showSurvey ? null : matchingState?.status || null,
+      roomId: keepRoom ? matchingState?.room_id || null : null,
+      status: keepRoom ? matchingState?.status || null : null,
       topicId: Number(id),
     };
 
@@ -713,7 +796,13 @@ function TopicChat({ user, issues, issuesLoaded }) {
     if (matchingState?.status !== 'matching') {
       cancelQueueRequestSentRef.current = false;
     }
-  }, [id, matchingState?.room_id, matchingState?.status, showSurvey]);
+  }, [
+    id,
+    matchingState?.binding_source,
+    matchingState?.room_id,
+    matchingState?.status,
+    showSurvey,
+  ]);
 
   useEffect(() => {
     setSurvey(null);
@@ -855,7 +944,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
         const response = await api.get(`/api/matching/status/?topic_id=${id}`);
         if (!cancelled) {
           setMatchingState(response.data);
-          setShowSurvey(response.data.status === 'idle');
+          // Godot 綁定房：房已經建好（status 是 matched），但前測問卷還沒填，
+          // 所以不能只看 status === 'idle'——那個條件下 Godot 房永遠不會跳問卷。
+          setShowSurvey(
+            response.data.status === 'idle' || response.data.survey_required === true,
+          );
         }
       } catch (error) {
         if (!cancelled) {
@@ -1033,7 +1126,17 @@ function TopicChat({ user, issues, issuesLoaded }) {
   ]);
 
   useEffect(() => {
-    if (!isMatchingMode || matchingState?.status !== 'matching') {
+    // Godot 綁定房要一路輪詢到真的進聊天室為止，不能只在問卷開著時輪詢——
+    // 先送出問卷的那位 showSurvey 會變 false 但還在等對方，此時若停止輪詢，
+    // 他永遠不會知道對方填完了（房間 WS 與訊息輪詢都被 isMatchChatReady 擋著，
+    // 初次抓取的 effect 也不會重跑），只能手動重新整理。
+    // 這段輪詢同時也是階段五要用的存在訊號來源。
+    const isGodotPreChatPending =
+      matchingState?.binding_source === 'godot' && !isMatchChatReady;
+    if (!isMatchingMode) {
+      return undefined;
+    }
+    if (matchingState?.status !== 'matching' && !isGodotPreChatPending) {
       return undefined;
     }
 
@@ -1049,6 +1152,22 @@ function TopicChat({ user, issues, issuesLoaded }) {
         setMatchingState(response.data);
         if (response.data.status !== 'matching') {
           setMatchingError('');
+        }
+
+        // 房間被裁決作廢（對方退出或問卷逾時）。後端已經把還留著的人退回一般
+        // 模式（極端立場重新排隊、中立改走 AI），所以這裡只要收下新狀態並把
+        // 發生的事說清楚，不要自己決定下一步該去哪。
+        //
+        // binding_cancel_reason 是一次性訊號：只在裁決發生的那一次輪詢帶回來，
+        // 下一次就沒有了（後端那時已經換成使用者的新狀態）。所以必須在收到的
+        // 當下就反應，不能等之後再處理。
+        if (response.data.binding_cancel_reason) {
+          setShowSurvey(false);
+          setBindingNotice(
+            response.data.binding_cancel_reason === 'godot_partner_left'
+              ? '對方已退出配對，已為你轉回一般配對模式。'
+              : '前測問卷逾時，已為你轉回一般配對模式。',
+          );
         }
       } catch (error) {
         if (cancelled) {
@@ -1066,7 +1185,24 @@ function TopicChat({ user, issues, issuesLoaded }) {
       cancelled = true;
       window.clearInterval(pollTimer);
     };
-  }, [id, isMatchingMode, matchingState?.status]);
+  }, [
+    id,
+    isMatchChatReady,
+    isMatchingMode,
+    matchingState?.binding_source,
+    matchingState?.status,
+  ]);
+
+  useEffect(() => {
+    // 保險絲：問卷開著、但後端已經不認為這是「Godot 待填問卷」狀態時就關掉。
+    // 正常情況會由 binding_cancel_reason 的通知關閉；這裡是防止通知漏掉時
+    // 使用者卡在一份送出去只會被 409 拒絕的問卷前。
+    if (!showSurvey) return;
+    if (!matchingState) return;
+    if (matchingState.binding_source === 'godot') return;
+    if (matchingState.status === 'idle') return;   // 一般入口本來就該顯示問卷
+    setShowSurvey(false);
+  }, [matchingState, showSurvey]);
 
   useEffect(() => {
     if (!isMatchChatReady) {
@@ -1333,6 +1469,55 @@ function TopicChat({ user, issues, issuesLoaded }) {
     };
   }, [aiUserMessageIdsSignature, applySemanticTreePayload, isMatchingMode, isSending, sessionId]);
 
+  useEffect(() => {
+    if (isMatchingMode || !sessionId) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await api.get(
+          `/api/message-reactions/?target_type=ai&conversation_id=${encodeURIComponent(sessionId)}`,
+        );
+        if (!cancelled) {
+          mergeFetchedReactions(response.data?.reactions, 'ai');
+        }
+      } catch {
+        // Best-effort: reactions just won't be pre-highlighted.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isMatchingMode, mergeFetchedReactions, sessionId]);
+
+  useEffect(() => {
+    if (!isMatchChatReady || !matchingState?.room_id) {
+      return undefined;
+    }
+
+    const roomId = matchingState.room_id;
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await api.get(
+          `/api/message-reactions/?target_type=match&conversation_id=${encodeURIComponent(roomId)}`,
+        );
+        if (!cancelled) {
+          mergeFetchedReactions(response.data?.reactions, 'match');
+        }
+      } catch {
+        // Best-effort: reactions just won't be pre-highlighted.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isMatchChatReady, matchingState?.room_id, mergeFetchedReactions]);
+
   const sendCancelMatchingQueueRequest = useCallback((topicId, { keepalive = false } = {}) => {
     if (!topicId) {
       return;
@@ -1413,7 +1598,16 @@ function TopicChat({ user, issues, issuesLoaded }) {
         return;
       }
 
+      if (data.type === 'agent_thinking') {
+        // The backend holds the whole reply back until it has passed the
+        // output-contract check, so there is a real gap before the first
+        // chunk. Show a typing animation instead of dead air.
+        setIsAgentThinking(true);
+        return;
+      }
+
       if (data.type === 'agent_stream') {
+        setIsAgentThinking(false);
         setIsAgentStreaming(true);
         setMessages((prev) => {
           const messageId = currentAgentMsgIdRef.current;
@@ -1456,6 +1650,49 @@ function TopicChat({ user, issues, issuesLoaded }) {
         setAiStanceDrift(extractStanceDrift(data));
         setIsAgentStreaming(false);
         updatePendingAiReplyCount(-1);
+        return;
+      }
+
+      // ── Input gate ────────────────────────────────────────────────────
+      // 這三種事件都不是 LLM 回覆（零 token），也都要把送出狀態解除，
+      // 否則輸入框會卡在 disabled。
+      if (data.type === 'input_blocked') {
+        currentAgentMsgIdRef.current = null;
+        setIsAgentThinking(false);
+        setIsAgentStreaming(false);
+        setIsSending(false);
+        if (data.presentation === 'notice') {
+          // 3–5 次：系統提示列，不進對話串，也不佔對話輪數。
+          setInputGateNotice({ id: `gate-${Date.now()}`, message: data.content });
+        } else {
+          setInputGateNotice(null);
+          setMessages((prev) =>
+            appendOrCoalesce(prev, {
+              id: `gate-${Date.now()}`,
+              type: 'agent',
+              userName: 'BridgeUs',
+              text: data.content,
+            }),
+          );
+        }
+        return;
+      }
+
+      if (data.type === 'input_cooldown') {
+        currentAgentMsgIdRef.current = null;
+        setIsAgentThinking(false);
+        setIsAgentStreaming(false);
+        setIsSending(false);
+        setInputGateNotice(null);
+        setCooldownSeconds(data.seconds || 0);
+        return;
+      }
+
+      if (data.type === 'rate_limited') {
+        setIsAgentThinking(false);
+        setIsAgentStreaming(false);
+        setIsSending(false);
+        setInputGateNotice({ id: `rate-${Date.now()}`, message: data.content });
         return;
       }
 
@@ -1523,6 +1760,24 @@ function TopicChat({ user, issues, issuesLoaded }) {
       `/api/dialogue/sessions/${activeSessionId}/reply/`,
       { message: text },
     );
+
+    // 被 input gate 攔截時後端回 200 + 靜態 fallback（沒有 history，因為
+    // 這則訊息從未進入對話 context）。走跟 WebSocket 相同的呈現規則。
+    if (response.data?.type === 'input_blocked') {
+      if (response.data.presentation === 'notice') {
+        setInputGateNotice({ id: `gate-${Date.now()}`, message: response.data.reply });
+      } else {
+        setMessages((prev) =>
+          appendOrCoalesce(prev, {
+            id: `gate-${Date.now()}`,
+            type: 'agent',
+            userName: 'BridgeUs',
+            text: response.data.reply,
+          }),
+        );
+      }
+      return;
+    }
 
     setMessages(mapHistoryToMessages(response.data.history, displayUserName));
     setAiStanceMeta(extractAiStanceMeta(response.data));
@@ -1603,6 +1858,48 @@ function TopicChat({ user, issues, issuesLoaded }) {
       survey_answers: answers,
       survey_open_answers: openAnswers,
     }));
+
+    // Godot 綁定房：配對已經由遊戲內的木樁決定了，這裡只是把 s_pre 補上。
+    // 絕對不能走 /api/matching/join/——那會重新排隊，把已經綁好的房弄壞。
+    if (matchingState?.binding_source === 'godot' && matchingState?.survey_required) {
+      setMatchingError('');
+      // 跟 isMixedEntry 分支同樣的理由：上面的 setSavedStanceProfile 已經把
+      // exists 設成 true，不在 await 之前先關掉的話，等回應的那段時間會閃出
+      // 「沿用先前立場」卡片蓋住問卷——送出失敗時使用者會看不到錯誤訊息。
+      setStanceRedoConfirmed(true);
+      setIsMatchingActionLoading(true);
+      try {
+        const response = await api.post('/api/matching/godot-survey/', {
+          topic_id: Number(id),
+          survey_answers: answers,
+          survey_open_answers: openAnswers,
+        });
+        if (!isChatPageMountedRef.current) return;
+        setMatchingState(response.data);
+        setShowSurvey(false);
+      } catch (error) {
+        if (!isChatPageMountedRef.current) return;
+        const reason = error?.response?.data?.binding_cancel_reason;
+        if (error?.response?.status === 409) {
+          // 房間在送出過程中被作廢了。關掉問卷並說明，不要停在一份送不出去的表單。
+          setShowSurvey(false);
+          setBindingNotice(
+            reason === 'godot_partner_left'
+              ? '對方已退出配對，已為你轉回一般配對模式。'
+              : '前測問卷逾時，已為你轉回一般配對模式。',
+          );
+          return;
+        }
+        setMatchingError(
+          error?.response?.data?.detail || '目前無法送出問卷，請稍後再試。',
+        );
+      } finally {
+        if (isChatPageMountedRef.current) {
+          setIsMatchingActionLoading(false);
+        }
+      }
+      return;
+    }
 
     if (isMixedEntry) {
       setMatchingError('');
@@ -1798,10 +2095,19 @@ function TopicChat({ user, issues, issuesLoaded }) {
           };
         });
       } catch (error) {
-        setMatchChatError(
-          error?.response?.data?.detail ||
-            '目前無法送出配對聊天室訊息，請稍後再試。',
-        );
+        const gatePayload = error?.response?.data;
+        if (gatePayload?.type === 'input_cooldown') {
+          setCooldownSeconds(gatePayload.seconds || 0);
+        } else if (
+          gatePayload?.type === 'input_blocked' ||
+          gatePayload?.type === 'rate_limited'
+        ) {
+          setInputGateNotice({ id: `gate-${Date.now()}`, message: gatePayload.detail });
+        } else {
+          setMatchChatError(
+            gatePayload?.detail || '目前無法送出配對聊天室訊息，請稍後再試。',
+          );
+        }
       } finally {
         setIsMatchSending(false);
         focusChatInput();
@@ -1869,6 +2175,16 @@ function TopicChat({ user, issues, issuesLoaded }) {
       try {
         await requestRestDialogueReply(activeSessionId, text);
       } catch (restError) {
+        const gatePayload = restError?.response?.data;
+        if (gatePayload?.type === 'input_cooldown') {
+          setCooldownSeconds(gatePayload.seconds || 0);
+          return;   // the enclosing finally still clears isSending
+        }
+        if (gatePayload?.type === 'rate_limited') {
+          setInputGateNotice({ id: `rate-${Date.now()}`, message: gatePayload.detail });
+          return;
+        }
+
         const detail =
           restError?.response?.data?.detail ||
           socketError?.message ||
@@ -2144,6 +2460,20 @@ function TopicChat({ user, issues, issuesLoaded }) {
       );
     }
 
+    if (matchingStatus === 'matched' && isGodotWaitingForPartner) {
+      return (
+        <div className="matching-status-shell">
+          <div className="matching-status-card is-waiting">
+            <span className="matching-status-badge">等待對方</span>
+            <h2 className="matching-status-title">你已填完問卷，正在等待對方完成</h2>
+            <p className="matching-status-copy">
+              房間已經建立，對方正在填寫前測問卷。等對方送出後，聊天室就會開放。
+            </p>
+          </div>
+        </div>
+      );
+    }
+
     if (matchingStatus === 'matched') {
       const matchChatDisplayMessages = mapMatchMessagesToDisplay(
         matchMessages,
@@ -2268,7 +2598,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
           {matchChatDisplayMessages.map((msg) => (
             <div key={msg.id} className={`message-row ${msg.type === 'user' ? 'user-message' : ''}`}>
               <div className="message-user-info">
-                <img src="/icon.jpg" alt="Avatar" className="message-avatar" />
+                <img src={msg.type === 'user' ? '/icon.jpg' : '/logo.png'} alt="Avatar" className="message-avatar" />
                 <span className="message-username">{msg.userName}</span>
               </div>
               <div className="message-bubble">{msg.text}</div>
@@ -2375,7 +2705,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
     return <div style={{ padding: '50px', textAlign: 'center' }}>找不到這個議題，請返回首頁重新選擇。</div>;
   }
 
-  const inputPlaceholder = isMatchingMode
+  const inputPlaceholder = cooldownSeconds > 0
+    ? `暫停接收訊息，${cooldownSeconds} 秒後可繼續`
+    : isMatchingMode
     ? showSurvey || isSurveyLoading
       ? '請先完成立場檢測問卷'
       : isMatchingStateLoading || isMatchingActionLoading
@@ -2397,9 +2729,13 @@ function TopicChat({ user, issues, issuesLoaded }) {
       ? '請先完成立場檢測問卷'
       : '輸入觀點...';
 
-  const isInputDisabled = isMatchingMode
-    ? !isMatchChatReady || isMatchSending
-    : showSurvey || isSessionRestoring || Boolean(pendingRestoredSession);
+  const isCoolingDown = cooldownSeconds > 0;
+  // isSending 不再鎖輸入框：AI 端改用訊息佇列，使用者可以在串流途中繼續打字。
+  const isInputDisabled =
+    isCoolingDown ||
+    (isMatchingMode
+      ? !isMatchChatReady || isMatchSending
+      : showSurvey || isSessionRestoring || Boolean(pendingRestoredSession));
 
   const activeChatError = isMatchingMode && showSurvey
     ? ''
@@ -2465,6 +2801,11 @@ function TopicChat({ user, issues, issuesLoaded }) {
             isSubmitting={isMatchingMode ? isMatchingActionLoading : false}
             submitError={isMatchingMode ? matchingError : ''}
             onSubmit={handleSurveySubmit}
+            deadline={
+              matchingState?.binding_source === 'godot'
+                ? matchingState?.survey_deadline
+                : null
+            }
           />
         )
       )}
@@ -2504,6 +2845,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
               {matchingError && !showSurvey && matchingState?.status !== 'matched' && (
                 <p className="matching-status-error">{matchingError}</p>
               )}
+              {bindingNotice && (
+                <p className="matching-status-notice">{bindingNotice}</p>
+              )}
             </>
           ) : (
             <>
@@ -2538,10 +2882,15 @@ function TopicChat({ user, issues, issuesLoaded }) {
               {messages.map((msg) => (
                 <div key={msg.id} className={`message-row ${msg.type === 'user' ? 'user-message' : ''}`}>
                   <div className="message-user-info">
-                    <img src="/icon.jpg" alt="Avatar" className="message-avatar" />
+                    <img src={msg.type === 'user' ? '/icon.jpg' : '/logo.png'} alt="Avatar" className="message-avatar" />
                     <span className="message-username">{msg.userName}</span>
                   </div>
-                  <div className="message-bubble">{msg.text}</div>
+                  <div className="message-bubble">
+                    {msg.text}
+                    {msg.repeatCount > 1 && (
+                      <span className="message-repeat-count">×{msg.repeatCount}</span>
+                    )}
+                  </div>
                   <MessageReactions
                     target={msg.reactTarget}
                     value={msg.reactTarget ? reactions[reactionKey(msg.reactTarget)] || 0 : 0}
@@ -2552,10 +2901,20 @@ function TopicChat({ user, issues, issuesLoaded }) {
               {isSending && !isAgentStreaming && (
                 <div className="message-row">
                   <div className="message-user-info">
-                    <img src="/icon.jpg" alt="Avatar" className="message-avatar" />
+                    <img src="/logo.png" alt="Avatar" className="message-avatar" />
                     <span className="message-username">BridgeUs</span>
                   </div>
-                  <div className="message-bubble">正在整理回應...</div>
+                  <div className="message-bubble agent-thinking-bubble">
+                    {isAgentThinking ? (
+                      <span className="agent-typing" aria-label="正在輸入">
+                        <span className="agent-typing-dot" />
+                        <span className="agent-typing-dot" />
+                        <span className="agent-typing-dot" />
+                      </span>
+                    ) : (
+                      '正在整理回應...'
+                    )}
+                  </div>
                 </div>
               )}
             </>
@@ -2597,6 +2956,25 @@ function TopicChat({ user, issues, issuesLoaded }) {
         )}
 
         <div className="chat-input-area">
+          {/* 3–5 次無效輸入的系統提示列：不是 AI 對話氣泡，不佔對話輪數。 */}
+          {inputGateNotice && !isCoolingDown && (
+            <div className="input-gate-notice">
+              <span>{inputGateNotice.message}</span>
+              <button
+                type="button"
+                className="input-gate-notice-dismiss"
+                onClick={() => setInputGateNotice(null)}
+              >
+                知道了
+              </button>
+            </div>
+          )}
+          {isCoolingDown && (
+            <div className="input-gate-notice cooldown" role="status">
+              系統暫停接收訊息，{cooldownSeconds} 秒後可以繼續。
+              回來後可以直接說說你對這個議題的看法。
+            </div>
+          )}
           <div className={`chat-input-wrapper ${isMatchingMode && !isMatchChatReady ? 'is-disabled' : ''}`}>
             <textarea
               ref={textareaRef}

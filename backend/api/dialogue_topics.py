@@ -57,21 +57,25 @@ TOPIC_CONFIGS = {
         },
         "date": "2026/06/25",
         "display_order": 2,
+        # 這 5 個錨點對應本地分類模型（women_conscription_node_model）實際訓練出來的
+        # 5 個 macro class（見 ml_models/women_conscription_node_model/class_maps.json）。
+        # 模型的 class_id=5「其他」是分類不進任何錨點的雜訊桶，不對應任何錨點，
+        # 所以這裡刻意只列 5 個——不是漏了「體能訓練」「個人意願」，是模型訓練時
+        # 就沒有把這兩個切成獨立的 macro class（相關內容散落在其他 class 底下或被
+        # 分進「其他」），勉強塞回 6 個固定錨點反而會讓其中 2 個永遠是空節點。
         "anchors": [
             {"id": "anchor_equality", "name": "性別平等"},
-            {"id": "anchor_physical", "name": "體能訓練"},
             {"id": "anchor_defense", "name": "國防戰力"},
+            {"id": "anchor_policy", "name": "徵兵制度"},
+            {"id": "anchor_military_conditions", "name": "軍中現況"},
             {"id": "anchor_social", "name": "社會影響"},
-            {"id": "anchor_autonomy", "name": "個人意願"},
-            {"id": "anchor_policy", "name": "政策制度"},
         ],
         "anchor_descriptions": {
             "anchor_equality": "性別平等原則、權利義務對等、公平正義、歧視與差別待遇。",
-            "anchor_physical": "體能標準、生理差異、訓練制度、任務適性、體能測驗。",
             "anchor_defense": "兵源需求、戰力提升、國防安全、戰備整備、募兵成效。",
-            "anchor_social": "生育率影響、家庭結構、社會分工、文化觀念、心理衝擊。",
-            "anchor_autonomy": "強制vs自願、個人意願、選擇權、志願役制度、義務強制性。",
             "anchor_policy": "國際比較、法律修訂、現行制度、政策可行性、配套措施。",
+            "anchor_military_conditions": "女性從軍現況、軍中性騷擾與暴力、義務役役期、軍中生活與文化、從軍案例。",
+            "anchor_social": "生育率影響、社會分工、群眾看法、文化觀念、心理衝擊。",
         },
         "stance_labels": {
             "support": {

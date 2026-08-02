@@ -531,6 +531,8 @@ class DialogueSessionApiTests(APITestCase):
         self.assertEqual(saved_turn.topic_id, 102)
         self.assertEqual(saved_turn.user_prompt, "核能真的比其他方案更穩定嗎？")
         self.assertEqual(saved_turn.ai_response, "AI reply to: 核能真的比其他方案更穩定嗎？")
+        self.assertFalse(saved_turn.contract_violated)
+        self.assertIn("結構 A", saved_turn.internal_judgment)
         self.assertEqual(
             reply_response.data["history"][1]["turn_id"],
             saved_turn.id,

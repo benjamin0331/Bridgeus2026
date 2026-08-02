@@ -1,7 +1,7 @@
 import logging
 import os
 import re
-import uuid as _uuid_mod
+from datetime import timedelta
 from decimal import Decimal
 from difflib import SequenceMatcher
 from functools import lru_cache
@@ -18,7 +18,6 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTStatelessUserAuthentication
-from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from apps.matching.services.semantic import build_q9_embedding
@@ -67,6 +66,13 @@ from .display_settings import (
     visible_topics,
 )
 from .timeline_access import LOCKED_DETAIL, timeline_unlock_state
+from .godot_tickets import issue_ticket, redeem_ticket
+from api.godot_binding import (
+    BINDING_STATS_KEY,
+    binding_cancel_reason,
+    godot_binding_info,
+    match_pretest_state,
+)
 from .serializers import (
     AccountCreateSerializer,
     AccountListSerializer,
@@ -78,6 +84,7 @@ from .serializers import (
     DialogueSurveySerializer,
     DialogueTopicSerializer,
     DialogueSessionCreateSerializer,
+    GodotSurveySerializer,
     MatchMessageSerializer,
     MatchingJoinSerializer,
     MatchingRoomMessageCreateSerializer,
@@ -353,6 +360,7 @@ def _dialogue_session_response_payload(
     user_id: int | None = None,
 ) -> dict:
     session_state = session_record.get("session") or {}
+    # 帶 turn_id 的歷史，前端才能把 讚/倒讚 掛到對應的 AI 回覆上。
     history = session_state.get("history") or []
     if user_id is not None:
         history = _live_dialogue_history(
@@ -712,6 +720,67 @@ def _fallback_offer_fields(*, topic_id: int, state, user_id: int) -> dict:
     }
 
 
+def _godot_binding_fields(
+    match, *, user_id: int, cancel_reason_override: str | None = None
+) -> dict:
+    """Godot 綁定房專屬欄位。非綁定房一律回中性值，前端只在 binding_source
+    為 "godot" 時使用其餘欄位。
+
+    binding_cancel_reason 只在裁決發生的那一次輪詢之後才會有值，而且房間一旦
+    作廢，get_matching_state 之後回的可能已經是這位使用者的新狀態（重新排隊或
+    改走 AI，match 不再是那間被作廢的房）。cancel_reason_override 就是為了這個
+    情境存在：原因由呼叫端從 MatchingState.binding_cancel_reason 帶進來，而不
+    是只看眼前這個 match 的 stats——那樣會漏掉「房間已經換了」的那一次回應。
+    前端要在收到當下就反應，不能指望它一直存在。
+    """
+    binding = godot_binding_info(match)
+    if binding is None:
+        return {
+            "binding_source": None,
+            "survey_required": False,
+            "survey_deadline": None,
+            "partner_state": None,
+            "binding_cancel_reason": cancel_reason_override,
+        }
+    cancel_reason = cancel_reason_override or binding.get("cancel_reason")
+    pretest = match_pretest_state(match)
+    is_user_a = match.user_a_id == user_id
+    self_done = pretest["user_a_done"] if is_user_a else pretest["user_b_done"]
+    partner_done = pretest["user_b_done"] if is_user_a else pretest["user_a_done"]
+    if cancel_reason:
+        partner_state = "left"
+    elif partner_done:
+        partner_state = "ready"
+    else:
+        partner_state = "pending"
+    return {
+        "binding_source": "godot",
+        # 房已作廢就不該再叫人填問卷——填了也沒地方收（送出端點會回 409）。
+        "survey_required": not self_done and not cancel_reason,
+        "survey_deadline": binding.get("survey_deadline"),
+        "partner_state": partner_state,
+        "binding_cancel_reason": cancel_reason,
+    }
+
+
+def _godot_pretest_incomplete_response(match):
+    """Godot 綁定房在雙方前測完成前不得進聊天室；未完成回 Response，完成或
+    非綁定房回 None。
+
+    前端已有 isMatchChatReady 擋著，但那只是 UI——繞過它（直接打 API 或開 WS）
+    就能在前測資料齊全前產生對話文字，研究資料上會出現「對話早於 s_pre」的紀錄。
+    把關要在後端。
+    """
+    if godot_binding_info(match) is None:
+        return None
+    if match_pretest_state(match)["both_done"]:
+        return None
+    return Response(
+        {"detail": "雙方都完成前測問卷後才能開始對話。"},
+        status=status.HTTP_409_CONFLICT,
+    )
+
+
 def _build_matching_state_payload(*, topic_id: int, state, user_id: int) -> dict:
     queue_entry = state.queue_entry
     match = state.match
@@ -744,6 +813,11 @@ def _build_matching_state_payload(*, topic_id: int, state, user_id: int) -> dict
         "other_user_name": other_user_name,
         **_match_presence_fields(match, user_id=user_id),
         **_fallback_offer_fields(topic_id=topic_id, state=state, user_id=user_id),
+        **_godot_binding_fields(
+            match,
+            user_id=user_id,
+            cancel_reason_override=getattr(state, "binding_cancel_reason", None),
+        ),
     }
     return MatchingStateSerializer(payload).data
 
@@ -1116,8 +1190,10 @@ class DialogueStanceProfileView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        # request.user 是 stateless TokenUser：直接丟進 filter 會讓 Django 誤觸
+        # TokenUser.__getattr__ 回傳的 resolve_expression=None 而崩潰，改用 id 過濾。
         profile = (
-            UserStanceProfile.objects.filter(user=request.user, topic_id=topic_id)
+            UserStanceProfile.objects.filter(user_id=request.user.id, topic_id=topic_id)
             .order_by("-updated_at", "-id")
             .first()
         )
@@ -1588,6 +1664,97 @@ class DialogueSessionDetailView(APIView):
         )
 
 
+def _apply_reply_input_gate(*, session_id: str, user, user_message: str):
+    """Run the input gate on the REST reply path.
+
+    Returns a Response when the message must not reach the LLM, or None to let
+    the caller carry on. Mirrors DialogueStreamConsumer._passes_input_gate; the
+    payload shape matches the WebSocket events so the frontend can render both
+    with the same code.
+    """
+    from apps.matching.services.input_gate import (
+        COOLDOWN_NOTICE,
+        InputVerdict,
+        classify,
+        fallback_message,
+        rate_limit_notice,
+        throttle_tier,
+    )
+    from apps.matching.services.input_gate_store import record_ai_attempt
+    from apps.matching.services.rate_limit import (
+        check_rate_limit,
+        cooldown_remaining,
+        start_cooldown,
+    )
+
+    scope = f"ai:{session_id}:{user.id}"
+    remaining = cooldown_remaining(scope)
+    if remaining:
+        return Response(
+            {
+                "type": "input_cooldown",
+                "seconds": remaining,
+                "detail": COOLDOWN_NOTICE.format(seconds=remaining),
+            },
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+
+    rate = check_rate_limit(user.id)
+    if not rate["allowed"]:
+        return Response(
+            {
+                "type": "rate_limited",
+                "reason": rate["reason"],
+                "retry_after": rate["retry_after"],
+                "detail": rate_limit_notice(rate["reason"]),
+            },
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+
+    prev_is_question = bool(
+        AIConversation.objects.filter(
+            user_id=user.id,
+            session_id=session_id,
+            ai_response__isnull=False,
+        )
+        .exclude(ai_response="")
+        .order_by("-created_at", "-id")
+        .values_list("ai_turn_is_question", flat=True)
+        .first()
+    )
+    verdict = classify(user_message, prev_ai_is_question=prev_is_question)
+    if verdict is InputVerdict.VALID:
+        record_ai_attempt(session_id, blocked=False)
+        return None
+
+    count = record_ai_attempt(session_id, blocked=True)
+    tier = throttle_tier(count)
+    if tier == "cooldown":
+        seconds = start_cooldown(scope)
+        return Response(
+            {
+                "type": "input_cooldown",
+                "seconds": seconds,
+                "invalid_input_count": count,
+                "detail": COOLDOWN_NOTICE.format(seconds=seconds),
+            },
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+
+    # 200, not an error status: the participant gets a real (static, zero-token)
+    # reply. Only the LLM call is skipped.
+    return Response(
+        {
+            "type": "input_blocked",
+            "presentation": tier,
+            "reason": verdict.value,
+            "reply": fallback_message(verdict, count),
+            "chunks": [fallback_message(verdict, count)],
+            "invalid_input_count": count,
+        }
+    )
+
+
 class DialogueSessionReplyView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -1608,6 +1775,19 @@ class DialogueSessionReplyView(APIView):
             )
 
         user_message = serializer.validated_data["message"].strip()
+
+        # The REST path is the frontend's fallback when the WebSocket cannot be
+        # opened. It reaches the same RAG + Claude + AIConversation code, so the
+        # input gate has to run here too — otherwise a participant on a flaky
+        # connection bypasses it entirely.
+        gate_response = _apply_reply_input_gate(
+            session_id=session_id,
+            user=request.user,
+            user_message=user_message,
+        )
+        if gate_response is not None:
+            return gate_response
+
         session = DialogueSession.from_dict(session_record["session"])
         session.add_user_message(user_message)
         session.dialogue_phase = DialoguePhase.from_turn_count(session.turn_count)
@@ -1661,15 +1841,22 @@ class DialogueSessionReplyView(APIView):
         _, contract_ok = gate.finish()
 
         if not contract_ok:
-            # Fail closed: never hand the raw body back to the client.
+            # Fail closed: never hand the raw body back to the client. This path
+            # has no corrective retry or salvage (respond() takes no correction
+            # and the live UI uses the WebSocket path) — it just 503s.
             logger.error(
                 "Output contract violated on REST reply session=%s turn=%s "
-                "buffer[:200]=%r",
+                "leak_pattern=%r buffer[:200]=%r reply[:200]=%r",
                 session_id,
                 saved_turn.id,
+                gate.leak_pattern,
                 gate.buffered_preview[:200],
+                gate.reply[:200],
             )
-            saved_turn.internal_judgment = gate.buffered_preview
+            saved_turn.internal_judgment = (
+                f"{gate.buffered_preview}\n\n"
+                f"[reply leak_pattern={gate.leak_pattern!r}] {gate.reply}"
+            )
             saved_turn.contract_violated = True
             saved_turn.dialogue_phase = session.dialogue_phase.value
             saved_turn.save(
@@ -2749,6 +2936,119 @@ class MatchingStatusView(APIView):
         )
 
 
+class GodotSurveyView(APIView):
+    """POST /api/matching/godot-survey/ — Godot 綁定房的前測問卷回填。
+
+    刻意**不**經過 _entry_gate_response：這條路徑的分組是遊戲內的木樁配對決定的，
+    不是混合入口的立場分流決定的。中立立場的人也照樣 route=match（見 spec §D3）
+    ——問卷是配對成立之後才填的，這時候再判定「你該去 AI」會把已經配好的兩人卡死。
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from apps.matching.services.matcher import record_godot_survey
+
+        serializer = GodotSurveySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        validated = serializer.validated_data
+        topic_id = validated["topic_id"]
+
+        match = (
+            DialogueMatch.objects.filter(
+                topic_id=topic_id,
+                status=DialogueMatch.Status.ACTIVE,
+            )
+            .filter(Q(user_a=request.user) | Q(user_b=request.user))
+            .order_by("-created_at")
+            .first()
+        )
+        if match is None or godot_binding_info(match) is None:
+            # 一般配對房也走這裡會被擋掉——它的分數是配對演算法算的，不該被覆寫。
+            return Response(
+                {"detail": "找不到屬於你的 Godot 配對房間。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        from apps.matching.services.matcher import resolve_godot_survey_gate
+
+        # 先裁決再接受：房間若已因逾時或對方退出而作廢，不該再收問卷答案
+        # （寫進去也沒有意義，而且會讓使用者以為送出成功）。見 spec §8.2。
+        match = resolve_godot_survey_gate(
+            match=match, viewer_user_id=request.user.id
+        )
+        if match.status != DialogueMatch.Status.ACTIVE:
+            return Response(
+                {
+                    "detail": "這個配對房間已結束。",
+                    "binding_cancel_reason": binding_cancel_reason(match),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        stance_score = _compute_user_stance_score(
+            topic_id=topic_id, survey_answers=validated["survey_answers"]
+        )
+        stance_category = resolve_stance_category(
+            topic_id=topic_id, user_stance_score=stance_score
+        )
+        resolved_open_answers = _resolve_open_answers(
+            topic_id=topic_id,
+            survey_open_answers=validated.get("survey_open_answers", {}),
+        )
+
+        recorded = record_godot_survey(
+            user=request.user,
+            match=match,
+            topic_id=topic_id,
+            stance_score=stance_score,
+            stance_category=stance_category,
+            survey_answers=validated["survey_answers"],
+            survey_open_answers=resolved_open_answers,
+        )
+        if recorded is None:
+            # 鎖內重驗擋下了——窗口期間房間被取消。回 409 跟前置檢查一致。
+            # 這裡要重讀 match：呼叫端手上那份是過期快照，拿不到剛寫入的作廢原因。
+            fresh = DialogueMatch.objects.filter(pk=match.pk).first()
+            return Response(
+                {
+                    "detail": "這個配對房間已結束。",
+                    "binding_cancel_reason": (
+                        binding_cancel_reason(fresh) if fresh else None
+                    ),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        support_threshold, oppose_threshold = get_stance_thresholds(topic_id=topic_id)
+        DialogueEntryAssignment.objects.update_or_create(
+            user=request.user,
+            topic_id=topic_id,
+            defaults={
+                # 一律 match：見上方 docstring 與 spec §D3。
+                "route": DialogueEntryAssignment.Route.MATCH,
+                "stance_score": Decimal(str(stance_score)),
+                "stance_category": stance_category,
+                "support_threshold": support_threshold,
+                "oppose_threshold": oppose_threshold,
+                "entry_mode_at_assignment": get_entry_mode(
+                    is_researcher=user_is_researcher(request.user)
+                ),
+                "fallback_offered_at": None,
+                "fallback_accepted_at": None,
+            },
+        )
+
+        from apps.matching.services.matcher import get_matching_state
+
+        state = get_matching_state(user=request.user, topic_id=topic_id)
+        return Response(
+            _build_matching_state_payload(
+                topic_id=topic_id, state=state, user_id=request.user.id
+            )
+        )
+
+
 class MatchingCancelView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -2787,6 +3087,83 @@ class MatchingCancelView(APIView):
         )
 
 
+def _apply_match_input_gate(*, match, user, content: str):
+    """Input gate for the match room's REST path. Mirrors MatchRoomConsumer.
+
+    Blocked messages are reported back to the sender only and never become a
+    MatchMessage, so the partner sees nothing and no downstream analysis
+    (embedding, topic relevance, CCND) ever sees the text.
+    """
+    from apps.matching.services.input_gate import (
+        COOLDOWN_NOTICE,
+        InputVerdict,
+        classify,
+        fallback_message,
+        rate_limit_notice,
+        throttle_tier,
+    )
+    from apps.matching.services.input_gate_store import record_match_attempt
+    from apps.matching.services.rate_limit import (
+        check_rate_limit,
+        cooldown_remaining,
+        start_cooldown,
+    )
+
+    scope = f"match:{match.id}:{user.id}"
+    remaining = cooldown_remaining(scope)
+    if remaining:
+        return Response(
+            {
+                "type": "input_cooldown",
+                "seconds": remaining,
+                "detail": COOLDOWN_NOTICE.format(seconds=remaining),
+            },
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+
+    rate = check_rate_limit(user.id)
+    if not rate["allowed"]:
+        return Response(
+            {
+                "type": "rate_limited",
+                "reason": rate["reason"],
+                "retry_after": rate["retry_after"],
+                "detail": rate_limit_notice(rate["reason"]),
+            },
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+
+    # 配對房沒有「AI 剛提問」這種脈絡，恆為 False。
+    verdict = classify(content, prev_ai_is_question=False)
+    if verdict is InputVerdict.VALID:
+        record_match_attempt(match.id, user.id, blocked=False)
+        return None
+
+    count = record_match_attempt(match.id, user.id, blocked=True)
+    if throttle_tier(count) == "cooldown":
+        seconds = start_cooldown(scope)
+        return Response(
+            {
+                "type": "input_cooldown",
+                "seconds": seconds,
+                "invalid_input_count": count,
+                "detail": COOLDOWN_NOTICE.format(seconds=seconds),
+            },
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+
+    return Response(
+        {
+            "type": "input_blocked",
+            "presentation": "notice",
+            "reason": verdict.value,
+            "detail": fallback_message(verdict, count),
+            "invalid_input_count": count,
+        },
+        status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+    )
+
+
 class MatchingRoomMessagesView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -2799,6 +3176,9 @@ class MatchingRoomMessagesView(APIView):
                 {"detail": "找不到這個配對房間。"},
                 status=status.HTTP_404_NOT_FOUND,
             )
+        gate = _godot_pretest_incomplete_response(match)
+        if gate is not None:
+            return gate
 
         match = _touch_room_match_for_user_activity(
             match=match,
@@ -2823,6 +3203,10 @@ class MatchingRoomMessagesView(APIView):
                 {"detail": "找不到這個配對房間。"},
                 status=status.HTTP_404_NOT_FOUND,
             )
+        gate = _godot_pretest_incomplete_response(match)
+        if gate is not None:
+            return gate
+
         match = _touch_room_match_for_user_activity(
             match=match,
             user_id=request.user.id,
@@ -2835,11 +3219,21 @@ class MatchingRoomMessagesView(APIView):
 
         serializer = MatchingRoomMessageCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        content = serializer.validated_data["content"].strip()
+
+        # HTTP fallback for the match room, used when the WebSocket is not open.
+        # Same gate as MatchRoomConsumer — otherwise a dropped socket is a way
+        # around it.
+        gate_response = _apply_match_input_gate(
+            match=match, user=request.user, content=content
+        )
+        if gate_response is not None:
+            return gate_response
 
         MatchMessage.objects.create(
             match=match,
             sender=request.user,
-            content=serializer.validated_data["content"].strip(),
+            content=content,
         )
 
         messages = get_room_messages(match=match)
@@ -2995,7 +3389,16 @@ class MatchingRoomLeaveView(APIView):
 
 
 class MessageReactionView(APIView):
-    """Create, change, remove, or list the caller's message reactions."""
+    """讚 / 倒讚 on an opponent's message, in either dialogue mode.
+
+    GET  /api/message-reactions/?target_type=ai&conversation_id=<session_id>
+    GET  /api/message-reactions/?target_type=match&conversation_id=<room_id>
+        → { "reactions": [ {target_id, value}, ... ] } for the current user.
+
+    POST /api/message-reactions/  body: {target_type, target_id, value}
+        value = 1 (讚) / -1 (倒讚) / 0 (remove). Only the *opponent's* messages
+        may be reacted to; reacting to your own is rejected.
+    """
 
     permission_classes = [permissions.IsAuthenticated]
 
@@ -3037,6 +3440,7 @@ class MessageReactionView(APIView):
         target_id = serializer.validated_data["target_id"]
         value = serializer.validated_data["value"]
 
+        # Resolve + authorize the target, and pull denormalized context.
         if target_type == MessageReaction.TargetType.AI:
             context = self._resolve_ai_target(request.user, target_id)
         else:
@@ -3081,6 +3485,8 @@ class MessageReactionView(APIView):
 
     @staticmethod
     def _resolve_ai_target(user, target_id):
+        """The AI reply belongs to the user's own session — reacting to the
+        agent's turn. Require ai_response present (something to react to)."""
         turn = (
             AIConversation.objects.filter(id=target_id, user=user)
             .exclude(ai_response__isnull=True)
@@ -3096,6 +3502,7 @@ class MessageReactionView(APIView):
 
     @staticmethod
     def _resolve_match_target(user, target_id):
+        """Only the partner's messages are reactable; the user's own are not."""
         message = (
             MatchMessage.objects.select_related("match")
             .filter(id=target_id)
@@ -3113,6 +3520,33 @@ class MessageReactionView(APIView):
             "topic_id": match.topic_id,
             "conversation_id": match.room_id,
         }
+
+
+def _finalize_input_gate_metrics(*, user, session_id, room_id):
+    """Compute and store invalid_ratio / substantive_turn_count at dialogue end.
+
+    Never raises into the questionnaire response — a metrics failure must not
+    cost the participant their submitted answers.
+    """
+    from apps.matching.services.input_gate_store import (
+        finalize_ai_session_metrics,
+        finalize_match_metrics,
+    )
+
+    try:
+        if session_id:
+            finalize_ai_session_metrics(session_id)
+        if room_id:
+            match = DialogueMatch.objects.filter(room_id=room_id).first()
+            if match is not None:
+                finalize_match_metrics(match.id, user.id)
+    except Exception:
+        logger.exception(
+            "Input gate metrics finalization failed session=%s room=%s user=%s.",
+            session_id,
+            room_id,
+            user.id,
+        )
 
 
 def _post_dialogue_stance_snapshot(*, user, validated: dict):
@@ -3207,6 +3641,14 @@ class PostDialogueResponseView(APIView):
                     detail=discomfort_detail.strip(),
                 )
 
+        # 對話結束點：把 input gate 的完整性指標算出來落庫。
+        # 只產生欄位，**不**在這裡排除任何樣本——排除規則由研究端另行決定。
+        _finalize_input_gate_metrics(
+            user=request.user,
+            session_id=response_obj.session_id,
+            room_id=response_obj.room_id,
+        )
+
         out = PostDialogueResponseOutputSerializer(response_obj)
         return Response(out.data, status=status.HTTP_201_CREATED)
 
@@ -3285,25 +3727,6 @@ class PlatformFeedbackView(APIView):
 
         out = PlatformFeedbackOutputSerializer(feedback)
         return Response(out.data, status=status.HTTP_201_CREATED)
-class GuestLoginView(APIView):
-    permission_classes = [permissions.AllowAny]
-
-    def post(self, request):
-        nickname = (request.data.get("nickname") or "Guest")[:30]
-        username = f"guest_{_uuid_mod.uuid4().hex[:8]}"
-        user = User.objects.create_user(username=username, password=None)
-        user.first_name = nickname
-        user.save(update_fields=["first_name"])
-        refresh = RefreshToken.for_user(user)
-        return Response(
-            {
-                "access": str(refresh.access_token),
-                "refresh": str(refresh),
-                "user_id": user.id,
-                "username": username,
-            },
-            status=status.HTTP_201_CREATED,
-        )
 
 
 class IssueListCreateView(APIView):
@@ -3469,6 +3892,59 @@ class IssueReactionsView(APIView):
         return self.get(request, issue_id)
 
 
+class GodotTicketIssueView(APIView):
+    """POST /api/godot/tickets/ — 主功能頁面替目前登入者換一張 Godot 大廳入場券。
+
+    回傳的 ticket 由 GodotLobby.jsx 塞進 iframe 的 window.bridgeus_ticket，
+    Godot client 再交給 headless server 兌換（見 integration spec §5）。
+
+    券不做回收：一次入場一列，~60 人的研究規模下可接受；若日後對外開放要補一支
+    清理指令。
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        ticket = issue_ticket(user=request.user)
+        expires_in = int((ticket.expires_at - timezone.now()).total_seconds())
+        return Response(
+            {"ticket": ticket.token, "expires_in": expires_in},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class GodotTicketRedeemView(APIView):
+    """POST /api/godot/tickets/redeem/ — 常駐 headless Godot server 用服務金鑰
+    把入場券換成 user_id，藉此確認「這個 peer 是哪個使用者」。
+
+    呼叫者是 Godot server、不是使用者，沒有也不該有 JWT。清空 authentication_classes
+    是必要的：預設的 JWTAuthentication 遇到過期/損壞的 Authorization header 會
+    直接丟 401，根本輪不到底下的服務金鑰驗證跑（同 GodotMatchRoomView）。
+
+    回應只有 user_id，不含任何顯示用名稱：username 在這個研究規模下可能就是
+    研究對象自己選的真名或學號，對話室本身也刻意隱藏身份（見
+    ANONYMOUS_MATCH_USER_NAME、MatchMessageSerializer.get_sender_name），沒有
+    理由把登入帳號的識別字串交給遊戲端。大廳日後若需要顯示名稱，應該從稱號系統
+    （/api/titles/me/）另外取，而不是從這裡。
+    """
+
+    authentication_classes = []
+    permission_classes = [IsGodotServiceToken]
+
+    def post(self, request):
+        user = redeem_ticket(token=request.data.get("ticket"))
+        if user is None:
+            # 不區分「不存在／已用過／逾期」——呼叫端用不到，區分了等於給探測者 oracle。
+            return Response(
+                {"detail": "入場券無效。"}, status=status.HTTP_400_BAD_REQUEST
+            )
+        return Response({"user_id": user.id})
+
+
+# Godot 綁定房的前測問卷期限。本階段只用來顯示倒數；逾時作廢是階段五。
+GODOT_SURVEY_WINDOW_SECONDS = 300
+
+
 class GodotMatchRoomView(APIView):
     """POST /api/godot/match-rooms/ — 給常駐 headless Godot server 呼叫，把兩位
     已在主功能登入的玩家直接配成一間議題聊天室，不走 M3 立場配對佇列
@@ -3532,29 +4008,42 @@ class GodotMatchRoomView(APIView):
             return Response(
                 {
                     "room_id": existing.room_id,
+                    "topic_id": topic_id,
                     "redirect_url": f"/topic/{topic_id}?mode=match",
                 },
                 status=status.HTTP_200_OK,
             )
 
-        # Godot 木樁配對只做「同議題湊一對」，不跑 M3 立場向量配對，所以沒有
-        # 真實 stance score 可用——user_a_score/user_b_score 只是滿足 DB 1-7
-        # constraint 的中性佔位值。matching_algorithm_version 標成
-        # "godot_manual"，方便日後分析時跟真正演算法配對的資料分開看。
+        # Godot 木樁配對只做「同議題湊一對」，不跑 M3 立場向量配對。前測問卷是
+        # 跳轉到網頁之後才填的（spec §D4），所以建房當下沒有 s_pre——兩個分數
+        # 欄位留 NULL，等 /api/matching/godot-survey/ 回填。
+        # matching_algorithm_version 標成 "godot_manual"，方便日後分析時跟真正
+        # 演算法配對的資料分開看。
         match = DialogueMatch.objects.create(
             topic_id=topic_id,
             user_a=user_a,
             user_b=user_b,
-            user_a_score=Decimal("4.00"),
-            user_b_score=Decimal("4.00"),
             matching_algorithm_version="godot_manual",
             room_id=uuid4().hex,
             status=DialogueMatch.Status.ACTIVE,
+            stats={
+                # key 由 godot_binding 模組擁有——它是唯一判讀這段結構的地方，
+                # 這裡是唯一的寫入點，兩邊必須用同一個常數才不會各自漂移。
+                BINDING_STATS_KEY: {
+                    "source": "godot",
+                    # 問卷期限。本階段只回傳給前端倒數用，逾時裁決在階段五。
+                    "survey_deadline": (
+                        timezone.now()
+                        + timedelta(seconds=GODOT_SURVEY_WINDOW_SECONDS)
+                    ).isoformat(),
+                }
+            },
         )
 
         return Response(
             {
                 "room_id": match.room_id,
+                "topic_id": topic_id,
                 # 前端沒有獨立的 /dialogue/room/<id> 路由——配對聊天室其實是
                 # TopicChat.jsx 掛在 /topic/<topic_id>?mode=match，內部再用
                 # GET /api/matching/status/?topic_id= 找到這筆 DialogueMatch。
