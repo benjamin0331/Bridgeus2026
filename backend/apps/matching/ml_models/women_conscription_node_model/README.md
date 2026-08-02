@@ -29,7 +29,7 @@ against anchor display names, unlike the nuclear path):
 |---|---|---|
 | 0 | 性別議題 | `anchor_equality` 性別平等 |
 | 1 | 國防 | `anchor_defense` 國防戰力 |
-| 2 | 徵兵制度 | `anchor_policy` 政策制度 |
+| 2 | 徵兵制度 | `anchor_policy` 徵兵制度 |
 | 3 | 軍中狀況 | `anchor_military_conditions` 軍中現況 |
 | 4 | 社會大眾 | `anchor_social` 社會影響 |
 | 5 | 其他 | (none — never emitted as a node) |
@@ -38,10 +38,30 @@ against anchor display names, unlike the nuclear path):
 original Chinese labels verbatim — they're used for the human-readable
 `rationale` string on each candidate item, not for anchor resolution.
 
-## Files excluded from git
+## Setting this up — what's missing from git, and why
 
-Same convention as `nuclear_node_model`: `model.safetensors` in each
-`model_macro/` / `model_micro_*/` directory is gitignored (see root
-`.gitignore`). Everyone setting up this repo needs those files copied in
-separately before topic 103's local classifier path will work; without them,
-analysis for topic 103 will raise `FileNotFoundError`.
+Two different things are absent, and conflating them wastes an afternoon:
+
+**1. `model.safetensors` — gitignored on purpose (~391MB each).** Same
+convention as `nuclear_node_model`; see the root `.gitignore`. These will
+never be in the repo.
+
+**2. Everything else in `model_macro/` and `model_micro_*/` — simply not
+committed yet.** `config.json`, `tokenizer.json`, `tokenizer_config.json`,
+`special_tokens_map.json`, `vocab.txt`, `label_mapping.json`. These are
+*not* gitignored (the ignore rules only name `model.safetensors`) and they
+are small — the equivalent 44 files for `nuclear_node_model` total 3.8MB, and
+that model does track them. They're missing here only because the model
+directories were never added. **Whoever has the trained model should commit
+these**, so that copying in the weights is the only manual step, exactly as
+it is for topic 102.
+
+Until then, copy in the whole `model_macro/` and `model_micro_*/`
+directories, not just the weights — with the weights alone,
+`AutoTokenizer.from_pretrained()` fails on the missing tokenizer files, which
+looks like an unrelated bug.
+
+Without any of it, analysis for topic 103 raises `FileNotFoundError`, which
+`semantic_tree.analyze_text_for_tree` converts into
+`MissingLocalClassifierModel` → HTTP 503 `missing_local_classifier_model`,
+carrying the message that names the missing path.

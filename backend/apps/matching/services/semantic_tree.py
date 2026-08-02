@@ -132,6 +132,22 @@ class MissingOpenAIApiKey(SemanticTreeError):
     code = "missing_openai_api_key"
 
 
+class MissingLocalClassifierModel(SemanticTreeError):
+    """A locally-classified topic's model weights aren't on this server.
+
+    The mirror image of MissingOpenAIApiKey: for topics on the local
+    classifier path, the weights are what OPENAI_API_KEY is to every other
+    topic — server-side setup that is missing, not anything the caller did
+    wrong. Same 503 so the frontend can tell "not configured yet" apart from
+    a real analysis failure; without this the classifier's FileNotFoundError
+    escaped as an unhandled 500 and its (deliberately actionable) message
+    never reached anyone.
+    """
+
+    status_code = 503
+    code = "missing_local_classifier_model"
+
+
 class OpenAIApiError(SemanticTreeError):
     status_code = 502
     code = "openai_api_failed"
@@ -1040,15 +1056,17 @@ def analyze_with_openai(
     }
 
 
-LOCAL_CLASSIFIER_TOPIC_IDS = {102, 103}
-
 # Each locally-classified topic gets its own trained macro/micro pipeline
-# module (different weights, different class->anchor mapping) — one entry
-# per topic_id in LOCAL_CLASSIFIER_TOPIC_IDS.
+# module (different weights, different class->anchor mapping).
 _LOCAL_CLASSIFIER_MODULES = {
     102: "apps.matching.services.nuclear_node_classifier",
     103: "apps.matching.services.women_conscription_node_classifier",
 }
+
+# Derived, not a second hand-maintained list: a topic_id present in one but
+# not the other used to mean either a silently-skipped local classifier or a
+# KeyError inside the dispatch below.
+LOCAL_CLASSIFIER_TOPIC_IDS = frozenset(_LOCAL_CLASSIFIER_MODULES)
 
 # MIN_CONFIDENCE (0.55) was tuned for an LLM's self-reported meta-confidence,
 # which tends to run high. The local classifier's confidence is a raw softmax
@@ -1080,7 +1098,14 @@ def analyze_text_for_tree(
 
         classifier_module = importlib.import_module(_LOCAL_CLASSIFIER_MODULES[topic_id])
 
-        candidate_items = classifier_module.build_candidate_items(text, resolved_anchors)
+        # Translated here rather than raised from the classifiers so they stay
+        # free of any semantic_tree import (the dispatch above imports them),
+        # and so both topics get the same handling. The classifiers' messages
+        # already name the missing file and how to obtain it — preserve them.
+        try:
+            candidate_items = classifier_module.build_candidate_items(text, resolved_anchors)
+        except FileNotFoundError as exc:
+            raise MissingLocalClassifierModel(str(exc)) from exc
         return {
             **validate_analysis_items(
                 {"items": candidate_items},

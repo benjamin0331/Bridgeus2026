@@ -12,6 +12,7 @@ from api.dialogue_topics import SURVEY_CONFIGS, TOPIC_CONFIGS
 from api.models import (
     AIConversation,
     CCNDTimelineUnlock,
+    DialogueEntryAssignment,
     DialogueMatch,
     DialogueSessionRecord,
     MatchMessage,
@@ -344,6 +345,149 @@ class SemanticTreeServiceTests(SimpleTestCase):
         self.assertTrue(
             any("path too deep" in item["error"] for item in result["invalidItems"])
         )
+
+
+class LocalClassifierDispatchTests(SimpleTestCase):
+    """Topic-level routing into the locally fine-tuned BERT pipelines.
+
+    None of these load model weights — the weights are gitignored (~391MB
+    each) and absent on most machines, so everything here mocks at the
+    `build_candidate_items` / `classify` seam.
+    """
+
+    def test_topic_id_set_is_derived_from_the_module_table(self):
+        # Two hand-maintained lists would drift: a topic in the set but not
+        # the table is a KeyError in the dispatch, the reverse is a topic
+        # silently falling back to the OpenAI path.
+        from apps.matching.services.semantic_tree import (
+            _LOCAL_CLASSIFIER_MODULES,
+            LOCAL_CLASSIFIER_TOPIC_IDS,
+            uses_local_classifier,
+        )
+
+        self.assertEqual(set(LOCAL_CLASSIFIER_TOPIC_IDS), set(_LOCAL_CLASSIFIER_MODULES))
+        self.assertTrue(uses_local_classifier(102))
+        self.assertTrue(uses_local_classifier(103))
+        self.assertFalse(uses_local_classifier(101))
+        self.assertFalse(uses_local_classifier(None))
+
+    def test_topic_103_routes_to_the_women_conscription_module(self):
+        from apps.matching.services.semantic_tree import (
+            analyze_text_for_tree,
+            create_initial_tree,
+        )
+
+        with patch(
+            "apps.matching.services.women_conscription_node_classifier.build_candidate_items",
+            return_value=[],
+        ) as women, patch(
+            "apps.matching.services.nuclear_node_classifier.build_candidate_items",
+            return_value=[],
+        ) as nuclear:
+            result = analyze_text_for_tree(
+                topic_id=103,
+                text="女性也應該服義務役",
+                tree=create_initial_tree("女性義務兵役"),
+            )
+
+        women.assert_called_once()
+        nuclear.assert_not_called()
+        self.assertEqual(result["model"], "local-bert-pipeline")
+
+    def test_missing_model_weights_surface_as_503_not_500(self):
+        # The classifier raises a plain FileNotFoundError whose message names
+        # the missing path; the views layer only catches SemanticTreeError, so
+        # without translation it escaped as an unhandled 500.
+        from apps.matching.services.semantic_tree import (
+            MissingLocalClassifierModel,
+            SemanticTreeError,
+            analyze_text_for_tree,
+            create_initial_tree,
+        )
+
+        with patch(
+            "apps.matching.services.women_conscription_node_classifier.build_candidate_items",
+            side_effect=FileNotFoundError("找不到女性義務兵役節點分類模型權重: /x/model.safetensors。"),
+        ):
+            with self.assertRaises(MissingLocalClassifierModel) as ctx:
+                analyze_text_for_tree(
+                    topic_id=103,
+                    text="女性也應該服義務役",
+                    tree=create_initial_tree("女性義務兵役"),
+                )
+
+        self.assertIsInstance(ctx.exception, SemanticTreeError)
+        self.assertEqual(ctx.exception.status_code, 503)
+        self.assertEqual(ctx.exception.code, "missing_local_classifier_model")
+        # The actionable part of the classifier's message must survive.
+        self.assertIn("model.safetensors", str(ctx.exception))
+
+
+class WomenConscriptionClassifierTests(SimpleTestCase):
+    """Topic-103 class_id -> anchor mapping and the no-node cases."""
+
+    def _build(self, classify_result):
+        from apps.matching.services import women_conscription_node_classifier as clf
+
+        with patch.object(clf, "classify", return_value=classify_result):
+            return clf.build_candidate_items("女性也應該服義務役", [])
+
+    @staticmethod
+    def _classified(class_id, cluster_id=3, cluster_name="女性從軍現狀"):
+        return {
+            "class_id": class_id,
+            "class_name": "性別議題",
+            "class_conf": 0.9,
+            "cluster_id": cluster_id,
+            "cluster_name": cluster_name,
+            "cluster_conf": 0.6,
+        }
+
+    def test_every_class_id_maps_onto_a_real_topic_103_anchor(self):
+        # The guard that would have caught the 6->5 anchor trim going out of
+        # sync: the mapping's targets must be exactly topic 103's anchors.
+        from apps.matching.services.women_conscription_node_classifier import (
+            CLASS_ID_TO_ANCHOR_ID,
+        )
+
+        configured = {anchor["id"] for anchor in TOPIC_CONFIGS[103]["anchors"]}
+        self.assertEqual(set(CLASS_ID_TO_ANCHOR_ID.values()), configured)
+        self.assertEqual(sorted(CLASS_ID_TO_ANCHOR_ID), [0, 1, 2, 3, 4])
+
+    def test_each_class_id_produces_its_mapped_anchor(self):
+        from apps.matching.services.women_conscription_node_classifier import (
+            CLASS_ID_TO_ANCHOR_ID,
+        )
+
+        for class_id, anchor_id in CLASS_ID_TO_ANCHOR_ID.items():
+            with self.subTest(class_id=class_id):
+                items = self._build(self._classified(class_id))
+                self.assertEqual(len(items), 1)
+                self.assertEqual(items[0]["anchorId"], anchor_id)
+                # confidence carries the micro-level score, which
+                # LOCAL_CLASSIFIER_MIN_CONFIDENCE (0.35) is tuned against.
+                self.assertEqual(items[0]["confidence"], 0.6)
+                self.assertEqual(items[0]["pointName"], "女性從軍現狀")
+
+    def test_other_class_produces_no_node(self):
+        from apps.matching.services.women_conscription_node_classifier import (
+            OTHER_CLASS_ID,
+        )
+
+        # 5 here, not nuclear's 6 — this model has one fewer real macro class.
+        self.assertEqual(OTHER_CLASS_ID, 5)
+        self.assertEqual(self._build(self._classified(OTHER_CLASS_ID)), [])
+
+    def test_untrained_micro_model_produces_no_node(self):
+        self.assertEqual(self._build(self._classified(0, cluster_id=-1)), [])
+
+    def test_blank_text_is_not_classified_at_all(self):
+        from apps.matching.services import women_conscription_node_classifier as clf
+
+        with patch.object(clf, "classify") as classify:
+            self.assertEqual(clf.build_candidate_items("   ", []), [])
+            self.assertEqual(clf.build_candidate_items(None, []), [])
+        classify.assert_not_called()
 
 
 class DialogueSessionApiTests(APITestCase):
@@ -759,6 +903,91 @@ class DialogueSessionApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIsNotNone(cache.get(f"dialogue_session:{session_id}"))
+
+    def _assign_to_ai_route(self, topic_id):
+        """Clear the mixed-entry gate for this user+topic.
+
+        participant_entry_mode defaults to MIXED, and in that mode
+        `dialogue/sessions` 403s unless the caller already has an entry
+        assignment (views._entry_gate_response) — a participant normally gets
+        one by submitting the pre-survey. Without this the request never
+        reaches the classifier the test is actually about.
+        """
+        DialogueEntryAssignment.objects.update_or_create(
+            user=self.user,
+            topic_id=topic_id,
+            defaults={
+                "route": DialogueEntryAssignment.Route.AI,
+                "stance_score": "4.00",
+                "stance_category": "neutral",
+                "support_threshold": 4.5,
+                "oppose_threshold": 3.5,
+                "entry_mode_at_assignment": "mixed",
+            },
+        )
+
+    def test_ai_semantic_tree_topic_103_does_not_require_openai_key(self):
+        # Same contract as topic 102 above: topic 103 is on the local
+        # classifier path, so it must keep working with no OPENAI_API_KEY.
+        self._assign_to_ai_route(103)
+        create_response = self.client.post(
+            "/api/dialogue/sessions/",
+            {
+                "topic_id": 103,
+                "topic_title": "女性義務兵役討論",
+            },
+            format="json",
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        session_id = create_response.data["session_id"]
+        AIConversation.objects.create(
+            user=self.user,
+            session_id=session_id,
+            topic_id=103,
+            user_prompt="女性也應該服義務役",
+            ai_response="AI 回覆",
+        )
+
+        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}), patch(
+            "apps.matching.services.women_conscription_node_classifier.build_candidate_items",
+            return_value=[],
+        ):
+            response = self.client.post(
+                f"/api/dialogue/sessions/{session_id}/semantic-tree/analyze/"
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_ai_semantic_tree_reports_503_when_local_model_weights_missing(self):
+        self._assign_to_ai_route(103)
+        create_response = self.client.post(
+            "/api/dialogue/sessions/",
+            {
+                "topic_id": 103,
+                "topic_title": "女性義務兵役討論",
+            },
+            format="json",
+        )
+        session_id = create_response.data["session_id"]
+        AIConversation.objects.create(
+            user=self.user,
+            session_id=session_id,
+            topic_id=103,
+            user_prompt="女性也應該服義務役",
+            ai_response="AI 回覆",
+        )
+
+        with patch(
+            "apps.matching.services.women_conscription_node_classifier.build_candidate_items",
+            side_effect=FileNotFoundError("找不到女性義務兵役節點分類模型權重: /x/model.safetensors。"),
+        ):
+            response = self.client.post(
+                f"/api/dialogue/sessions/{session_id}/semantic-tree/analyze/"
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(response.data["error"], "missing_local_classifier_model")
+        self.assertIn("model.safetensors", response.data["message"])
 
 
 class SingleActiveDialogueSessionTests(APITestCase):
