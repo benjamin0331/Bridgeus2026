@@ -263,18 +263,25 @@ function MessageReactions({ target, value, onReact }) {
   );
 }
 
-function TopicChat({ user, issues, issuesLoaded }) {
+function TopicChat({ user, issues, issuesLoaded, entryMode }) {
   const { id } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
   const mode = useMemo(() => {
+    // 伺服器是分組的權威，網址不是。後端的入口把關存在的唯一理由就是
+    // 「?mode= 只是 query string，受試者改個網址就能自己換組」（見
+    // views._entry_gate_response）——前端如果反過來信任網址，就會走到後端
+    // 刻意堵死的那條路：送出問卷時被 403 擋下，問卷關不掉、佇列也沒加入，
+    // 而擋下的訊息為了不洩漏分組又刻意含糊，使用者只會看到「請從議題頁面
+    // 開始對話」而人就站在議題頁面上。混合入口下一律忽略 ?mode=。
+    if (entryMode === 'mixed') return 'mixed';
     const params = new URLSearchParams(location.search);
     const raw = params.get('mode');
     if (raw === 'match') return 'match';
     if (raw === 'ai') return 'ai';
     // 沒帶 mode＝混合入口：先填問卷，由後端分流後才知道是哪一種。
     return 'mixed';
-  }, [location.search]);
+  }, [location.search, entryMode]);
   const isMixedEntry = mode === 'mixed';
   const [resolvedMode, setResolvedMode] = useState(isMixedEntry ? null : mode);
   const isMatchingMode = (resolvedMode ?? mode) === 'match';
@@ -1678,6 +1685,40 @@ function TopicChat({ user, issues, issuesLoaded }) {
     focusChatInput();
   }, [focusChatInput]);
 
+  // 混合入口的送出：後端收問卷、算立場、建立分流指派，回傳這個人該走哪一邊。
+  // 抽出來是因為有兩個呼叫點——正常的混合入口，以及下面 split 路徑撞到入口
+  // 把關時的補救。不自己 catch，由呼叫端決定怎麼呈現錯誤。
+  const submitViaMixedEntry = async ({ answers, openAnswers }) => {
+    const response = await api.post('/api/dialogue/entry/', {
+      topic_id: Number(id),
+      survey_answers: answers,
+      survey_open_answers: openAnswers,
+    });
+
+    if (!isChatPageMountedRef.current) return;
+
+    if (response.data.route === 'ai') {
+      setResolvedMode('ai');
+      // 分流端點已經把 session 建好了，直接收下 session_id——
+      // ensureSession() 之後會因為 sessionId 有值而短路，不會重建一場，
+      // 也不會去打被把關擋住的 /api/dialogue/sessions/。
+      setSessionId(response.data.session_id);
+      setAiStanceMeta(extractAiStanceMeta(response.data));
+      setAiStanceDrift(extractStanceDrift(response.data));
+      setMessages([]);
+      setSemanticTreePayload(null);
+      setSemanticTreeStatus('ready');
+      setSemanticTreeMessage('');
+      semanticTreeAnalyzeSignatureRef.current = '';
+      shouldAutoScrollAiRef.current = true;
+      setChatError('');
+    } else {
+      setResolvedMode('match');
+      setMatchingState(response.data);
+    }
+    setShowSurvey(false);
+  };
+
   const handleSurveySubmit = async ({ answers, openAnswers }) => {
     setSurveyAnswers(answers);
     setSurveyOpenAnswers(openAnswers);
@@ -1739,34 +1780,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
       setStanceRedoConfirmed(true);
       setIsMatchingActionLoading(true);
       try {
-        const response = await api.post('/api/dialogue/entry/', {
-          topic_id: Number(id),
-          survey_answers: answers,
-          survey_open_answers: openAnswers,
-        });
-
-        if (!isChatPageMountedRef.current) return;
-
-        if (response.data.route === 'ai') {
-          setResolvedMode('ai');
-          // 分流端點已經把 session 建好了，直接收下 session_id——
-          // ensureSession() 之後會因為 sessionId 有值而短路，不會重建一場，
-          // 也不會去打被把關擋住的 /api/dialogue/sessions/。
-          setSessionId(response.data.session_id);
-          setAiStanceMeta(extractAiStanceMeta(response.data));
-          setAiStanceDrift(extractStanceDrift(response.data));
-          setMessages([]);
-          setSemanticTreePayload(null);
-          setSemanticTreeStatus('ready');
-          setSemanticTreeMessage('');
-          semanticTreeAnalyzeSignatureRef.current = '';
-          shouldAutoScrollAiRef.current = true;
-          setChatError('');
-        } else {
-          setResolvedMode('match');
-          setMatchingState(response.data);
-        }
-        setShowSurvey(false);
+        await submitViaMixedEntry({ answers, openAnswers });
       } catch (error) {
         if (!isChatPageMountedRef.current) return;
         setMatchingError(
@@ -1823,6 +1837,28 @@ function TopicChat({ user, issues, issuesLoaded }) {
     } catch (error) {
       if (!isChatPageMountedRef.current) {
         return;
+      }
+
+      // 防守第二層：走到這裡代表前端以為是分開入口、伺服器其實在混合入口。
+      // 上面的 mode 已經改成以伺服器為準，但 /api/me/ 讀取失敗時會退回
+      // 'split'（見 App.jsx），舊書籤和 Godot 轉址也可能帶著 ?mode=match
+      // 進來。entry_gate 這個 code 的意思就是「你還沒被分流」，那就照混合
+      // 入口重送一次——使用者不該因為前端猜錯而卡在一份送不出去的問卷上，
+      // 尤其那句 403 訊息為了不洩漏分組，讀起來完全不知道該做什麼。
+      if (error?.response?.data?.code === 'entry_gate') {
+        try {
+          setStanceRedoConfirmed(true);
+          await submitViaMixedEntry({ answers, openAnswers });
+          setMatchingError('');
+          return;
+        } catch (retryError) {
+          if (!isChatPageMountedRef.current) return;
+          setMatchingError(
+            retryError?.response?.data?.detail ||
+              '目前無法開始對話，請稍後再試。',
+          );
+          return;
+        }
       }
 
       setMatchingError(

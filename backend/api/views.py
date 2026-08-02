@@ -1537,6 +1537,17 @@ class DialogueEntryFallbackView(APIView):
 
 
 ENTRY_GATE_DETAIL = "請從議題頁面開始對話。"
+# detail 對使用者刻意含糊（說清楚等於洩漏分組），所以前端無法從它判斷發生了
+# 什麼。這個 code 是給前端看的：收到就代表「伺服器在混合入口、你還沒被分流」，
+# 前端據此改走 /api/dialogue/entry/，而不是把死路丟給使用者。
+ENTRY_GATE_CODE = "entry_gate"
+
+
+def _entry_gate_denied() -> Response:
+    return Response(
+        {"detail": ENTRY_GATE_DETAIL, "code": ENTRY_GATE_CODE},
+        status=status.HTTP_403_FORBIDDEN,
+    )
 
 
 def _entry_gate_response(*, user, topic_id: int, target: str):
@@ -1557,9 +1568,7 @@ def _entry_gate_response(*, user, topic_id: int, target: str):
         user=user, topic_id=topic_id
     ).first()
     if assignment is None:
-        return Response(
-            {"detail": ENTRY_GATE_DETAIL}, status=status.HTTP_403_FORBIDDEN
-        )
+        return _entry_gate_denied()
 
     if target == "match":
         allowed = assignment.route == DialogueEntryAssignment.Route.MATCH
@@ -1571,7 +1580,7 @@ def _entry_gate_response(*, user, topic_id: int, target: str):
 
     if allowed:
         return None
-    return Response({"detail": ENTRY_GATE_DETAIL}, status=status.HTTP_403_FORBIDDEN)
+    return _entry_gate_denied()
 
 
 class MeView(APIView):

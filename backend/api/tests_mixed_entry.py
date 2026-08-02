@@ -580,6 +580,28 @@ class EntryGateTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         self.assertEqual(response.data["detail"], "請從議題頁面開始對話。")
 
+    def test_gate_response_carries_a_machine_readable_code(self):
+        """The frontend has to recognise this 403 to recover from it.
+
+        `detail` is a deliberately vague human string (it must not reveal
+        which arm the participant was assigned to), and matching on Chinese
+        prose would break the moment anyone rewords it. Both gated endpoints
+        therefore carry the same stable `code`.
+        """
+        self.client.force_authenticate(user=self.participant)
+
+        join = self.client.post(
+            "/api/matching/join/", self._join_payload(), format="json"
+        )
+        session = self.client.post(
+            "/api/dialogue/sessions/", self._session_payload(), format="json"
+        )
+
+        self.assertEqual(join.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(session.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(join.data["code"], "entry_gate")
+        self.assertEqual(session.data["code"], "entry_gate")
+
     def test_mixed_mode_blocks_direct_session_without_assignment(self):
         self.client.force_authenticate(user=self.participant)
 

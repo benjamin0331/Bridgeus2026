@@ -22,9 +22,18 @@ import ViewpointReviewPage from './pages/ViewpointReviewPage'
 import SettingsPage from './pages/SettingsPage'
 import GodotLobby from './pages/GodotLobby'
 
-function TopicChatRoute({ user, issues, issuesLoaded }) {
+function TopicChatRoute({ user, issues, issuesLoaded, entryMode }) {
   const { id } = useParams();
   const location = useLocation();
+
+  // entryMode 還沒回來就先不掛載。TopicChat 在第一次 render 就會把模式定下來
+  // （resolvedMode 是 useState 的初始值，之後不跟著 entryMode 走），所以晚到
+  // 的伺服器答案救不回來——直接開 /topic/x?mode=match 的書籤會整頁卡在配對
+  // 模式，即使伺服器說這個人是混合入口。寧可晚一個 request 再畫。
+  if (!entryMode) {
+    // 跟 TopicChat 自己的載入畫面同一個樣子，避免兩段等待看起來像兩件事。
+    return <div style={{ padding: '50px', textAlign: 'center' }}>正在載入議題數據...</div>;
+  }
 
   return (
     <TopicChat
@@ -32,6 +41,7 @@ function TopicChatRoute({ user, issues, issuesLoaded }) {
       user={user}
       issues={issues}
       issuesLoaded={issuesLoaded}
+      entryMode={entryMode}
     />
   );
 }
@@ -58,7 +68,9 @@ function App() {
   const [authMessage, setAuthMessage] = useState('');
   const [issues, setIssues] = useState([]);
   const [issuesLoaded, setIssuesLoaded] = useState(false);
-  const [entryMode, setEntryMode] = useState('split');
+  // null = /api/me/ 還沒回來（不是「分開入口」）。讀取失敗時會設成 'split'，
+  // 所以 null 只代表「還在等」，不會永久卡住。TopicChatRoute 靠這個分辨。
+  const [entryMode, setEntryMode] = useState(null);
 
   // 剛進入/刷新時跳出的成就通知。
   // ponytail: 目前偵測未接後端，先預設「一路同行」；之後把這行換成後端回傳的解鎖成就名稱
@@ -202,6 +214,7 @@ function App() {
                   user={user}
                   issues={issues}
                   issuesLoaded={issuesLoaded}
+                  entryMode={entryMode}
                 />
               )}
             />
