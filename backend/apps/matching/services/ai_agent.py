@@ -86,6 +86,57 @@ _JUDGMENT_CLOSE = "</judgment>"
 _REPLY_OPEN = "<reply>"
 _REPLY_CLOSE = "</reply>"
 
+# Second leak shape: the tag boundary holds, but the model writes judgment
+# language *inside* <reply>. Tag parsing cannot catch this — only vocabulary can.
+# Reproduces reliably on long, fact-dense user input (policy dumps with dates,
+# statutes, agencies), where the 收斂/開新方向 call becomes a boundary case and
+# the model externalises more of its reasoning.
+# Every entry is either prompt-internal jargon (型別名稱, 三之二 wording) or a
+# meta-description of the model's own turn. None of them are natural things to
+# say when arguing about nuclear policy — see test_no_false_positive_on_* for
+# the regression fixtures that keep this list honest.
+_JUDGMENT_LEAK_PATTERNS = (
+    "內部判斷", "內部確認", "內部檢查", "內部問題",
+    "判定為", "本輪判定", "使用者這一輪", "他這一輪",
+    "本輪強制", "強制使用", "強制套用",
+    "開啟新方向", "判定為「收斂」",
+    "承接深化型", "視角翻轉型", "直接論述型",
+    "承認弱點型", "案例對比型",
+)
+
+# 判定語言集中在開頭第一句,所以救援時只切第一句。
+_FIRST_SENTENCE_END_RE = re.compile(r"[。！？]")
+
+
+def detect_judgment_leak(text: str) -> str | None:
+    """回傳第一個命中的判定語言,無命中回傳 None。"""
+    for pattern in _JUDGMENT_LEAK_PATTERNS:
+        if pattern in text:
+            return pattern
+    return None
+
+
+def salvage_reply(text: str, min_length: int = 40) -> str | None:
+    """切除含判定語言的首句,回傳可用正文;無法救援回傳 None。
+
+    判定語言通常集中在開頭第一句。切到第一個句末標點之後,
+    若剩餘內容夠長且不再命中判定語言,即視為可用。
+
+    這是第二級救援:第一級(注入糾正指令重跑)失敗後才走這裡,
+    避免第三次 API 呼叫。救回的內容仍標記 contract_violated=True,
+    因為它終究是違約輸出的產物,研究上必須可辨識。
+    """
+    match = _FIRST_SENTENCE_END_RE.search(text)
+    if match is None:
+        return None
+
+    remainder = text[match.end():].strip()
+    if len(remainder) < min_length:
+        return None
+    if detect_judgment_leak(remainder) is not None:
+        return None
+    return remainder
+
 # claude-sonnet-4-6 returns 400 on a trailing assistant message, so the output
 # contract cannot be pinned by prefill. Flip this only after verifying the
 # configured model actually accepts one (api/tests_live_contract.py proves it).
@@ -115,6 +166,8 @@ class ReplyStreamGate:
         self._closed = False
         self._judgment_raw = ""
         self.reply = ""
+        # Set by finish() when the reply body contains judgment vocabulary.
+        self.leak_pattern: str | None = None
 
     @property
     def judgment(self) -> str:
@@ -172,12 +225,26 @@ class ReplyStreamGate:
         self.reply += out
         return out
 
+    def _detect_leak(self, text: str) -> str | None:
+        """回傳第一個命中的判定語言,無命中回傳 None。"""
+        return detect_judgment_leak(text)
+
     def finish(self) -> tuple[str, bool]:
-        """回傳 (剩餘可推內容, 契約是否成立)。"""
+        """回傳 (剩餘可推內容, 契約是否成立)。
+
+        除了標籤邊界,這裡還檢查 reply 內文是否混入判定語言。命中時回傳
+        空字串而非 tail——即使呼叫端忘了檢查 ok,也不會把違約內容推出去。
+        完整內容仍留在 self.reply 供 salvage_reply() 救援。
+        """
         if not self._open:
             return "", False       # 從未開閘 → fail closed
         out, self._buf = self._buf, ""
         self.reply += out
+
+        self.leak_pattern = self._detect_leak(self.reply)
+        if self.leak_pattern is not None:
+            return "", False       # 判定語言混入正文 → fail closed
+
         return out, True
 
 # ═══════════════════════════════════════════════════════════
@@ -622,8 +689,16 @@ class DialogueAgent:
                 f"DialogueAgent LLM 呼叫失敗（輪次 {session.turn_count}）：{exc}"
             ) from exc
 
-    async def astream_respond(self, session: DialogueSession):
-        """Stream an AI reply for Django Channels while preserving session semantics."""
+    async def astream_respond(self, session: DialogueSession, correction: str = ""):
+        """Stream an AI reply for Django Channels while preserving session semantics.
+
+        `correction` is appended to the user message on a contract-violation
+        retry. At temperature 0.3 the output distribution is tight enough that
+        replaying identical input reproduces the identical failure, so the input
+        has to change for the output to change. It is deliberately NOT written
+        into session.history — it is a transport-level correction, not something
+        the participant said, and it must never be replayed into later turns.
+        """
         import anthropic
         from asgiref.sync import sync_to_async
 
@@ -632,7 +707,10 @@ class DialogueAgent:
             raise ValueError("Session 中沒有使用者訊息。")
         latest_msg = user_messages[-1].content
 
+        # RAG retrieval always runs on the participant's own words, never on the
+        # correction text, so a retry hits the same knowledge as the first try.
         rag_context = await sync_to_async(self._retrieve_context)(latest_msg)
+        api_message = f"{latest_msg}{correction}" if correction else latest_msg
 
         prompt_vars = {
             "topic": session.topic,
@@ -677,7 +755,7 @@ class DialogueAgent:
                     "cache_control": {"type": "ephemeral"},
                 }
             ],
-            messages=[{"role": "user", "content": latest_msg}],
+            messages=[{"role": "user", "content": api_message}],
         ) as stream:
             async for text in stream.text_stream:
                 yield text

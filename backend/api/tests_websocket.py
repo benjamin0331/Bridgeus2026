@@ -37,7 +37,7 @@ class FakeStreamingDialogueAgent:
     "<judgment>…</judgment>" tag pair (see ai_agent.astream_respond).
     """
 
-    async def astream_respond(self, session):
+    async def astream_respond(self, session, correction: str = ""):
         yield (
             "<judgment>開啟新方向。結構 A。使用者提出新的事實問題。</judgment>"
             f"<reply>AI reply to: {session.history[-1].content}</reply>"
@@ -62,7 +62,7 @@ class LeakyStreamingDialogueAgent:
         self.chunk_size = chunk_size
         self.with_open_tag = with_open_tag
 
-    async def astream_respond(self, session):
+    async def astream_respond(self, session, correction: str = ""):
         payload = (
             f"{'<judgment>' if self.with_open_tag else ''}"
             f"{self.JUDGMENT}</judgment>"
@@ -84,13 +84,87 @@ class MimickedTagDialogueAgent:
     def __init__(self, chunk_size: int = 3):
         self.chunk_size = chunk_size
 
-    async def astream_respond(self, session):
+    async def astream_respond(self, session, correction: str = ""):
         payload = (
             f"<judgment>判定為「收斂」,強制使用承接深化型(E)。{self.MIMICRY}"
             f"</judgment><reply>{self.REPLY}</reply>"
         )
         for i in range(0, len(payload), self.chunk_size):
             yield payload[i:i + self.chunk_size]
+
+
+class LeakInReplyDialogueAgent:
+    """Tag boundary holds, but judgment language lands inside <reply>.
+
+    First call leaks; the corrected retry (correction text appended to the user
+    message) comes back clean. Records what it was called with so the test can
+    prove the retry actually carried the correction.
+    """
+
+    LEAKY_REPLY = (
+        "內部判斷：使用者這一輪是在開啟新方向——提供了一段具體的政策現況背景，"
+        "等待我回應。 這個現況說明台灣的核電政策一直在政治可行性和現實需求之間拉扯。"
+    )
+    CLEAN_REPLY = (
+        "核二、核三被評估為具再運轉可行性，並不等於安全無虞可以直接重啟，"
+        "這只是技術評估的第一步。"
+    )
+
+    def __init__(self, chunk_size: int = 5):
+        self.chunk_size = chunk_size
+        self.call_count = 0
+        self.corrections = []
+
+    async def astream_respond(self, session, correction: str = ""):
+        self.call_count += 1
+        self.corrections.append(correction)
+        body = self.CLEAN_REPLY if correction else self.LEAKY_REPLY
+        payload = (
+            "<judgment>開新方向|A|使用者貼入政策背景</judgment>"
+            f"<reply>{body}</reply>"
+        )
+        for i in range(0, len(payload), self.chunk_size):
+            yield payload[i:i + self.chunk_size]
+
+
+class UnsalvageableLeakDialogueAgent:
+    """Leaks on both attempts, and the body cannot be salvaged."""
+
+    RAW_REPLY = "內部判斷：本輪強制使用承接深化型(E)。判定為「收斂」。"
+
+    def __init__(self):
+        self.call_count = 0
+
+    async def astream_respond(self, session, correction: str = ""):
+        self.call_count += 1
+        yield (
+            "<judgment>收斂|E|測試</judgment>"
+            f"<reply>{self.RAW_REPLY}</reply>"
+        )
+
+
+class SalvageableLeakDialogueAgent:
+    """Leaks on both attempts, but the body after the first sentence is clean."""
+
+    LEAKY_REPLY = (
+        "內部判斷：使用者這一輪是在開啟新方向。"
+        "核二、核三被評估為具再運轉可行性，並不等於安全無虞可以直接重啟，"
+        "後面還有自主安全檢查與再運轉計畫審查，核廢料最終處置也仍無著落。"
+    )
+    SALVAGED = (
+        "核二、核三被評估為具再運轉可行性，並不等於安全無虞可以直接重啟，"
+        "後面還有自主安全檢查與再運轉計畫審查，核廢料最終處置也仍無著落。"
+    )
+
+    def __init__(self):
+        self.call_count = 0
+
+    async def astream_respond(self, session, correction: str = ""):
+        self.call_count += 1
+        yield (
+            "<judgment>開新方向|A|測試</judgment>"
+            f"<reply>{self.LEAKY_REPLY}</reply>"
+        )
 
 
 class ContractViolatingDialogueAgent:
@@ -102,7 +176,7 @@ class ContractViolatingDialogueAgent:
         self.chunk_size = chunk_size
         self.call_count = 0
 
-    async def astream_respond(self, session):
+    async def astream_respond(self, session, correction: str = ""):
         self.call_count += 1
         for i in range(0, len(self.RAW), self.chunk_size):
             yield self.RAW[i:i + self.chunk_size]
@@ -147,15 +221,19 @@ async def _setup_ai_session(user, session_id):
 async def _drain_agent_stream(communicator, timeout=3):
     """Collect every agent_stream chunk up to agent_stream_end.
 
-    Returns (chunks, end_message).
+    Returns (chunks, end_message, saw_thinking).
     """
     chunks = []
+    saw_thinking = False
     while True:
         message = await communicator.receive_json_from(timeout=timeout)
+        if message["type"] == "agent_thinking":
+            saw_thinking = True
+            continue
         if message["type"] == "agent_stream":
             chunks.append(message["content"])
             continue
-        return chunks, message
+        return chunks, message, saw_thinking
 
 
 async def _access_token_for(user):
@@ -220,9 +298,13 @@ async def test_dialogue_websocket_persists_completed_turn():
         await communicator.send_json_to(
             {"type": "user_message", "content": "核能真的比較穩定嗎？"}
         )
+        thinking_message = await communicator.receive_json_from(timeout=3)
         stream_message = await communicator.receive_json_from(timeout=3)
         end_message = await communicator.receive_json_from(timeout=3)
 
+    # The reply is held until it passes validation, so the client is told to
+    # show a typing indicator first.
+    assert thinking_message == {"type": "agent_thinking"}
     assert stream_message == {
         "type": "agent_stream",
         "content": "AI reply to: 核能真的比較穩定嗎？",
@@ -289,7 +371,7 @@ async def test_judgment_block_never_reaches_the_client(chunk_size, with_open_tag
         await communicator.send_json_to(
             {"type": "user_message", "content": "所以優勢就是比較便宜嗎"}
         )
-        chunks, end_message = await _drain_agent_stream(communicator)
+        chunks, end_message, saw_thinking = await _drain_agent_stream(communicator)
 
     assert end_message["type"] == "agent_stream_end"
 
@@ -358,7 +440,7 @@ async def test_reply_tag_mimicked_inside_judgment_does_not_leak():
         await communicator.send_json_to(
             {"type": "user_message", "content": "所以優勢就是比較便宜嗎"}
         )
-        chunks, end_message = await _drain_agent_stream(communicator)
+        chunks, end_message, saw_thinking = await _drain_agent_stream(communicator)
 
     assert end_message["type"] == "agent_stream_end"
 
@@ -374,6 +456,125 @@ async def test_reply_tag_mimicked_inside_judgment_does_not_leak():
     assert "本輪" in saved_turn.internal_judgment
 
     await communicator.disconnect()
+
+
+async def _run_single_turn(username, agent, message="所以優勢就是比較便宜嗎", timeout=5):
+    """Drive one H-AI turn end-to-end; return (chunks, end_message, saw_thinking,
+    session_id, user)."""
+    from BridgeUs_Django.asgi import application
+
+    user = await create_user(username=username, password="secret123")
+    session_id = uuid4().hex
+    await _setup_ai_session(user, session_id)
+
+    token = await _access_token_for(user)
+    communicator = WebsocketCommunicator(
+        application,
+        f"/ws/dialogue/{session_id}/?token={token}",
+    )
+
+    with (
+        patch("api.views.get_dialogue_agent", return_value=agent),
+        patch(
+            "api.consumers.aget_embedding",
+            new=AsyncMock(return_value=make_test_embedding(-1)),
+        ),
+    ):
+        connected, _ = await communicator.connect()
+        assert connected
+        await communicator.send_json_to({"type": "user_message", "content": message})
+        chunks, end_message, saw_thinking = await _drain_agent_stream(
+            communicator, timeout=timeout
+        )
+
+    await communicator.disconnect()
+    return chunks, end_message, saw_thinking, session_id, user
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_in_reply_leak_triggers_corrected_retry():
+    """5d: judgment language inside <reply> → corrected retry → clean output."""
+    agent = LeakInReplyDialogueAgent()
+    chunks, end_message, saw_thinking, session_id, _ = await _run_single_turn(
+        "gate_inreply_user",
+        agent,
+        message="台灣的核電政策現況是這樣的：核二、核三已被評估為具再運轉可行性……",
+    )
+
+    assert end_message["type"] == "agent_stream_end"
+    assert saw_thinking is True
+
+    # Exactly two calls: the leaky one and the corrected retry.
+    assert agent.call_count == 2
+    assert agent.corrections[0] == ""
+    assert "違反格式契約" in agent.corrections[1]
+
+    streamed = "".join(chunks)
+    assert streamed == LeakInReplyDialogueAgent.CLEAN_REPLY
+    # The first attempt must never have reached the client.
+    assert "內部判斷" not in streamed
+    assert "使用者這一輪" not in streamed
+    assert "開啟新方向" not in streamed
+
+    saved_turn = await AIConversation.objects.aget(session_id=session_id)
+    assert saved_turn.ai_response == LeakInReplyDialogueAgent.CLEAN_REPLY
+    # A clean retry is a satisfied contract, not a violation.
+    assert saved_turn.contract_violated is False
+
+    record = await sync_to_async(cache.get)(f"dialogue_session:{session_id}")
+    last_agent_message = [
+        message
+        for message in record["session"]["history"]
+        if message["role"] == "agent"
+    ][-1]
+    assert last_agent_message["content"] == LeakInReplyDialogueAgent.CLEAN_REPLY
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_persistent_in_reply_leak_is_salvaged():
+    """Both attempts leak, but the body after the judgment sentence is usable:
+    show the salvaged text, still flag the turn as violated."""
+    agent = SalvageableLeakDialogueAgent()
+    chunks, _, _, session_id, _ = await _run_single_turn(
+        "gate_salvage_user", agent
+    )
+
+    assert agent.call_count == 2      # no third API call
+    streamed = "".join(chunks)
+    assert streamed == SalvageableLeakDialogueAgent.SALVAGED
+    assert "內部判斷" not in streamed
+    assert "開啟新方向" not in streamed
+
+    saved_turn = await AIConversation.objects.aget(session_id=session_id)
+    assert saved_turn.ai_response == SalvageableLeakDialogueAgent.SALVAGED
+    # Salvaged output is still the product of a violation — research must see it.
+    assert saved_turn.contract_violated is True
+    assert "內部判斷" in saved_turn.internal_judgment
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_unsalvageable_in_reply_leak_falls_back():
+    from api.consumers import CONTRACT_FALLBACK_TEXT
+
+    agent = UnsalvageableLeakDialogueAgent()
+    chunks, _, _, session_id, _ = await _run_single_turn(
+        "gate_unsalvageable_user", agent
+    )
+
+    assert agent.call_count == 2
+    assert chunks == [CONTRACT_FALLBACK_TEXT]
+    assert UnsalvageableLeakDialogueAgent.RAW_REPLY not in "".join(chunks)
+
+    saved_turn = await AIConversation.objects.aget(session_id=session_id)
+    assert saved_turn.ai_response == CONTRACT_FALLBACK_TEXT
+    assert saved_turn.contract_violated is True
+    assert "內部判斷" in saved_turn.internal_judgment
 
 
 @pytest.mark.asyncio
@@ -409,7 +610,7 @@ async def test_contract_violation_fails_closed():
         await communicator.send_json_to(
             {"type": "user_message", "content": "所以優勢就是比較便宜嗎"}
         )
-        chunks, end_message = await _drain_agent_stream(communicator, timeout=5)
+        chunks, end_message, saw_thinking = await _drain_agent_stream(communicator, timeout=5)
 
     assert end_message["type"] == "agent_stream_end"
 
