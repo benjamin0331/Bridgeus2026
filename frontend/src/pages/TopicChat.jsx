@@ -564,6 +564,10 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     wsRef.current = null;
     wsSessionIdRef.current = null;
     currentAgentMsgIdRef.current = null;
+    pendingAiReplyCountRef.current = 0;
+    setIsSending(false);
+    setIsAgentStreaming(false);
+    setIsAgentThinking(false);
     resetAiSemanticTreeState();
     setSessionId(pendingRestoredSession.session_id);
     setMessages(mapHistoryToMessages(pendingRestoredSession.history || [], displayUserName));
@@ -600,8 +604,10 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     setSurveyOpenAnswers({});
     setInputValue('');
     setChatError('');
+    pendingAiReplyCountRef.current = 0;
     setIsSending(false);
     setIsAgentStreaming(false);
+    setIsAgentThinking(false);
     setStanceRedoConfirmed(false);
     shouldAutoScrollAiRef.current = true;
     setShowSurvey(true);
@@ -876,9 +882,11 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     setReactions({});
     setAiStanceMeta(null);
     setAiStanceDrift(null);
+    pendingAiReplyCountRef.current = 0;
     setIsSending(false);
     setChatError('');
     setIsAgentStreaming(false);
+    setIsAgentThinking(false);
     setIsSessionRestoring(false);
     setPendingRestoredSession(null);
     currentAgentMsgIdRef.current = null;
@@ -1274,10 +1282,19 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     // 對方主動離開房間時，這裡的使用者只能靠輪詢發現 status 變成 closed；
     // 主動離開的那一方已經在 handleLeaveMatchRoom 裡自己導去問卷了
     // （selfInitiatedLeaveRef 標記），這裡只補「被動被結束」的那一方。
+    //
+    // sessionStorage 記號避免無限迴圈：使用者從問卷按 × 關閉時會 navigate(-1)
+    // 回到這個頁面，元件重新掛載、selfInitiatedLeaveRef 也重置回 false，
+    // 但 matchingState.status 還是 'closed'——沒有這個記號的話，這條 effect
+    // 會立刻又把使用者送回問卷，變成「怎麼按都離不開問卷」。同一個房間只自動
+    // 導向一次，之後使用者自己按叉關掉就真的關得掉。
     if (!isMatchingMode) return;
     if (selfInitiatedLeaveRef.current) return;
     if (matchingState?.status !== 'closed') return;
     if (!matchingState?.room_id) return;
+    const redirectFlagKey = `bridgeus_pq_auto_redirected_${matchingState.room_id}`;
+    if (sessionStorage.getItem(redirectFlagKey)) return;
+    sessionStorage.setItem(redirectFlagKey, '1');
     navigate('/post-questionnaire', {
       state: {
         topicId: Number(id),
@@ -1739,11 +1756,18 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       // ── Input gate ────────────────────────────────────────────────────
       // 這三種事件都不是 LLM 回覆（零 token），也都要把送出狀態解除，
       // 否則輸入框會卡在 disabled。
+      //
+      // 用 updatePendingAiReplyCount(-1) 而不是直接 setIsSending(false)：
+      // pendingAiReplyCountRef 才是 isSending 的真正來源。如果這裡直接把
+      // isSending 設 false，卻沒有把 ref 一起歸零，之後另一輪真的在跑的回覆
+      // 送出 agent_stream_end/error 時，會拿著沒被清過的 ref 再扣一次、算出
+      // nextCount > 0，把 isSending 重新設回 true——訊息明明已經顯示完了，
+      // 「正在整理回應...」的泡泡卻又卡住不會消失。
       if (data.type === 'input_blocked') {
         currentAgentMsgIdRef.current = null;
         setIsAgentThinking(false);
         setIsAgentStreaming(false);
-        setIsSending(false);
+        updatePendingAiReplyCount(-1);
         if (data.presentation === 'notice') {
           // 3–5 次：系統提示列，不進對話串，也不佔對話輪數。
           setInputGateNotice({ id: `gate-${Date.now()}`, message: data.content });
@@ -1765,7 +1789,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
         currentAgentMsgIdRef.current = null;
         setIsAgentThinking(false);
         setIsAgentStreaming(false);
-        setIsSending(false);
+        updatePendingAiReplyCount(-1);
         setInputGateNotice(null);
         setCooldownSeconds(data.seconds || 0);
         return;
@@ -1774,7 +1798,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       if (data.type === 'rate_limited') {
         setIsAgentThinking(false);
         setIsAgentStreaming(false);
-        setIsSending(false);
+        updatePendingAiReplyCount(-1);
         setInputGateNotice({ id: `rate-${Date.now()}`, message: data.content });
         return;
       }
@@ -2851,7 +2875,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     isCoolingDown ||
     (isMatchingMode
       ? !isMatchChatReady || isMatchSending
-      : showSurvey || isSessionRestoring || Boolean(pendingRestoredSession));
+      : showSurvey || isSessionRestoring || Boolean(pendingRestoredSession) || isSending);
 
   const activeChatError = isMatchingMode && showSurvey
     ? ''
