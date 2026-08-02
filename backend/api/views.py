@@ -360,6 +360,7 @@ def _dialogue_session_response_payload(
     user_id: int | None = None,
 ) -> dict:
     session_state = session_record.get("session") or {}
+    # 帶 turn_id 的歷史，前端才能把 讚/倒讚 掛到對應的 AI 回覆上。
     history = session_state.get("history") or []
     if user_id is not None:
         history = _live_dialogue_history(
@@ -970,10 +971,49 @@ def _history_match_messages(match: DialogueMatch, *, user_id: int) -> list[dict]
     return messages
 
 
-def _history_ai_summary(record: DialogueSessionRecord) -> dict:
+def _last_message_content_by_role(messages: list[dict], role: str) -> str:
+    """最後一則指定角色的訊息內容，找不到就回空字串（例如對方/AI 還沒回過）。"""
+    for message in reversed(messages):
+        if message["role"] == role:
+            return message.get("content", "")
+    return ""
+
+
+def _is_latest_ai_session_for_topic(record: DialogueSessionRecord) -> bool:
+    latest = (
+        DialogueSessionRecord.objects.filter(user_id=record.user_id, topic_id=record.topic_id)
+        .order_by("-last_activity_at", "-id")
+        .first()
+    )
+    return latest is not None and latest.pk == record.pk
+
+
+def _history_ai_summary(
+    record: DialogueSessionRecord,
+    *,
+    completed_session_ids: set[str] | None = None,
+    is_latest_for_topic: bool | None = None,
+) -> dict:
     messages = _history_ai_messages(record)
     user_messages = [message for message in messages if message["role"] == "user"]
     preview_source = user_messages[-1] if user_messages else (messages[-1] if messages else None)
+    last_overall_message = messages[-1] if messages else None
+    # AI 對話沒有真正的「已結束」流程——record.status 在正式流程裡永遠是
+    # active，不像真人配對房有明確的離開/關閉動作。改用兩個間接訊號判斷是否
+    # 已結束：(1) 這個 topic 的對話後問卷已經填完，或 (2) 使用者後來又對同一
+    # 個 topic 開了新的 session——沒填問卷就開新對話，代表舊的那場已經被放
+    # 棄了，不該再被通知導回去。completed_session_ids／is_latest_for_topic
+    # 由呼叫端一次查好整批傳進來，避免列表頁對每筆記錄各打好幾次 DB。
+    if completed_session_ids is not None:
+        has_post_response = record.session_id in completed_session_ids
+    else:
+        has_post_response = PostDialogueResponse.objects.filter(
+            user_id=record.user_id,
+            session_id=record.session_id,
+        ).exists()
+    if is_latest_for_topic is None:
+        is_latest_for_topic = _is_latest_ai_session_for_topic(record)
+    is_completed = has_post_response or not is_latest_for_topic
     return {
         "kind": "ai",
         "id": record.session_id,
@@ -985,9 +1025,16 @@ def _history_ai_summary(record: DialogueSessionRecord) -> dict:
         "room_id": record.session_id,
         "topic_id": record.topic_id,
         "topic_title": record.topic_title,
-        "status": record.status,
+        "status": DialogueSessionRecord.Status.CLOSED if is_completed else record.status,
         "message_count": len(messages),
         "last_message_preview": (preview_source or {}).get("content", "")[:120],
+        # 通知列表專用：一定是「AI 最後回了什麼」，不是自己最後問了什麼——
+        # last_message_preview 刻意留給歷史列表用（優先秀自己最後問的問題）。
+        "last_partner_message_preview": _last_message_content_by_role(messages, "agent")[:120],
+        # 通知鈴鐺用：最新一則若是 AI 回覆而非自己送出的，就算「未讀」——跟
+        # match summary 的 last_message_from_partner 同一套判斷方式，讓前端
+        # 不用分 kind 就能算未讀。
+        "last_message_from_partner": bool(last_overall_message) and last_overall_message.get("role") == "agent",
         "last_activity_at": record.last_activity_at,
     }
 
@@ -1004,6 +1051,11 @@ def _history_match_summary(match: DialogueMatch, *, user_id: int) -> dict:
         "status": match.status,
         "message_count": len(messages),
         "last_message_preview": (preview_source or {}).get("content", "")[:120],
+        # 通知列表專用：一定是「對方最後傳了什麼」，不是自己最後傳了什麼。
+        "last_partner_message_preview": _last_message_content_by_role(messages, "partner")[:120],
+        # 通知鈴鐺用來判斷「未讀」：只有對方（非本人）發出的最新一則才算數，
+        # 自己送出的最後一則不該讓自己的鈴鐺亮起紅點。
+        "last_message_from_partner": bool(preview_source) and preview_source.get("role") == "partner",
         "last_activity_at": (
             (preview_source or {}).get("created_at")
             or match.closed_at
@@ -1672,6 +1724,97 @@ class DialogueSessionDetailView(APIView):
         )
 
 
+def _apply_reply_input_gate(*, session_id: str, user, user_message: str):
+    """Run the input gate on the REST reply path.
+
+    Returns a Response when the message must not reach the LLM, or None to let
+    the caller carry on. Mirrors DialogueStreamConsumer._passes_input_gate; the
+    payload shape matches the WebSocket events so the frontend can render both
+    with the same code.
+    """
+    from apps.matching.services.input_gate import (
+        COOLDOWN_NOTICE,
+        InputVerdict,
+        classify,
+        fallback_message,
+        rate_limit_notice,
+        throttle_tier,
+    )
+    from apps.matching.services.input_gate_store import record_ai_attempt
+    from apps.matching.services.rate_limit import (
+        check_rate_limit,
+        cooldown_remaining,
+        start_cooldown,
+    )
+
+    scope = f"ai:{session_id}:{user.id}"
+    remaining = cooldown_remaining(scope)
+    if remaining:
+        return Response(
+            {
+                "type": "input_cooldown",
+                "seconds": remaining,
+                "detail": COOLDOWN_NOTICE.format(seconds=remaining),
+            },
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+
+    rate = check_rate_limit(user.id)
+    if not rate["allowed"]:
+        return Response(
+            {
+                "type": "rate_limited",
+                "reason": rate["reason"],
+                "retry_after": rate["retry_after"],
+                "detail": rate_limit_notice(rate["reason"]),
+            },
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+
+    prev_is_question = bool(
+        AIConversation.objects.filter(
+            user_id=user.id,
+            session_id=session_id,
+            ai_response__isnull=False,
+        )
+        .exclude(ai_response="")
+        .order_by("-created_at", "-id")
+        .values_list("ai_turn_is_question", flat=True)
+        .first()
+    )
+    verdict = classify(user_message, prev_ai_is_question=prev_is_question)
+    if verdict is InputVerdict.VALID:
+        record_ai_attempt(session_id, blocked=False)
+        return None
+
+    count = record_ai_attempt(session_id, blocked=True)
+    tier = throttle_tier(count)
+    if tier == "cooldown":
+        seconds = start_cooldown(scope)
+        return Response(
+            {
+                "type": "input_cooldown",
+                "seconds": seconds,
+                "invalid_input_count": count,
+                "detail": COOLDOWN_NOTICE.format(seconds=seconds),
+            },
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+
+    # 200, not an error status: the participant gets a real (static, zero-token)
+    # reply. Only the LLM call is skipped.
+    return Response(
+        {
+            "type": "input_blocked",
+            "presentation": tier,
+            "reason": verdict.value,
+            "reply": fallback_message(verdict, count),
+            "chunks": [fallback_message(verdict, count)],
+            "invalid_input_count": count,
+        }
+    )
+
+
 class DialogueSessionReplyView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -1692,6 +1835,19 @@ class DialogueSessionReplyView(APIView):
             )
 
         user_message = serializer.validated_data["message"].strip()
+
+        # The REST path is the frontend's fallback when the WebSocket cannot be
+        # opened. It reaches the same RAG + Claude + AIConversation code, so the
+        # input gate has to run here too — otherwise a participant on a flaky
+        # connection bypasses it entirely.
+        gate_response = _apply_reply_input_gate(
+            session_id=session_id,
+            user=request.user,
+            user_message=user_message,
+        )
+        if gate_response is not None:
+            return gate_response
+
         session = DialogueSession.from_dict(session_record["session"])
         session.add_user_message(user_message)
         session.dialogue_phase = DialoguePhase.from_turn_count(session.turn_count)
@@ -1717,10 +1873,13 @@ class DialogueSessionReplyView(APIView):
             embedding=prompt_embedding,
         )
 
+        # Neither this path nor the WebSocket path gets assistant prefill (the
+        # model rejects it); DialogueAgent logs that once at construction. The
+        # output contract is enforced below by ReplyStreamGate, which fails closed.
+        agent = get_dialogue_agent(session_record["collection_name"])
+
         try:
-            reply = get_dialogue_agent(session_record["collection_name"]).respond(
-                session
-            )
+            raw_reply = agent.respond(session)
         except Exception:
             logger.exception(
                 "Dialogue reply failed for session %s with collection %s.",
@@ -1734,14 +1893,62 @@ class DialogueSessionReplyView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        from apps.matching.services.ai_agent import split_into_chunks
+        from apps.matching.services.ai_agent import ReplyStreamGate, split_into_chunks
 
+        # respond() is non-streaming, so the gate parses the whole body in one feed.
+        gate = ReplyStreamGate()
+        gate.feed(raw_reply)
+        _, contract_ok = gate.finish()
+
+        if not contract_ok:
+            # Fail closed: never hand the raw body back to the client. This path
+            # has no corrective retry or salvage (respond() takes no correction
+            # and the live UI uses the WebSocket path) — it just 503s.
+            logger.error(
+                "Output contract violated on REST reply session=%s turn=%s "
+                "leak_pattern=%r buffer[:200]=%r reply[:200]=%r",
+                session_id,
+                saved_turn.id,
+                gate.leak_pattern,
+                gate.buffered_preview[:200],
+                gate.reply[:200],
+            )
+            saved_turn.internal_judgment = (
+                f"{gate.buffered_preview}\n\n"
+                f"[reply leak_pattern={gate.leak_pattern!r}] {gate.reply}"
+            )
+            saved_turn.contract_violated = True
+            saved_turn.dialogue_phase = session.dialogue_phase.value
+            saved_turn.save(
+                update_fields=[
+                    "internal_judgment",
+                    "contract_violated",
+                    "dialogue_phase",
+                ]
+            )
+            return Response(
+                {
+                    "detail": "目前無法取得 AI 回覆，請稍後再試。"
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        reply = gate.reply
         chunks = split_into_chunks(reply)
         session.add_agent_message(reply)
         session_record["session"] = session.to_dict()
         saved_turn.ai_response = reply
+        saved_turn.internal_judgment = gate.judgment
+        saved_turn.contract_violated = False
         saved_turn.dialogue_phase = session.dialogue_phase.value
-        saved_turn.save(update_fields=["ai_response", "dialogue_phase"])
+        saved_turn.save(
+            update_fields=[
+                "ai_response",
+                "internal_judgment",
+                "contract_violated",
+                "dialogue_phase",
+            ]
+        )
         stance_drift = _update_ai_session_stance_drift(
             session_record=session_record,
             session_id=session_id,
@@ -1848,10 +2055,31 @@ class HistoryConversationListView(APIView):
 
         results = []
         if history_type in {"all", "ai"}:
-            for record in DialogueSessionRecord.objects.filter(
-                user=request.user,
-            ).order_by("-last_activity_at", "-id"):
-                summary = _history_ai_summary(record)
+            completed_session_ids = set(
+                PostDialogueResponse.objects.filter(
+                    user=request.user,
+                    experiment_condition=PostDialogueResponse.ExperimentCondition.AI,
+                ).values_list("session_id", flat=True)
+            )
+            ai_records = list(
+                DialogueSessionRecord.objects.filter(user=request.user).order_by(
+                    "-last_activity_at", "-id"
+                )
+            )
+            # 依 (-last_activity_at, -id) 排序後，每個 topic 第一次遇到的
+            # record 就是那個 topic 目前最新的 session。
+            latest_session_id_by_topic: dict[int, str] = {}
+            for record in ai_records:
+                latest_session_id_by_topic.setdefault(record.topic_id, record.session_id)
+
+            for record in ai_records:
+                summary = _history_ai_summary(
+                    record,
+                    completed_session_ids=completed_session_ids,
+                    is_latest_for_topic=(
+                        latest_session_id_by_topic.get(record.topic_id) == record.session_id
+                    ),
+                )
                 if summary["message_count"]:
                     results.append(summary)
 
@@ -2940,6 +3168,83 @@ class MatchingCancelView(APIView):
         )
 
 
+def _apply_match_input_gate(*, match, user, content: str):
+    """Input gate for the match room's REST path. Mirrors MatchRoomConsumer.
+
+    Blocked messages are reported back to the sender only and never become a
+    MatchMessage, so the partner sees nothing and no downstream analysis
+    (embedding, topic relevance, CCND) ever sees the text.
+    """
+    from apps.matching.services.input_gate import (
+        COOLDOWN_NOTICE,
+        InputVerdict,
+        classify,
+        fallback_message,
+        rate_limit_notice,
+        throttle_tier,
+    )
+    from apps.matching.services.input_gate_store import record_match_attempt
+    from apps.matching.services.rate_limit import (
+        check_rate_limit,
+        cooldown_remaining,
+        start_cooldown,
+    )
+
+    scope = f"match:{match.id}:{user.id}"
+    remaining = cooldown_remaining(scope)
+    if remaining:
+        return Response(
+            {
+                "type": "input_cooldown",
+                "seconds": remaining,
+                "detail": COOLDOWN_NOTICE.format(seconds=remaining),
+            },
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+
+    rate = check_rate_limit(user.id)
+    if not rate["allowed"]:
+        return Response(
+            {
+                "type": "rate_limited",
+                "reason": rate["reason"],
+                "retry_after": rate["retry_after"],
+                "detail": rate_limit_notice(rate["reason"]),
+            },
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+
+    # 配對房沒有「AI 剛提問」這種脈絡，恆為 False。
+    verdict = classify(content, prev_ai_is_question=False)
+    if verdict is InputVerdict.VALID:
+        record_match_attempt(match.id, user.id, blocked=False)
+        return None
+
+    count = record_match_attempt(match.id, user.id, blocked=True)
+    if throttle_tier(count) == "cooldown":
+        seconds = start_cooldown(scope)
+        return Response(
+            {
+                "type": "input_cooldown",
+                "seconds": seconds,
+                "invalid_input_count": count,
+                "detail": COOLDOWN_NOTICE.format(seconds=seconds),
+            },
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+
+    return Response(
+        {
+            "type": "input_blocked",
+            "presentation": "notice",
+            "reason": verdict.value,
+            "detail": fallback_message(verdict, count),
+            "invalid_input_count": count,
+        },
+        status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+    )
+
+
 class MatchingRoomMessagesView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -2995,11 +3300,21 @@ class MatchingRoomMessagesView(APIView):
 
         serializer = MatchingRoomMessageCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        content = serializer.validated_data["content"].strip()
+
+        # HTTP fallback for the match room, used when the WebSocket is not open.
+        # Same gate as MatchRoomConsumer — otherwise a dropped socket is a way
+        # around it.
+        gate_response = _apply_match_input_gate(
+            match=match, user=request.user, content=content
+        )
+        if gate_response is not None:
+            return gate_response
 
         MatchMessage.objects.create(
             match=match,
             sender=request.user,
-            content=serializer.validated_data["content"].strip(),
+            content=content,
         )
 
         messages = get_room_messages(match=match)
@@ -3155,7 +3470,16 @@ class MatchingRoomLeaveView(APIView):
 
 
 class MessageReactionView(APIView):
-    """Create, change, remove, or list the caller's message reactions."""
+    """讚 / 倒讚 on an opponent's message, in either dialogue mode.
+
+    GET  /api/message-reactions/?target_type=ai&conversation_id=<session_id>
+    GET  /api/message-reactions/?target_type=match&conversation_id=<room_id>
+        → { "reactions": [ {target_id, value}, ... ] } for the current user.
+
+    POST /api/message-reactions/  body: {target_type, target_id, value}
+        value = 1 (讚) / -1 (倒讚) / 0 (remove). Only the *opponent's* messages
+        may be reacted to; reacting to your own is rejected.
+    """
 
     permission_classes = [permissions.IsAuthenticated]
 
@@ -3197,6 +3521,7 @@ class MessageReactionView(APIView):
         target_id = serializer.validated_data["target_id"]
         value = serializer.validated_data["value"]
 
+        # Resolve + authorize the target, and pull denormalized context.
         if target_type == MessageReaction.TargetType.AI:
             context = self._resolve_ai_target(request.user, target_id)
         else:
@@ -3241,6 +3566,8 @@ class MessageReactionView(APIView):
 
     @staticmethod
     def _resolve_ai_target(user, target_id):
+        """The AI reply belongs to the user's own session — reacting to the
+        agent's turn. Require ai_response present (something to react to)."""
         turn = (
             AIConversation.objects.filter(id=target_id, user=user)
             .exclude(ai_response__isnull=True)
@@ -3256,6 +3583,7 @@ class MessageReactionView(APIView):
 
     @staticmethod
     def _resolve_match_target(user, target_id):
+        """Only the partner's messages are reactable; the user's own are not."""
         message = (
             MatchMessage.objects.select_related("match")
             .filter(id=target_id)
@@ -3273,6 +3601,33 @@ class MessageReactionView(APIView):
             "topic_id": match.topic_id,
             "conversation_id": match.room_id,
         }
+
+
+def _finalize_input_gate_metrics(*, user, session_id, room_id):
+    """Compute and store invalid_ratio / substantive_turn_count at dialogue end.
+
+    Never raises into the questionnaire response — a metrics failure must not
+    cost the participant their submitted answers.
+    """
+    from apps.matching.services.input_gate_store import (
+        finalize_ai_session_metrics,
+        finalize_match_metrics,
+    )
+
+    try:
+        if session_id:
+            finalize_ai_session_metrics(session_id)
+        if room_id:
+            match = DialogueMatch.objects.filter(room_id=room_id).first()
+            if match is not None:
+                finalize_match_metrics(match.id, user.id)
+    except Exception:
+        logger.exception(
+            "Input gate metrics finalization failed session=%s room=%s user=%s.",
+            session_id,
+            room_id,
+            user.id,
+        )
 
 
 def _post_dialogue_stance_snapshot(*, user, validated: dict):
@@ -3366,6 +3721,14 @@ class PostDialogueResponseView(APIView):
                     response=response_obj,
                     detail=discomfort_detail.strip(),
                 )
+
+        # 對話結束點：把 input gate 的完整性指標算出來落庫。
+        # 只產生欄位，**不**在這裡排除任何樣本——排除規則由研究端另行決定。
+        _finalize_input_gate_metrics(
+            user=request.user,
+            session_id=response_obj.session_id,
+            room_id=response_obj.room_id,
+        )
 
         out = PostDialogueResponseOutputSerializer(response_obj)
         return Response(out.data, status=status.HTTP_201_CREATED)

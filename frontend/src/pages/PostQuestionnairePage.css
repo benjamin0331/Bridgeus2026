@@ -22,6 +22,26 @@
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.1) transparent;
+}
+
+.pq-container::-webkit-scrollbar {
+  width: 6px;
+}
+
+.pq-container::-webkit-scrollbar-button,
+.pq-container::-webkit-scrollbar-button:start,
+.pq-container::-webkit-scrollbar-button:end {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.pq-container::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 10px;
 }
 
 /* Header — fixed inside the card */
@@ -30,10 +50,39 @@
   margin-bottom: 20px;
 }
 
+.pq-header-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .pq-header h2 {
   font-size: 26px;
   font-weight: bold;
   margin-bottom: 6px;
+  color: #1a1a1a;
+}
+
+.pq-close-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background-color: #e8e2d9;
+  color: #666;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.pq-close-btn:hover {
+  background-color: #ddd4c8;
   color: #1a1a1a;
 }
 
@@ -90,10 +139,20 @@
   overflow-y: auto;
   padding-right: 10px;
   margin-right: -10px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.1) transparent;
 }
 
 .pq-body::-webkit-scrollbar {
   width: 5px;
+}
+
+.pq-body::-webkit-scrollbar-button,
+.pq-body::-webkit-scrollbar-button:start,
+.pq-body::-webkit-scrollbar-button:end {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .pq-body::-webkit-scrollbar-thumb {
@@ -357,4 +416,109 @@
     width: 100%;
     text-align: center;
   }
+}
+
+/* --- Result card (shown after submission) ------------------------------- */
+.pq-result-note {
+  background-color: #fdf6e3;
+  border: 1px solid #e8dcc0;
+  color: #7a6a45;
+  font-size: 13px;
+  line-height: 1.6;
+  border-radius: 14px;
+  padding: 12px 16px;
+  margin-bottom: 20px;
+}
+
+.pq-result-scores {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin: 12px 0 24px 0;
+}
+
+.pq-score-box {
+  flex: 1;
+  background-color: #efe9e2;
+  border-radius: 18px;
+  padding: 18px 12px;
+  text-align: center;
+}
+
+.pq-score-label {
+  display: block;
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 8px;
+}
+
+.pq-score-value {
+  display: block;
+  font-size: 34px;
+  font-weight: 700;
+  color: #2c2c2c;
+  line-height: 1;
+}
+
+.pq-score-arrow {
+  font-size: 24px;
+  color: #b3a794;
+  flex-shrink: 0;
+}
+
+.pq-result-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.pq-metric {
+  border-radius: 16px;
+  padding: 14px 18px;
+  border-left: 5px solid #c7bdb0;
+  background-color: #f0ebe4;
+}
+
+.pq-metric-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.pq-metric-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #444;
+}
+
+.pq-metric-num {
+  font-size: 22px;
+  font-weight: 700;
+  color: #2c2c2c;
+}
+
+.pq-metric-desc {
+  font-size: 13px;
+  color: #666;
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* Tone accents */
+.pq-metric-good { border-left-color: #3a5a3a; background-color: #eaf1ea; }
+.pq-metric-good .pq-metric-num { color: #3a5a3a; }
+.pq-metric-warn { border-left-color: #b4801f; background-color: #f7efdf; }
+.pq-metric-warn .pq-metric-num { color: #a9761c; }
+.pq-metric-up   { border-left-color: #2f6f8f; background-color: #e6f0f4; }
+.pq-metric-down { border-left-color: #8f5a2f; background-color: #f4ece4; }
+.pq-metric-flat { border-left-color: #b0a794; }
+
+.pq-result-hint {
+  font-size: 12px;
+  color: #999;
+  line-height: 1.6;
+  margin: 0;
 }

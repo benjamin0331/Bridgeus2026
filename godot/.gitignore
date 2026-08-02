@@ -1,6 +1,7 @@
 # Godot 4+ specific ignores
 .godot/
 /android/
+*.tmp
 
 # 後端串接文件，不進版控
 docs/

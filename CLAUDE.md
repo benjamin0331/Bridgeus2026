@@ -63,7 +63,7 @@ This is an **NSTC (國科會) undergraduate research grant project** (115 年度
 | **M2** | Topic Selection & Stance Measurement | 議題選擇、李克特量表 + 開放式問卷、Sentence-Transformers 向量化立場、stance score 計算。 |
 | **M3** | Heterogeneous Matching & AI Agent Generation | 基於立場向量的異質配對演算法（歐氏距離/餘弦相似度）、RAG-powered AI agent 生成（對立立場代理人）。 |
 | **M4** | Real-time Dialogue Room | Django Channels WebSocket 即時對話、回應長度限制、議題偏離偵測、情緒強度閾值觸發冷靜提示。準即時分析：每 90 min 或累積 200 字觸發。 |
-| **M5** | NLP Analysis & CCND Generation | 語義距離計算（Sentence-Transformers）、概念認知網路圖（Conceptual Cognitive Network Diagram）、D3.js force-directed graph 即時渲染、WebSocket 推送更新（延遲約 2-3 秒）。 |
+| **M5** | NLP Analysis & CCND Generation | 語義距離計算（Sentence-Transformers）、概念認知網路圖（Conceptual Cognitive Network Diagram）、D3.js 放射狀樹狀圖（radial tree layout）即時渲染、WebSocket 推送更新（延遲約 2-3 秒）。 |
 | **M6** | Post-Dialogue Summary & Knowledge Base | 對話摘要生成、立場偏移量化報告、情緒分數變化、觀點知識庫沉澱。 |
 
 ---
@@ -92,7 +92,7 @@ This is an **NSTC (國科會) undergraduate research grant project** (115 年度
 
 ### Frontend
 - **Framework**: 待定（React 為主要候選）
-- **CCND Visualization**: D3.js force-directed graph
+- **CCND Visualization**: D3.js 放射狀樹狀圖（`d3-hierarchy` tree layout + 極座標定位，非 force simulation）
 - **Real-time**: WebSocket client
 
 ### Infrastructure

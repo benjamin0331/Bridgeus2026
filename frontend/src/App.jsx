@@ -3,6 +3,7 @@ import { Routes, Route, useNavigate, useParams, useLocation } from 'react-router
 import './App.css'
 
 import api, { AUTH_LOGOUT_EVENT, clearAuthStorage } from './api/client'
+import { NotificationsProvider } from './context/NotificationsContext'
 import Navbar from './components/Navbar'
 import Sidebar from './components/Sidebar'
 import HomePage from './pages/HomePage'
@@ -11,6 +12,7 @@ import KnowledgeBase from './pages/KnowledgeBase'
 import KnowledgeBaseTopicPage from './pages/KnowledgeBaseTopicPage'
 import KnowledgeBaseConversationPage from './pages/KnowledgeBaseConversationPage'
 import HistoryPage from './pages/HistoryPage'
+import NotificationPage from './pages/NotificationPage'
 import AchievementPage from './pages/AchievementPage'
 import { findAchievement } from './pages/achievements.data'
 import AchievementToast from './components/AchievementToast'
@@ -183,71 +185,74 @@ function App() {
   const isTopicPage = location.pathname.startsWith('/topic/');
 
   return (
-    <div className="app-container">
-      <Navbar
-        navigate={navigate}
-        userName={user.name || user.username || user.id}
-        onLogout={handleLogout}
-        hideLogout={isTopicPage}
-      />
+    <NotificationsProvider user={user}>
+      <div className="app-container">
+        <Navbar
+          navigate={navigate}
+          userName={user.name || user.username || user.id}
+          onLogout={handleLogout}
+          hideLogout={isTopicPage}
+        />
 
-      <div className="main-layout-wrapper">
-        <div className="content-area">
-          <Routes>
-            <Route
-              path="/"
-              element={(
-                <HomePage
-                  navigate={navigate}
-                  userName={user.name}
-                  issues={issues}
-                  issuesLoaded={issuesLoaded}
-                  entryMode={entryMode}
-                />
-              )}
-            />
+        <div className="main-layout-wrapper">
+          <div className="content-area">
+            <Routes>
+              <Route
+                path="/"
+                element={(
+                  <HomePage
+                    navigate={navigate}
+                    userName={user.name}
+                    issues={issues}
+                    issuesLoaded={issuesLoaded}
+                    entryMode={entryMode}
+                  />
+                )}
+              />
 
-            <Route
-              path="/topic/:id"
-              element={(
-                <TopicChatRoute
-                  user={user}
-                  issues={issues}
-                  issuesLoaded={issuesLoaded}
-                  entryMode={entryMode}
-                />
-              )}
-            />
+              <Route
+                path="/topic/:id"
+                element={(
+                  <TopicChatRoute
+                    user={user}
+                    issues={issues}
+                    issuesLoaded={issuesLoaded}
+                    entryMode={entryMode}
+                  />
+                )}
+              />
 
-            <Route path="/kb" element={<KnowledgeBase />} />
-            <Route path="/kb/topics/:topicId" element={<KnowledgeBaseTopicPage />} />
-            <Route path="/kb/conversations/:viewpointId" element={<KnowledgeBaseConversationPage />} />
-            <Route path="/history" element={<HistoryPage />} />
-            <Route path="/post-questionnaire" element={<PostQuestionnairePage />} />
-            <Route path="/debriefing" element={<DebriefingPage />} />
-            <Route path="/platform-feedback" element={<PlatformFeedbackPage />} />
-            <Route path="/achievement" element={<AchievementPage />} />
-            {/* 研究者專用；Sidebar 只在 user.isResearcher 時才顯示連結，但路徑本身
-                任何登入者都連得到，實際存取控制一律在後端 IsResearcher——
-                一般參與者帳號打開這條路徑只會看到 403 錯誤訊息。 */}
-            <Route path="/viewpoint-review" element={<ViewpointReviewPage />} />
-            <Route path="/settings" element={<SettingsPage user={user} />} />
-            <Route path="/chat" element={<GodotLobby />} />
-          </Routes>
+              <Route path="/kb" element={<KnowledgeBase />} />
+              <Route path="/kb/topics/:topicId" element={<KnowledgeBaseTopicPage />} />
+              <Route path="/kb/conversations/:viewpointId" element={<KnowledgeBaseConversationPage />} />
+              <Route path="/history" element={<HistoryPage />} />
+              <Route path="/notifications" element={<NotificationPage />} />
+              <Route path="/post-questionnaire" element={<PostQuestionnairePage />} />
+              <Route path="/debriefing" element={<DebriefingPage />} />
+              <Route path="/platform-feedback" element={<PlatformFeedbackPage />} />
+              <Route path="/achievement" element={<AchievementPage />} />
+              {/* 研究者專用；Sidebar 只在 user.isResearcher 時才顯示連結，但路徑本身
+                  任何登入者都連得到，實際存取控制一律在後端 IsResearcher——
+                  一般參與者帳號打開這條路徑只會看到 403 錯誤訊息。 */}
+              <Route path="/viewpoint-review" element={<ViewpointReviewPage />} />
+              <Route path="/settings" element={<SettingsPage user={user} />} />
+              <Route path="/chat" element={<GodotLobby />} />
+            </Routes>
+          </div>
+
+          <Sidebar navigate={navigate} isTopicPage={isTopicPage} isResearcher={Boolean(user?.isResearcher)} />
         </div>
 
-        <Sidebar navigate={navigate} isTopicPage={isTopicPage} isResearcher={Boolean(user?.isResearcher)} />
+        <AchievementToast
+          achievement={unlockedToast}
+          onClose={() => setUnlockedToast(null)}
+          onOpen={() => {
+            setUnlockedToast(null);
+            navigate('/achievement');
+          }}
+        />
       </div>
-
-      <AchievementToast
-        achievement={unlockedToast}
-        onClose={() => setUnlockedToast(null)}
-        onOpen={() => {
-          setUnlockedToast(null);
-          navigate('/achievement');
-        }}
-      />
-    </div>
+    </NotificationsProvider>
   )
 }
 

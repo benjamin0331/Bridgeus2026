@@ -139,7 +139,7 @@ class AIConversationSerializer(serializers.ModelSerializer):
 
 
 class MessageReactionSerializer(serializers.Serializer):
-    """Like/dislike an opponent message; value=0 removes the reaction."""
+    """讚/倒讚 on an opponent's message. value 0 = remove the reaction."""
 
     target_type = serializers.ChoiceField(choices=["ai", "match"])
     target_id = serializers.IntegerField(min_value=1)
@@ -555,6 +555,7 @@ class PlatformFeedbackOutputSerializer(serializers.ModelSerializer):
 
 class PostDialogueResponseOutputSerializer(serializers.ModelSerializer):
     s_post = serializers.SerializerMethodField()
+    # Derived stance metrics (aliased from the stored *_value snapshot columns)
     delta_s = serializers.FloatField(source="delta_s_value", read_only=True)
     stance_centrism = serializers.FloatField(
         source="stance_centrism_value",

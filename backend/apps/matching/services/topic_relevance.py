@@ -15,11 +15,16 @@ import numpy as np
 from asgiref.sync import sync_to_async
 
 from api.dialogue_topics import TOPIC_CONFIGS
+from apps.matching.services.input_gate import is_substantive_message
 from chat.services.embedding import cosine_similarity, get_embedding
 
 DEFAULT_THRESHOLD = 0.35
 DEFAULT_WINDOW_SIZE = 3
 DEFAULT_MIN_MESSAGES = 2
+
+# 過濾短回應需要在 Python 端讀 content，所以固定窗口的查詢要先多撈幾倍
+# 才有機會湊滿 window_size 則實質發言。純防禦性倍率，不是實驗參數。
+_SUBSTANTIVE_OVERFETCH = 5
 
 
 @dataclass(frozen=True)
@@ -97,13 +102,18 @@ def check_match_topic_relevance(
     from api.models import MatchMessage
 
     policy = get_topic_relevance_policy(topic_id)
-    messages = list(
-        MatchMessage.objects.filter(
-            match_id=match_id,
-            sender_id=user_id,
-            embedding__isnull=False,
-        ).order_by("-created_at", "-id")[: policy.window_size]
-    )
+    # 短回應（「好」「同意」）的 embedding 不帶議題資訊，混進滾動窗口只會把
+    # 離題分數往中間拉。先多撈再過濾，才不會因為連說三次「好」就填滿窗口。
+    candidates = MatchMessage.objects.filter(
+        match_id=match_id,
+        sender_id=user_id,
+        embedding__isnull=False,
+    ).order_by("-created_at", "-id")[: policy.window_size * _SUBSTANTIVE_OVERFETCH]
+    messages = [
+        message
+        for message in candidates
+        if is_substantive_message(message.content or "")
+    ][: policy.window_size]
     if len(messages) < policy.min_messages:
         return {"relevance_score": 1.0, "is_off_topic": False}
 

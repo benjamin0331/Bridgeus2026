@@ -6,6 +6,7 @@ import ConversationTreePanel from '../components/ConversationTreePanel';
 import SurveyModal from '../components/SurveyModal';
 import StanceReuseModal from '../components/StanceReuseModal';
 import api from '../api/client';
+import { useNotifications } from '../context/NotificationsContext';
 
 const MATCHING_POLL_INTERVAL_MS = 3000;
 const MATCH_SCROLL_BOTTOM_THRESHOLD_PX = 96;
@@ -102,9 +103,24 @@ function mapHistoryToMessages(history, userName) {
       type: isAgent ? 'agent' : 'user',
       userName: isAgent ? 'BridgeUs' : userName,
       text: message.content,
+      // Only the AI reply (opponent) is reactable, and only once we know its
+      // AIConversation turn id.
       reactTarget: isAgent && turnId ? { type: 'ai', id: turnId } : null,
     };
   });
+}
+
+// 相同內容的系統／AI 訊息不再新增 DOM 節點，就地更新最後一則並附加計數。
+// 原本七則相同的 fallback 會被渲染成七個獨立氣泡；現在是一則加上「×7」。
+// 只比對最後一則：中間隔了使用者發言的重複提示是不同語境，應該分開呈現。
+function appendOrCoalesce(previousMessages, incoming) {
+  const last = previousMessages[previousMessages.length - 1];
+  if (last && last.type === incoming.type && last.text === incoming.text) {
+    const next = previousMessages.slice(0, -1);
+    next.push({ ...last, repeatCount: (last.repeatCount || 1) + 1 });
+    return next;
+  }
+  return [...previousMessages, incoming];
 }
 
 function formatTimestamp(value) {
@@ -164,6 +180,32 @@ function formatDriftValue(value) {
   return numericValue.toFixed(4);
 }
 
+function usePreviousValue(value) {
+  const ref = useRef({ current: undefined, previous: undefined });
+  if (ref.current.current !== value) {
+    ref.current = { current: value, previous: ref.current.current };
+  }
+  return ref.current.previous;
+}
+
+// 顯示樣式：上一輪的數值 +/- 差異值（這輪數值 = 兩者相加，不在畫面上重複列出）。
+// 只影響呈現方式，drift_value 本身仍由後端 cosine 距離公式計算，此處不重新推導。
+function formatDriftEquation(currentValue, previousValue) {
+  const current = Number(currentValue);
+  if (!Number.isFinite(current)) {
+    return '尚未計算';
+  }
+
+  const previous = Number(previousValue);
+  if (!Number.isFinite(previous)) {
+    return formatDriftValue(current);
+  }
+
+  const diff = current - previous;
+  const sign = diff >= 0 ? '+' : '-';
+  return `${formatDriftValue(previous)} ${sign}${Math.abs(diff).toFixed(4)}`;
+}
+
 function formatStanceScoreValue(value) {
   if (value === null || value === undefined || value === '') {
     return '尚未建立';
@@ -210,6 +252,7 @@ function mapMatchMessagesToDisplay(messages, userId) {
       userName: isCurrentUser ? MATCH_SELF_NAME : MATCH_PARTNER_NAME,
       text: message.content,
       timestamp: message.created_at,
+      // Only the partner's messages are reactable.
       reactTarget: isCurrentUser
         ? null
         : { type: 'match', id: Number(message.id) },
@@ -267,6 +310,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
   const { id } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
+  const { markRoomRead } = useNotifications();
   const mode = useMemo(() => {
     // 伺服器是分組的權威，網址不是。後端的入口把關存在的唯一理由就是
     // 「?mode= 只是 query string，受試者改個網址就能自己換組」（見
@@ -307,10 +351,14 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
   const [aiStanceDrift, setAiStanceDrift] = useState(null);
   const [isSending, setIsSending] = useState(false);
   const [isAgentStreaming, setIsAgentStreaming] = useState(false);
+  const [isAgentThinking, setIsAgentThinking] = useState(false);
   const [isAiSendCoolingDown, setIsAiSendCoolingDown] = useState(false);
   const [chatError, setChatError] = useState('');
   const [isSessionRestoring, setIsSessionRestoring] = useState(false);
   const [pendingRestoredSession, setPendingRestoredSession] = useState(null);
+  // Input gate：系統提示列（3–5 次無效輸入）與冷卻倒數（≥6 次）。
+  const [inputGateNotice, setInputGateNotice] = useState(null);
+  const [cooldownSeconds, setCooldownSeconds] = useState(0);
 
   const [matchingState, setMatchingState] = useState(null);
   const [isMatchingStateLoading, setIsMatchingStateLoading] = useState(isMatchingMode);
@@ -322,6 +370,8 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
   const [bindingNotice, setBindingNotice] = useState('');
   const [matchMessages, setMatchMessages] = useState([]);
   const [matchStanceDrift, setMatchStanceDrift] = useState(null);
+  const previousMatchDriftValue = usePreviousValue(matchStanceDrift?.drift_value ?? null);
+  const previousAiDriftValue = usePreviousValue(aiStanceDrift?.drift_value ?? null);
   const [semanticTreePayload, setSemanticTreePayload] = useState(null);
   const [semanticTreeStatus, setSemanticTreeStatus] = useState('ready');
   const [semanticTreeMessage, setSemanticTreeMessage] = useState('');
@@ -336,6 +386,8 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
   const [showScrollToBottomButton, setShowScrollToBottomButton] = useState(false);
 
   const [isRightPanelOpen, setIsRightPanelOpen] = useState(false);
+
+  // 讚/倒讚 on opponents' messages, keyed by `${type}:${id}` → 1 | -1.
   const [reactions, setReactions] = useState({});
 
   const messagesContainerRef = useRef(null);
@@ -376,6 +428,24 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       matchingState?.room_id &&
       !isGodotWaitingForPartner,
   );
+
+  // 使用者正在看這個聊天室時，不論訊息是輪詢拿到還是 WebSocket 推來的，
+  // 都直接標記成已讀，側邊欄鈴鐺才不會在使用者明明就在對話中時還亮紅點。
+  useEffect(() => {
+    if (!isMatchChatReady || !matchingState?.room_id || matchMessages.length === 0) {
+      return;
+    }
+    markRoomRead(matchingState.room_id, matchMessages.length);
+  }, [isMatchChatReady, markRoomRead, matchMessages, matchingState?.room_id]);
+
+  // AI 對話同一套已讀邏輯：sessionId 就是通知列表裡 AI 房間的 room_id。
+  useEffect(() => {
+    if (isMatchingMode || !sessionId || messages.length === 0) {
+      return;
+    }
+    markRoomRead(sessionId, messages.length);
+  }, [isMatchingMode, markRoomRead, messages, sessionId]);
+
   const matchMessageIdsSignature = useMemo(
     () => matchMessages.map((message) => message.id).filter(Boolean).join(','),
     [matchMessages],
@@ -443,6 +513,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
 
     const key = reactionKey(target);
     const previousValue = reactionsRef.current[key] || 0;
+    // 再按一次同一顆＝取消（toggle）。
     const nextValue = previousValue === clickedValue ? 0 : clickedValue;
     const optimistic = { ...reactionsRef.current };
     if (nextValue === 0) {
@@ -460,6 +531,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
         value: nextValue,
       });
     } catch {
+      // 失敗就回滾。
       const reverted = { ...reactionsRef.current };
       if (previousValue === 0) {
         delete reverted[key];
@@ -658,6 +730,21 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
         return;
       }
 
+      // Input gate。H-H 一律走系統提示列——被攔截的訊息不轉發給對方，
+      // 也不該在自己這邊偽造成一則已送出的對話訊息。
+      if (data.type === 'input_blocked' || data.type === 'rate_limited') {
+        setInputGateNotice({ id: `gate-${Date.now()}`, message: data.content });
+        setMatchChatError('');
+        return;
+      }
+
+      if (data.type === 'input_cooldown') {
+        setInputGateNotice(null);
+        setCooldownSeconds(data.seconds || 0);
+        setMatchChatError('');
+        return;
+      }
+
       if (data.type === 'error') {
         setMatchChatError(data.content || '配對聊天室連線發生錯誤。');
       }
@@ -680,6 +767,18 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
   useEffect(() => {
     isSendingRef.current = isSending;
   }, [isSending]);
+
+  // 冷卻倒數。計數在後端，這裡只負責把輸入框停用到倒數結束；
+  // 重新整理頁面不會繞過冷卻，後端仍會擋下第一則訊息並重推 input_cooldown。
+  useEffect(() => {
+    if (cooldownSeconds <= 0) {
+      return undefined;
+    }
+    const timer = setInterval(() => {
+      setCooldownSeconds((seconds) => (seconds <= 1 ? 0 : seconds - 1));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [cooldownSeconds]);
 
   useEffect(() => {
     isChatPageMountedRef.current = true;
@@ -1425,6 +1524,55 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     };
   }, [aiUserMessageIdsSignature, applySemanticTreePayload, isMatchingMode, isSending, sessionId]);
 
+  useEffect(() => {
+    if (isMatchingMode || !sessionId) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await api.get(
+          `/api/message-reactions/?target_type=ai&conversation_id=${encodeURIComponent(sessionId)}`,
+        );
+        if (!cancelled) {
+          mergeFetchedReactions(response.data?.reactions, 'ai');
+        }
+      } catch {
+        // Best-effort: reactions just won't be pre-highlighted.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isMatchingMode, mergeFetchedReactions, sessionId]);
+
+  useEffect(() => {
+    if (!isMatchChatReady || !matchingState?.room_id) {
+      return undefined;
+    }
+
+    const roomId = matchingState.room_id;
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await api.get(
+          `/api/message-reactions/?target_type=match&conversation_id=${encodeURIComponent(roomId)}`,
+        );
+        if (!cancelled) {
+          mergeFetchedReactions(response.data?.reactions, 'match');
+        }
+      } catch {
+        // Best-effort: reactions just won't be pre-highlighted.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isMatchChatReady, matchingState?.room_id, mergeFetchedReactions]);
+
   const sendCancelMatchingQueueRequest = useCallback((topicId, { keepalive = false } = {}) => {
     if (!topicId) {
       return;
@@ -1505,7 +1653,16 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
         return;
       }
 
+      if (data.type === 'agent_thinking') {
+        // The backend holds the whole reply back until it has passed the
+        // output-contract check, so there is a real gap before the first
+        // chunk. Show a typing animation instead of dead air.
+        setIsAgentThinking(true);
+        return;
+      }
+
       if (data.type === 'agent_stream') {
+        setIsAgentThinking(false);
         setIsAgentStreaming(true);
         setMessages((prev) => {
           const messageId = currentAgentMsgIdRef.current;
@@ -1548,6 +1705,49 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
         setAiStanceDrift(extractStanceDrift(data));
         setIsAgentStreaming(false);
         updatePendingAiReplyCount(-1);
+        return;
+      }
+
+      // ── Input gate ────────────────────────────────────────────────────
+      // 這三種事件都不是 LLM 回覆（零 token），也都要把送出狀態解除，
+      // 否則輸入框會卡在 disabled。
+      if (data.type === 'input_blocked') {
+        currentAgentMsgIdRef.current = null;
+        setIsAgentThinking(false);
+        setIsAgentStreaming(false);
+        setIsSending(false);
+        if (data.presentation === 'notice') {
+          // 3–5 次：系統提示列，不進對話串，也不佔對話輪數。
+          setInputGateNotice({ id: `gate-${Date.now()}`, message: data.content });
+        } else {
+          setInputGateNotice(null);
+          setMessages((prev) =>
+            appendOrCoalesce(prev, {
+              id: `gate-${Date.now()}`,
+              type: 'agent',
+              userName: 'BridgeUs',
+              text: data.content,
+            }),
+          );
+        }
+        return;
+      }
+
+      if (data.type === 'input_cooldown') {
+        currentAgentMsgIdRef.current = null;
+        setIsAgentThinking(false);
+        setIsAgentStreaming(false);
+        setIsSending(false);
+        setInputGateNotice(null);
+        setCooldownSeconds(data.seconds || 0);
+        return;
+      }
+
+      if (data.type === 'rate_limited') {
+        setIsAgentThinking(false);
+        setIsAgentStreaming(false);
+        setIsSending(false);
+        setInputGateNotice({ id: `rate-${Date.now()}`, message: data.content });
         return;
       }
 
@@ -1615,6 +1815,24 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       `/api/dialogue/sessions/${activeSessionId}/reply/`,
       { message: text },
     );
+
+    // 被 input gate 攔截時後端回 200 + 靜態 fallback（沒有 history，因為
+    // 這則訊息從未進入對話 context）。走跟 WebSocket 相同的呈現規則。
+    if (response.data?.type === 'input_blocked') {
+      if (response.data.presentation === 'notice') {
+        setInputGateNotice({ id: `gate-${Date.now()}`, message: response.data.reply });
+      } else {
+        setMessages((prev) =>
+          appendOrCoalesce(prev, {
+            id: `gate-${Date.now()}`,
+            type: 'agent',
+            userName: 'BridgeUs',
+            text: response.data.reply,
+          }),
+        );
+      }
+      return;
+    }
 
     setMessages(mapHistoryToMessages(response.data.history, displayUserName));
     setAiStanceMeta(extractAiStanceMeta(response.data));
@@ -1961,10 +2179,19 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
           };
         });
       } catch (error) {
-        setMatchChatError(
-          error?.response?.data?.detail ||
-            '目前無法送出配對聊天室訊息，請稍後再試。',
-        );
+        const gatePayload = error?.response?.data;
+        if (gatePayload?.type === 'input_cooldown') {
+          setCooldownSeconds(gatePayload.seconds || 0);
+        } else if (
+          gatePayload?.type === 'input_blocked' ||
+          gatePayload?.type === 'rate_limited'
+        ) {
+          setInputGateNotice({ id: `gate-${Date.now()}`, message: gatePayload.detail });
+        } else {
+          setMatchChatError(
+            gatePayload?.detail || '目前無法送出配對聊天室訊息，請稍後再試。',
+          );
+        }
       } finally {
         setIsMatchSending(false);
         focusChatInput();
@@ -2032,6 +2259,16 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       try {
         await requestRestDialogueReply(activeSessionId, text);
       } catch (restError) {
+        const gatePayload = restError?.response?.data;
+        if (gatePayload?.type === 'input_cooldown') {
+          setCooldownSeconds(gatePayload.seconds || 0);
+          return;   // the enclosing finally still clears isSending
+        }
+        if (gatePayload?.type === 'rate_limited') {
+          setInputGateNotice({ id: `rate-${Date.now()}`, message: gatePayload.detail });
+          return;
+        }
+
         const detail =
           restError?.response?.data?.detail ||
           socketError?.message ||
@@ -2552,7 +2789,9 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     return <div style={{ padding: '50px', textAlign: 'center' }}>找不到這個議題，請返回首頁重新選擇。</div>;
   }
 
-  const inputPlaceholder = isMatchingMode
+  const inputPlaceholder = cooldownSeconds > 0
+    ? `暫停接收訊息，${cooldownSeconds} 秒後可繼續`
+    : isMatchingMode
     ? showSurvey || isSurveyLoading
       ? '請先完成立場檢測問卷'
       : isMatchingStateLoading || isMatchingActionLoading
@@ -2574,9 +2813,13 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       ? '請先完成立場檢測問卷'
       : '輸入觀點...';
 
-  const isInputDisabled = isMatchingMode
-    ? !isMatchChatReady || isMatchSending
-    : showSurvey || isSessionRestoring || Boolean(pendingRestoredSession);
+  const isCoolingDown = cooldownSeconds > 0;
+  // isSending 不再鎖輸入框：AI 端改用訊息佇列，使用者可以在串流途中繼續打字。
+  const isInputDisabled =
+    isCoolingDown ||
+    (isMatchingMode
+      ? !isMatchChatReady || isMatchSending
+      : showSurvey || isSessionRestoring || Boolean(pendingRestoredSession));
 
   const activeChatError = isMatchingMode && showSurvey
     ? ''
@@ -2613,8 +2856,8 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     ? isMatchChatReady || Boolean(semanticTreePayload)
     : Boolean(sessionId) || Boolean(semanticTreePayload);
   const driftValueDisplay = isMatchingMode
-    ? formatDriftValue(matchStanceDrift?.drift_value)
-    : formatDriftValue(aiStanceDrift?.drift_value);
+    ? formatDriftEquation(matchStanceDrift?.drift_value, previousMatchDriftValue)
+    : formatDriftEquation(aiStanceDrift?.drift_value, previousAiDriftValue);
   const driftHintDisplay = isMatchingMode
     ? driftUpdatedAt
     : aiDriftUpdatedAt;
@@ -2726,7 +2969,12 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
                     <img src={msg.type === 'user' ? '/icon.jpg' : '/logo.png'} alt="Avatar" className="message-avatar" />
                     <span className="message-username">{msg.userName}</span>
                   </div>
-                  <div className="message-bubble">{msg.text}</div>
+                  <div className="message-bubble">
+                    {msg.text}
+                    {msg.repeatCount > 1 && (
+                      <span className="message-repeat-count">×{msg.repeatCount}</span>
+                    )}
+                  </div>
                   <MessageReactions
                     target={msg.reactTarget}
                     value={msg.reactTarget ? reactions[reactionKey(msg.reactTarget)] || 0 : 0}
@@ -2740,7 +2988,17 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
                     <img src="/logo.png" alt="Avatar" className="message-avatar" />
                     <span className="message-username">BridgeUs</span>
                   </div>
-                  <div className="message-bubble">正在整理回應...</div>
+                  <div className="message-bubble agent-thinking-bubble">
+                    {isAgentThinking ? (
+                      <span className="agent-typing" aria-label="正在輸入">
+                        <span className="agent-typing-dot" />
+                        <span className="agent-typing-dot" />
+                        <span className="agent-typing-dot" />
+                      </span>
+                    ) : (
+                      '正在整理回應...'
+                    )}
+                  </div>
                 </div>
               )}
             </>
@@ -2760,64 +3018,85 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
           </button>
         )}
 
-        {!isMatchingMode && sessionId && messages.length > 0 && (
-          <div className="ai-end-dialogue-bar">
-            <button
-              className="ai-end-dialogue-btn"
-              type="button"
-              disabled={isSending || isAgentStreaming}
-              onClick={() =>
-                navigate('/post-questionnaire', {
-                  state: {
-                    topicId: Number(id),
-                    sessionId,
-                    condition: 'ai',
-                  },
-                })
-              }
-            >
-              結束對話 &amp; 填寫後測問卷
-            </button>
-          </div>
-        )}
-
-        <div className="chat-input-area">
-          <div className={`chat-input-wrapper ${isMatchingMode && !isMatchChatReady ? 'is-disabled' : ''}`}>
-            <textarea
-              ref={textareaRef}
-              className="chat-text-input"
-              placeholder={inputPlaceholder}
-              value={inputValue}
-              disabled={isInputDisabled}
-              onChange={handleTextareaChange}
-              onCompositionStart={() => {
-                isComposingRef.current = true;
-              }}
-              onCompositionEnd={() => {
-                isComposingRef.current = false;
-              }}
-              onKeyDown={handleInputKeyDown}
-              rows={1}
-            />
-            <button
-              className="chat-send-btn"
-              onMouseDown={(event) => {
-                event.preventDefault();
-              }}
-              onClick={() => {
-                void handleSendMessage();
-              }}
-              disabled={isInputDisabled || isAiSendCoolingDown || !inputValue.trim()}
-              aria-label="發送訊息"
-            >
-              <img src="/arrow-right.png" alt="發送" className="send-icon" />
-            </button>
-          </div>
-          {activeChatError && (
-            <p style={{ color: '#b42318', fontSize: '14px', marginTop: '8px' }}>
-              {activeChatError}
-            </p>
+        <div className="chat-fixed-footer">
+          {!isMatchingMode && sessionId && messages.length > 0 && (
+            <div className="ai-end-dialogue-bar">
+              <button
+                className="ai-end-dialogue-btn"
+                type="button"
+                disabled={isSending || isAgentStreaming}
+                onClick={() =>
+                  navigate('/post-questionnaire', {
+                    state: {
+                      topicId: Number(id),
+                      sessionId,
+                      condition: 'ai',
+                    },
+                  })
+                }
+              >
+                結束對話 &amp; 填寫後測問卷
+              </button>
+            </div>
           )}
+
+          <div className="chat-input-area">
+            {/* 3–5 次無效輸入的系統提示列：不是 AI 對話氣泡，不佔對話輪數。 */}
+            {inputGateNotice && !isCoolingDown && (
+              <div className="input-gate-notice">
+                <span>{inputGateNotice.message}</span>
+                <button
+                  type="button"
+                  className="input-gate-notice-dismiss"
+                  onClick={() => setInputGateNotice(null)}
+                >
+                  知道了
+                </button>
+              </div>
+            )}
+            {isCoolingDown && (
+              <div className="input-gate-notice cooldown" role="status">
+                系統暫停接收訊息，{cooldownSeconds} 秒後可以繼續。
+                回來後可以直接說說你對這個議題的看法。
+              </div>
+            )}
+            <div className={`chat-input-wrapper ${isMatchingMode && !isMatchChatReady ? 'is-disabled' : ''}`}>
+              <textarea
+                ref={textareaRef}
+                className="chat-text-input"
+                placeholder={inputPlaceholder}
+                value={inputValue}
+                disabled={isInputDisabled}
+                onChange={handleTextareaChange}
+                onCompositionStart={() => {
+                  isComposingRef.current = true;
+                }}
+                onCompositionEnd={() => {
+                  isComposingRef.current = false;
+                }}
+                onKeyDown={handleInputKeyDown}
+                rows={1}
+              />
+              <button
+                className="chat-send-btn"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                }}
+                onClick={() => {
+                  void handleSendMessage();
+                }}
+                disabled={isInputDisabled || isAiSendCoolingDown || !inputValue.trim()}
+                aria-label="發送訊息"
+              >
+                <img src="/arrow-right.png" alt="發送" className="send-icon" />
+              </button>
+            </div>
+            {activeChatError && (
+              <p style={{ color: '#b42318', fontSize: '14px', marginTop: '8px' }}>
+                {activeChatError}
+              </p>
+            )}
+          </div>
         </div>
       </div>
 
@@ -2845,15 +3124,15 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
                 className="metric-info"
                 tabIndex={0}
                 role="note"
-                aria-label="論述移動說明：顯示你的發言與最初立場陳述的語意差距。數值上升代表你的論述正在展開、觸及新的角度——這反映討論的廣度，不代表你被說服或立場動搖。"
+                aria-label="論述移動說明：顯示你的發言與最初立場陳述的語意差距。+：與上句角度陳述不同。-：與上句角度陳述相似。"
               >
                 i
                 <span className="metric-info-tooltip" role="tooltip">
-                  顯示你的發言與最初立場陳述的語意差距。數值上升代表你的論述正在展開、觸及新的角度——這反映討論的廣度，不代表你被說服或立場動搖。
+                  顯示你的發言與最初立場陳述的語意差距。<br/>+：與上句角度陳述不同。<br/>-：與上句角度陳述相似。
                 </span>
               </span>
             </span>
-            <strong className="metric-value">
+            <strong className="metric-value metric-value-equation" title={driftValueDisplay}>
               {driftValueDisplay}
             </strong>
             <span className="metric-hint">

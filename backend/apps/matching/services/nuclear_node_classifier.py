@@ -158,6 +158,28 @@ def classify(text: str) -> dict[str, Any]:
     }
 
 
+# These cluster ids were merged from multiple sparse sub-topics during
+# training, so their cluster_name is a "/"-joined compound label (e.g.
+# "日本/車諾比/各國核災影響") rather than one concept. Emitting the raw
+# compound string as a node name is misleading, so for these ids only, pick
+# the single "/" segment whose embedding is closest (cosine) to the message.
+COMPOUND_CLUSTER_IDS = {0, 5, 6, 9, 12, 13, 15, 17, 23, 31}
+
+
+def _resolve_point_name(cleaned_text: str, cluster_id: int, cluster_name: str) -> str:
+    if cluster_id not in COMPOUND_CLUSTER_IDS:
+        return cluster_name
+
+    segments = [segment.strip() for segment in cluster_name.split("/") if segment.strip()]
+    if len(segments) <= 1:
+        return cluster_name
+
+    from chat.services.embedding import cosine_similarity, get_embedding
+
+    text_vec = get_embedding(cleaned_text)
+    return max(segments, key=lambda segment: cosine_similarity(text_vec, get_embedding(segment)))
+
+
 def build_candidate_items(text: str, anchors: list[dict[str, str]]) -> list[dict[str, Any]]:
     """Classify `text` and shape the result as a candidate item list for
     `semantic_tree.validate_analysis_items`. Empty list means "no node" —
@@ -178,13 +200,19 @@ def build_candidate_items(text: str, anchors: list[dict[str, str]]) -> list[dict
     if anchor_id is None:
         return []
 
+    point_name = _resolve_point_name(cleaned, result["cluster_id"], result["cluster_name"])
+
+    from apps.matching.services.semantic_tree import classify_stance_with_openai
+
+    stance = classify_stance_with_openai(text=cleaned, context_label=point_name)
+
     return [
         {
             "claimText": cleaned,
             "anchorId": anchor_id,
             "path": [],
-            "pointName": result["cluster_name"],
-            "stance": "中立",
+            "pointName": point_name,
+            "stance": stance,
             "confidence": result["cluster_conf"],
             "rationale": (
                 f"分類模型判斷：{result['class_name']}（{result['class_conf']:.2f}）"

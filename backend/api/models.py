@@ -16,7 +16,21 @@ class AIConversation(models.Model):
     session_id = models.CharField(max_length=64, blank=True, db_index=True)
     topic_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
     user_prompt = models.TextField(help_text="使用者的提問")
-    ai_response = models.TextField(blank=True, null=True, help_text="AI 的回覆")
+    ai_response = models.TextField(
+        blank=True,
+        null=True,
+        help_text="AI 的回覆（僅 <reply> 區塊，已由 ReplyStreamGate 剝離判定段）",
+    )
+    # 模型的 <judgment> 區塊：僅供研究分析與除錯，永不推送給受試者。
+    # 與 ai_response 分欄存放，避免判定段污染歷史回灌、CCND 與知識庫下游。
+    internal_judgment = models.TextField(blank=True, default="")
+    # True 表示該輪輸出未滿足 <reply> 輸出契約（gate 從未開閘）。
+    contract_violated = models.BooleanField(default=False)
+    # 這一輪 AI 回應是否以提問收尾。由策略層在落庫時寫入（<judgment> 的型別代號
+    # C=視角翻轉型必為提問、E=承接深化型必不提問），不是事後用正則猜的。
+    # Input gate 讀取 session 最後一則 AI 回覆的這個旗標，決定短回應（「好」）
+    # 是合法的對話輪次，還是無脈絡的低訊息量輸入。
+    ai_turn_is_question = models.BooleanField(default=False)
     dialogue_phase = models.CharField(max_length=32, blank=True)
     # 384-dim embedding of user_prompt (paraphrase-multilingual-MiniLM-L12-v2);
     # populated at write time so stance-drift can read it instead of re-encoding
@@ -60,6 +74,18 @@ class DialogueSessionRecord(models.Model):
     last_activity_at = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    # ── Input gate 計數（實驗資料完整性）────────────────────────────
+    # 連續無效輸入次數，決定遞進節流的層級。任何一則通過閘門的正常發言
+    # 將其重置為 0；冷卻結束**不**歸零。
+    invalid_input_count = models.IntegerField(default=0)
+    # 以下三欄永不歸零，供匯出後由研究端決定樣本排除規則。
+    # 系統本身不自動排除任何樣本。
+    invalid_input_total = models.IntegerField(default=0)
+    input_attempt_total = models.IntegerField(default=0)
+    # 對話結束時（後測問卷送出）計算並落庫；未結束的 session 為 NULL。
+    invalid_ratio = models.FloatField(null=True, blank=True)
+    substantive_turn_count = models.IntegerField(null=True, blank=True)
 
     class Meta:
         indexes = [
@@ -181,6 +207,47 @@ class DialogueMatch(models.Model):
         return (
             f"match={self.id} room={self.room_id} "
             f"status={self.status}"
+        )
+
+
+class MatchInputGateStat(models.Model):
+    """H-H 配對房的 input gate 計數，per (match, user)。
+
+    H-AI 的等價欄位直接掛在 `DialogueSessionRecord` 上（一個 session 只有一位
+    參與者）；配對房有兩位參與者且各自計數，所以獨立成表而非在
+    `DialogueMatch` 上開兩組欄位。欄位命名刻意與 `DialogueSessionRecord`
+    一致，讓兩個 cohort 的匯出格式對得起來。
+    """
+
+    match = models.ForeignKey(
+        DialogueMatch,
+        on_delete=models.CASCADE,
+        related_name="input_gate_stats",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="match_input_gate_stats",
+    )
+    invalid_input_count = models.IntegerField(default=0)
+    invalid_input_total = models.IntegerField(default=0)
+    input_attempt_total = models.IntegerField(default=0)
+    invalid_ratio = models.FloatField(null=True, blank=True)
+    substantive_turn_count = models.IntegerField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["match", "user"],
+                name="uniq_input_gate_stat_match_user",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"match={self.match_id} user={self.user_id} "
+            f"invalid={self.invalid_input_total}/{self.input_attempt_total}"
         )
 
 
@@ -506,7 +573,9 @@ class PostDialogueResponse(models.Model):
     # Debriefing consent: NULL=pending, True=consent, False=withdrawn
     consent_confirmed = models.BooleanField(null=True, blank=True)
 
-    # Snapshot of the pre-dialogue score used by this exact conversation.
+    # --- Derived stance metrics (snapshot, filled at submission) -----------
+    # s_pre = the participant's pre-dialogue stance score (UserStanceProfile
+    # .stance_score at submission time). NULL when no pre-survey profile exists.
     s_pre = models.FloatField(
         null=True,
         blank=True,
@@ -562,6 +631,11 @@ class PostDialogueResponse(models.Model):
         return round(abs(self.s_post() - 4) - abs(float(s_pre) - 4), 4)
 
     def fill_stance_metrics(self, s_pre) -> None:
+        """Snapshot s_pre and the two derived metrics onto the stored columns.
+
+        s_pre is the participant's pre-dialogue stance score (1–7) or None when
+        no pre-survey profile exists — in which case the deltas stay NULL.
+        """
         if s_pre is None:
             self.s_pre = None
             self.delta_s_value = None
