@@ -4,7 +4,9 @@ from .models import (
     AIConversation,
     CCNDTimelineUnlock,
     DialogueMatch,
+    DialogueSessionRecord,
     MatchAISuggestion,
+    MatchInputGateStat,
     MatchMessage,
     MatchQueueEntry,
     MatchStanceDrift,
@@ -24,8 +26,43 @@ class AIConversationAdmin(admin.ModelAdmin):
         "dialogue_phase",
         "created_at",
     )
-    list_filter = ("topic_id", "dialogue_phase")
+    list_filter = ("topic_id", "dialogue_phase", "ai_turn_is_question")
     search_fields = ("user__username", "session_id", "user_prompt", "ai_response")
+
+
+# Input gate 計數的檢視入口。研究端據此決定樣本排除，系統不自動排除。
+@admin.register(DialogueSessionRecord)
+class DialogueSessionRecordAdmin(admin.ModelAdmin):
+    list_display = (
+        "session_id",
+        "user",
+        "topic_id",
+        "status",
+        "invalid_input_count",
+        "invalid_input_total",
+        "input_attempt_total",
+        "invalid_ratio",
+        "substantive_turn_count",
+        "last_activity_at",
+    )
+    list_filter = ("topic_id", "status")
+    search_fields = ("user__username", "session_id", "topic_title")
+
+
+@admin.register(MatchInputGateStat)
+class MatchInputGateStatAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "match",
+        "user",
+        "invalid_input_count",
+        "invalid_input_total",
+        "input_attempt_total",
+        "invalid_ratio",
+        "substantive_turn_count",
+        "updated_at",
+    )
+    search_fields = ("user__username", "match__room_id")
 
 
 @admin.register(UserStanceProfile)

@@ -1,13 +1,21 @@
 # CONTEXT.md — BridgeUs 開發狀態
 
-> 最後更新：2026-07-11
+> 最後更新：2026-08-01
 > 用途：每次對話開始先讀此檔。**「待提交變更」區塊** = 尚未 commit 的工作，下次 commit 直接依此即可；commit 完就把該項移除。
 
 ---
 
 ## 🟡 待提交變更（Uncommitted）
 
-> 每完成一項未 commit 的工作就記在這；commit 後刪掉該行。目前無。
+> 每完成一項未 commit 的工作就記在這；commit 後刪掉該行。
+
+- **Input gate（輸入閘門）+ token 消耗控制** — 見下方「Input gate」章節。
+  新檔：`apps/matching/services/input_gate.py`、`rate_limit.py`、`input_gate_store.py`、
+  `apps/matching/tests/test_input_gate.py`、`api/tests_input_gate_ws.py`、
+  migration `0016_aiconversation_ai_turn_is_question_and_more`。
+  改檔：`api/{models,consumers,views,admin}.py`、`apps/matching/services/hh_analysis.py`、
+  `chat/services/{_blacklist,filter}.py`（單字粗口）、
+  `frontend/src/pages/TopicChat.{jsx,css}`。
 
 _（未追蹤的資料/設定檔 `.claude/`、`chroma_data/`、`*.csv`、`0530…txt` 不納入 commit。）_
 
@@ -95,6 +103,50 @@ BridgeUs（橋得攏）— AI 驅動的去極化對話平台。
 
 ---
 
+## Input gate（輸入閘門 / token 消耗控制）
+
+LLM 呼叫**之前**的純規則過濾。命中時回靜態字串，零 API 成本。H-H 與 H-AI 共用。
+
+- 模組：`apps/matching/services/input_gate.py`（純規則，無 I/O、無模型推論）、
+  `rate_limit.py`（Django cache → prod Redis）、`input_gate_store.py`（計數落庫）。
+- 判定順序（不可調換）：**0 單字粗口** → 1 短回應白名單 → 2 純數字/符號 →
+  3 字元重複度 <0.3 → 4 語意字元佔比 <0.4 → 5 `len<4` 且前一輪 AI 沒提問。
+  **白名單豁免 2/3/4，但規則 5 仍適用**（「好」在 AI 提問後放行，無脈絡時攔截）。
+  所有門檻是工程性防禦值，不是實驗參數。
+- **規則 0（單字粗口）不看 `prev_ai_is_question`**：AI 剛提問會讓「好」變成合法輪次，
+  但不會讓「幹」變成回答。字彙在 `chat/services/_blacklist.py::STANDALONE_PROFANITY`
+  （幹/操/靠/屌），比對在 `filter.py::find_standalone_profanity()`：剝除標點空白後，
+  整串只由這些字組成才命中 →「幹」「幹幹幹」「幹！！！」「幹 幹 幹」全擋，
+  「幹嘛」「樹幹」「幹部」「操作」「幹，核電根本是騙局」不受影響。
+  這些字**不可**放進 `BLACKLIST`（子字串比對會誤殺上述複合詞）。
+  重複的「幹×n」靠遞進節流累加，第 6 則進冷卻。回覆走專屬的
+  `FALLBACK_PROFANITY_ONLY`（承接情緒導回議題），不是「可以再多說一點嗎」。
+- `prev_ai_is_question` 來自 `AIConversation.ai_turn_is_question`，回應落庫時由策略層寫入：
+  讀 `<judgment>` 的型別代號（C=視角翻轉型→True、E=承接深化型→False），
+  A/B/D 退回句尾問號判斷（TODO：prompt 第十節短碼補欄位）。
+- 攔截的訊息**不進** session_state.history / AIConversation / RAG / embedding /
+  CCND / 對話輪數，只更新計數欄位。四個入口都擋：H-AI WS、H-AI REST reply、
+  H-H WS（含 modify_suggestion 改寫框）、H-H REST messages。
+- 遞進節流：1–2 對話氣泡、3–5 系統提示列、≥6 進 60 秒冷卻（WS `input_cooldown`）。
+  冷卻結束不歸零，需一則有效發言重置。
+- Rate limit（獨立於內容判斷）：最小間隔 1.5s、每分鐘 20 則，per-user，兩種對話室同時生效。
+- 實驗欄位：`DialogueSessionRecord.{invalid_input_count, invalid_input_total,
+  input_attempt_total, invalid_ratio, substantive_turn_count}`；H-H 為 `MatchInputGateStat`
+  （per match×user，同名欄位）。`invalid_ratio` / `substantive_turn_count` 在後測問卷送出時計算。
+  **系統不自動排除樣本**，只產出欄位。
+- NLP 管線：離題偵測、論述移動度、僵局偵測三處一律排除短回應，
+  共用 `input_gate.is_substantive_message()`。
+- 前端：相同 fallback 就地累加 `×N` 不新增氣泡；`input_blocked` / `input_cooldown` /
+  `rate_limited` 三種事件；冷卻時停用輸入框並倒數。
+
+```bash
+uv run pytest apps/matching/tests/test_input_gate.py -q   # 規則單元測試（84 項）
+uv run pytest api/tests_input_gate_ws.py -q               # Consumer/REST 整合（17 項）
+uv run pytest chat/tests_filter.py -q                     # 黑名單 + 單字粗口（38 項）
+```
+
+---
+
 ## 訊息讚/倒讚（MessageReaction）
 
 參與者可對「對方發言」按讚/倒讚，寫入 DB 供研究分析。H-H 與 H-AI 皆支援。
@@ -112,6 +164,13 @@ cd backend
 uv run pytest api/tests.py -v                       # api app（含 matching、post-questionnaire、Part F）
 uv run pytest api/tests.py::PlatformFeedbackApiTests -v   # Part F（6 項）
 uv run pytest api/tests_message_reactions.py -v           # 讚/倒讚（11 項）
+uv run pytest api/tests_input_gate_ws.py -v               # Input gate 整合（14 項）
+# ⚠️ 專案根執行 `uv run pytest` 只會收到 apps/matching/tests/（pytest 預設
+#    python_files 是 test_*.py，api/ 底下的 tests_*.py 必須指名檔案才會跑）。
+#    完整套件：
+uv run pytest apps api/tests.py api/tests_websocket.py api/tests_live_contract.py \
+  api/tests_message_reactions.py api/tests_post_questionnaire.py \
+  api/tests_ccnd_timeline_gate.py api/tests_input_gate_ws.py chat/tests_filter.py -q   # 525 passed
 # chat/ 底下的 tests_* 多對應已淘汰服務，屬 legacy
 ```
 

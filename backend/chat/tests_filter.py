@@ -7,7 +7,12 @@ Stage 2 classifier is TODO; tests only cover Stage 1 behaviour.
 import pytest
 
 from chat.services._blacklist import BLACKLIST
-from chat.services.filter import acheck_content, check_content, check_content_sync
+from chat.services.filter import (
+    acheck_content,
+    check_content,
+    check_content_sync,
+    find_standalone_profanity,
+)
 
 
 # ---------- return shape ----------
@@ -144,3 +149,45 @@ async def test_async_clean_matches_sync():
     sync_r = check_content(text)
     async_r = await acheck_content(text)
     assert sync_r == async_r
+
+
+# ---------- 單字粗口（只有單獨出現時才算）----------
+#
+# 「幹」不能放進 BLACKLIST：那是子字串比對，會把「幹嘛」「幹部」「樹幹」
+# 全部誤判。整則訊息只有這個字（或它重複 N 次）時才攔截。
+
+@pytest.mark.parametrize(
+    "text",
+    ["幹", "幹幹", "幹幹幹", "幹幹幹幹幹幹", "幹!!!", "幹！！！", "幹。", "幹 幹 幹",
+     "操", "靠", "屌", "幹靠"],
+)
+def test_standalone_profanity_blocked(text):
+    r = check_content_sync(text)
+    assert r["is_blocked"] is True
+    assert r["reason"] == "standalone_profanity"
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["幹嘛這樣講", "他是幹部", "這棵樹的樹幹很粗", "核電廠的操作程序",
+     "這個方案不夠可靠", "電網主幹線路老舊", "他做事很能幹", "體操選手"],
+)
+def test_profanity_characters_in_ordinary_words_pass(text):
+    assert check_content_sync(text)["is_blocked"] is False
+
+
+def test_profanity_with_substantive_content_is_not_standalone():
+    """帶情緒的論述不歸這條規則管（交給情緒偵測）。"""
+    assert check_content_sync("幹，核電根本就是騙局")["is_blocked"] is False
+
+
+def test_blacklist_still_wins_over_standalone_check():
+    r = check_content_sync("幹你娘")
+    assert r["reason"] == "blacklist"
+
+
+def test_find_standalone_profanity_returns_matched_char():
+    assert find_standalone_profanity("幹幹幹") == "幹"
+    assert find_standalone_profanity("幹嘛") is None
+    assert find_standalone_profanity("") is None
+    assert find_standalone_profanity("！！！") is None

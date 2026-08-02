@@ -29,6 +29,24 @@ from apps.matching.services.hh_analysis import (
     aget_topic_anchor_embedding,
     build_stalemate_prompt,
 )
+from apps.matching.services.input_gate import (
+    COOLDOWN_NOTICE,
+    InputVerdict,
+    ai_turn_is_question,
+    classify,
+    fallback_message,
+    rate_limit_notice,
+    throttle_tier,
+)
+from apps.matching.services.input_gate_store import (
+    arecord_ai_attempt,
+    arecord_match_attempt,
+)
+from apps.matching.services.rate_limit import (
+    acheck_rate_limit,
+    acooldown_remaining,
+    astart_cooldown,
+)
 from chat.services.embedding import aget_embedding
 from chat.services.emotion import aget_analyze_emotion
 from chat.services.filter import check_content_sync
@@ -36,10 +54,22 @@ from chat.services.filter import check_content_sync
 User = get_user_model()
 SESSION_TTL_SECONDS = 60 * 60 * 12
 DEFAULT_AI_ASSIST_TIMEOUT_SECONDS = 2.0
-# Shown when the model fails the <reply> output contract twice in a row. Failing
-# closed costs the participant one retry prompt; failing open would leak the
-# model's internal judgment block and burn an experimental sample.
+# Shown when the model fails the <reply> output contract twice in a row and the
+# reply cannot be salvaged. Failing closed costs the participant one retry
+# prompt; failing open would leak the model's internal judgment block and burn
+# an experimental sample.
 CONTRACT_FALLBACK_TEXT = "系統忙碌中，請再說一次。"
+
+# Appended to the user message on a contract-violation retry. Not stored in
+# session.history — it is a transport-level correction, not participant speech.
+_CONTRACT_CORRECTION = """
+
+[系統提示]上一次輸出違反格式契約:<reply> 區塊內出現了判定語言。
+本次輸出時,<reply> 的第一個字必須是回應內容本身,
+不得出現「內部」「判定」「本輪」「使用者這一輪」等字樣,
+不得提及型別代號或型別名稱,不得描述你正在做什麼判斷。
+判定內容一律只寫在 <judgment> 區塊內。
+"""
 logger = logging.getLogger(__name__)
 
 # Emotion interception only fires when the message is aimed at the other person.
@@ -119,10 +149,116 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
         if not user_message:
             return
 
-        await self._stream_response(user_message)
+        if await self._passes_input_gate(user_message):
+            await self._stream_response(user_message)
+
+    # ── Input gate ──────────────────────────────────────────────────────────
+    # Everything below runs BEFORE _stream_response, which is the only place
+    # that touches RAG, the Claude API, AIConversation, session.history and the
+    # embedding path. A blocked message returns here and therefore never
+    # reaches any of them — see test_input_gate_ws.py for the assertions that
+    # pin that down.
+
+    def _cooldown_scope(self) -> str:
+        return f"ai:{self.session_id}:{self.user.id}"
+
+    async def _passes_input_gate(self, user_message: str) -> bool:
+        """True 表示這則訊息可以進入 LLM 流程。"""
+        remaining = await acooldown_remaining(self._cooldown_scope())
+        if remaining:
+            await self._send_cooldown(remaining)
+            return False
+
+        rate = await acheck_rate_limit(self.user.id)
+        if not rate["allowed"]:
+            await self.send(
+                json.dumps(
+                    {
+                        "type": "rate_limited",
+                        "reason": rate["reason"],
+                        "retry_after": rate["retry_after"],
+                        "content": rate_limit_notice(rate["reason"]),
+                    }
+                )
+            )
+            return False
+
+        prev_is_question = await self._prev_ai_turn_is_question()
+        verdict = classify(user_message, prev_ai_is_question=prev_is_question)
+        if verdict is InputVerdict.VALID:
+            # 通過閘門的正常發言把連續計數重置為 0。
+            await arecord_ai_attempt(self.session_id, blocked=False)
+            return True
+
+        await self._handle_blocked_input(verdict)
+        return False
+
+    async def _handle_blocked_input(self, verdict: InputVerdict):
+        count = await arecord_ai_attempt(self.session_id, blocked=True)
+        tier = throttle_tier(count)
+
+        if tier == "cooldown":
+            seconds = await astart_cooldown(self._cooldown_scope())
+            await self._send_cooldown(seconds, invalid_input_count=count)
+            return
+
+        await self.send(
+            json.dumps(
+                {
+                    "type": "input_blocked",
+                    # "bubble" → 一般 AI 對話氣泡；"notice" → 系統提示列，
+                    # 不佔對話輪數也不進歷史。
+                    "presentation": tier,
+                    "reason": verdict.value,
+                    "content": fallback_message(verdict, count),
+                    "invalid_input_count": count,
+                }
+            )
+        )
+
+    async def _send_cooldown(self, seconds: int, invalid_input_count: int | None = None):
+        payload = {
+            "type": "input_cooldown",
+            "seconds": int(seconds),
+            "content": COOLDOWN_NOTICE.format(seconds=int(seconds)),
+        }
+        if invalid_input_count is not None:
+            payload["invalid_input_count"] = invalid_input_count
+        await self.send(json.dumps(payload))
+
+    async def _prev_ai_turn_is_question(self) -> bool:
+        """讀 session 最後一則 AI 回覆的 ai_turn_is_question 旗標。
+
+        旗標在回應落庫時由策略層寫入（見 input_gate.ai_turn_is_question），
+        這裡不做任何事後推測。沒有前一輪 AI 回覆時回傳 False——對話第一句
+        就送「好」本來就是低訊息量輸入。
+        """
+        from api.models import AIConversation
+
+        try:
+            return bool(
+                await AIConversation.objects.filter(
+                    user_id=self.user.id,
+                    session_id=self.session_id,
+                    ai_response__isnull=False,
+                )
+                .exclude(ai_response="")
+                .order_by("-created_at", "-id")
+                .values_list("ai_turn_is_question", flat=True)
+                .afirst()
+            )
+        except Exception:
+            logger.exception(
+                "Failed to read previous AI turn flag session=%s.", self.session_id
+            )
+            return False
 
     async def _stream_response(self, user_message: str):
-        from apps.matching.services.ai_agent import DialoguePhase, DialogueSession
+        from apps.matching.services.ai_agent import (
+            DialoguePhase,
+            DialogueSession,
+            salvage_reply,
+        )
         from api.views import get_dialogue_agent
 
         cache_key = _session_cache_key(self.session_id)
@@ -153,25 +289,37 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
         agent = get_dialogue_agent(session_record["collection_name"])
         turn_id = saved_turn.id if saved_turn is not None else None
 
+        # The whole reply is held back until it passes validation, so tell the
+        # client something is happening before the first API call.
+        await self.send(json.dumps({"type": "agent_thinking"}))
+
         try:
             gate, contract_ok = await self._stream_gated_response(agent, session)
+            first_gate = gate
+
             if not contract_ok:
-                # Fail closed: the gate never opened, so nothing reached the client.
-                # Retry the whole call once with a fresh gate before giving up.
+                # Nothing has reached the client — the reply is still buffered.
                 logger.error(
                     "Output contract violated (attempt 1) session=%s turn=%s "
-                    "buffer[:200]=%r",
+                    "leak_pattern=%r buffer[:200]=%r",
                     self.session_id,
                     turn_id,
+                    gate.leak_pattern,
                     gate.buffered_preview[:200],
                 )
-                gate, contract_ok = await self._stream_gated_response(agent, session)
+                # Level 1: retry WITH a correction appended to the user message.
+                # Replaying identical input at temperature 0.3 reproduces the
+                # same failure, so the input must change for the output to.
+                gate, contract_ok = await self._stream_gated_response(
+                    agent, session, correction=_CONTRACT_CORRECTION
+                )
                 if not contract_ok:
                     logger.error(
-                        "Output contract violated after retry session=%s turn=%s "
-                        "buffer[:200]=%r",
+                        "Output contract violated after corrected retry "
+                        "session=%s turn=%s leak_pattern=%r buffer[:200]=%r",
                         self.session_id,
                         turn_id,
+                        gate.leak_pattern,
                         gate.buffered_preview[:200],
                     )
         except Exception:
@@ -188,18 +336,18 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
             # judgment 區塊只進 DB 供研究分析，永不推送、永不回灌歷史。
             judgment = gate.judgment
         else:
-            # 絕不推送未開閘的緩衝內容；改推固定文案。
-            visible_reply = CONTRACT_FALLBACK_TEXT
-            await self.send(
-                json.dumps(
-                    {
-                        "type": "agent_stream",
-                        "content": visible_reply,
-                    }
-                )
+            # Level 2: salvage rather than discard — no third API call. Prefer
+            # the corrected attempt; fall back to the first if the retry
+            # produced no reply body at all (e.g. it broke the tag contract).
+            visible_reply = salvage_reply(gate.reply) or salvage_reply(
+                first_gate.reply
             )
+            if visible_reply is None:
+                visible_reply = CONTRACT_FALLBACK_TEXT
             # 原始輸出只留在這個非使用者可見的欄位，供事後檢視違約樣本。
-            judgment = gate.buffered_preview
+            judgment = self._violation_record(first_gate, gate)
+
+        await self._send_reply(visible_reply)
 
         session.add_agent_message(visible_reply)
         session_record["session"] = session.to_dict()
@@ -224,40 +372,53 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
             "turn_id": turn_id,
         }))
 
-    async def _stream_gated_response(self, agent, session):
-        """Run one API call through ReplyStreamGate.
+    async def _stream_gated_response(self, agent, session, correction: str = ""):
+        """Run one API call through ReplyStreamGate. Returns (gate, contract_ok).
 
-        Returns (gate, contract_ok). Only gate-approved text is ever sent to the
-        client: everything before <reply> and after </reply> is suppressed at
-        stream time, because the frontend renders each chunk as it arrives and
-        post-hoc stripping would be too late.
+        Nothing is sent to the client here. The in-reply leak check can only run
+        once the whole body is known (ReplyStreamGate.finish), and a correction
+        retry has to be able to replace the previous attempt wholesale — neither
+        is possible if chunks have already been rendered. So the reply is held
+        until it has passed validation, and the caller flushes it.
+
+        The wait is covered by the `agent_thinking` indicator, which is pushed
+        before the first API call.
         """
         from apps.matching.services.ai_agent import ReplyStreamGate
 
         gate = ReplyStreamGate()
-        async for chunk in agent.astream_respond(session):
-            visible = gate.feed(chunk)
-            if visible:
-                await self.send(
-                    json.dumps(
-                        {
-                            "type": "agent_stream",
-                            "content": visible,
-                        }
-                    )
-                )
+        async for chunk in agent.astream_respond(session, correction=correction):
+            gate.feed(chunk)
 
-        tail, contract_ok = gate.finish()
-        if tail:
-            await self.send(
-                json.dumps(
-                    {
-                        "type": "agent_stream",
-                        "content": tail,
-                    }
-                )
-            )
+        _, contract_ok = gate.finish()
         return gate, contract_ok
+
+    async def _send_reply(self, text: str):
+        await self.send(
+            json.dumps(
+                {
+                    "type": "agent_stream",
+                    "content": text,
+                }
+            )
+        )
+
+    @staticmethod
+    def _violation_record(first_gate, retry_gate) -> str:
+        """Everything the model produced across both attempts, for research.
+
+        Never shown to the participant. Kept verbatim so a violated sample can
+        be re-read later — the salvaged reply alone would hide what went wrong.
+        """
+        parts = []
+        for label, gate in (("attempt 1", first_gate), ("attempt 2", retry_gate)):
+            if gate is None:
+                continue
+            parts.append(
+                f"[{label} judgment] {gate.judgment}\n"
+                f"[{label} reply leak_pattern={gate.leak_pattern!r}] {gate.reply}"
+            )
+        return "\n\n".join(parts)
 
     async def _get_session_record(self):
         from api.views import _restore_dialogue_session_record_for_user
@@ -345,12 +506,19 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
         saved_turn.internal_judgment = internal_judgment
         saved_turn.contract_violated = contract_violated
         saved_turn.dialogue_phase = dialogue_phase
+        # 策略層旗標：下一輪的 input gate 用它判定短回應是否有提問脈絡。
+        # 違約輪的 internal_judgment 是診斷用的違約紀錄而非短碼，傳進去會
+        # 解析不出型別代號，自動落到句尾問號的 fallback，這正是想要的行為。
+        saved_turn.ai_turn_is_question = ai_turn_is_question(
+            ai_response, internal_judgment
+        )
         try:
             await saved_turn.asave(
                 update_fields=[
                     "ai_response",
                     "internal_judgment",
                     "contract_violated",
+                    "ai_turn_is_question",
                     "dialogue_phase",
                 ]
             )
@@ -445,11 +613,85 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
             await self.close(code=4000)
             return
 
+        if not await self._passes_input_gate(content):
+            return
+
         if hh_ai_assist_enabled():
             await self._handle_ai_assisted_message(content)
             return
 
         await self._relay_and_persist(content)
+
+    # ── Input gate（H-H）────────────────────────────────────────────────────
+    # 同一套規則，行為不同：攔截後不產生任何 AI 訊息，只向發送者推提示，
+    # 對方完全看不到，訊息也不寫進 MatchMessage（所以不會進 embedding、
+    # 離題偵測、CCND 或摘要）。節流與 rate limit 規則與 H-AI 相同。
+    # H-H 沒有「AI 剛提問」這種脈絡，prev_ai_is_question 恆為 False——
+    # 對真人發「好」一個字同樣是低訊息量輸入。
+
+    def _cooldown_scope(self) -> str:
+        return f"match:{self.match.id}:{self.user.id}"
+
+    async def _passes_input_gate(self, content: str) -> bool:
+        remaining = await acooldown_remaining(self._cooldown_scope())
+        if remaining:
+            await self._send_cooldown(remaining)
+            return False
+
+        rate = await acheck_rate_limit(self.user.id)
+        if not rate["allowed"]:
+            await self.send(
+                json.dumps(
+                    {
+                        "type": "rate_limited",
+                        "reason": rate["reason"],
+                        "retry_after": rate["retry_after"],
+                        "content": rate_limit_notice(rate["reason"]),
+                    }
+                )
+            )
+            return False
+
+        verdict = classify(content, prev_ai_is_question=False)
+        if verdict is InputVerdict.VALID:
+            await arecord_match_attempt(
+                self.match.id, self.user.id, blocked=False
+            )
+            return True
+
+        count = await arecord_match_attempt(
+            self.match.id, self.user.id, blocked=True
+        )
+        tier = throttle_tier(count)
+        if tier == "cooldown":
+            seconds = await astart_cooldown(self._cooldown_scope())
+            await self._send_cooldown(seconds, invalid_input_count=count)
+            return False
+
+        self.blocked_count += 1
+        await self.send(
+            json.dumps(
+                {
+                    "type": "input_blocked",
+                    # H-H 一律走系統提示列：對方看不到，也不該偽造成一則對話訊息。
+                    "presentation": "notice",
+                    "reason": verdict.value,
+                    "content": fallback_message(verdict, count),
+                    "invalid_input_count": count,
+                }
+            )
+        )
+        return False
+
+    async def _send_cooldown(self, seconds: int, invalid_input_count: int | None = None):
+        payload = {
+            "type": "input_cooldown",
+            "seconds": int(seconds),
+            "content": COOLDOWN_NOTICE.format(seconds=int(seconds)),
+        }
+        if invalid_input_count is not None:
+            payload["invalid_input_count"] = invalid_input_count
+        await self.send(json.dumps(payload))
 
     async def _handle_ai_assisted_message(self, content: str):
         try:
@@ -519,6 +761,17 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
         modified_content = (data.get("content") or "").strip()
         if not modified_content:
             await self._send_error("修改後的訊息不可為空白。")
+            return
+
+        # 改寫框是繞過 receive() 的第二個入口，閘門必須在這裡再擋一次，
+        # 否則使用者可以用「送出 → 改寫成 6456」把垃圾內容送進配對房。
+        # 不重複計 attempt：這一則的送出嘗試在原訊息時已經記過。
+        modified_verdict = classify(modified_content, prev_ai_is_question=False)
+        if modified_verdict is not InputVerdict.VALID:
+            await self._send_system_prompt(
+                category="input_blocked",
+                message=fallback_message(modified_verdict),
+            )
             return
 
         suggestion.user_action = suggestion.Action.MODIFY
