@@ -407,6 +407,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
   const activeMatchRef = useRef({ roomId: null, status: null, topicId: null });
   const leaveRequestSentRef = useRef(false);
   const selfInitiatedLeaveRef = useRef(false);
+  const explicitSurveyReopenRef = useRef(false);
   const cancelQueueRequestSentRef = useRef(false);
   const isChatPageMountedRef = useRef(true);
   const shouldAutoScrollAiRef = useRef(true);
@@ -906,6 +907,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     activeMatchRef.current = { roomId: null, status: null, topicId: null };
     leaveRequestSentRef.current = false;
     selfInitiatedLeaveRef.current = false;
+    explicitSurveyReopenRef.current = false;
     cancelQueueRequestSentRef.current = false;
     shouldAutoScrollMatchRef.current = true;
     setShowScrollToBottomButton(false);
@@ -1254,7 +1256,14 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     // 保險絲：問卷開著、但後端已經不認為這是「Godot 待填問卷」狀態時就關掉。
     // 正常情況會由 binding_cancel_reason 的通知關閉；這裡是防止通知漏掉時
     // 使用者卡在一份送出去只會被 409 拒絕的問卷前。
+    //
+    // explicitSurveyReopenRef 擋掉一般（非 godot）配對模式下按「重新填寫問卷」
+    // 的情況：handleRestartSurvey 只會 setShowSurvey(true)，不會把 matchingState
+    // 一起清成 idle，所以下一次這個 effect 重跑時 status 還是 closed/cancelled/
+    // matched/ai_recommended，不是 idle，會被這條保險絲原地關掉——使用者點了
+    // 「重新填寫問卷」畫面卻連跳都沒跳。
     if (!showSurvey) return;
+    if (explicitSurveyReopenRef.current) return;
     if (!matchingState) return;
     if (matchingState.binding_source === 'godot') return;
     if (matchingState.status === 'idle') return;   // 一般入口本來就該顯示問卷
@@ -1957,6 +1966,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
   };
 
   const handleSurveySubmit = async ({ answers, openAnswers }) => {
+    explicitSurveyReopenRef.current = false;
     setSurveyAnswers(answers);
     setSurveyOpenAnswers(openAnswers);
     setStanceRedoConfirmed(false);
@@ -2401,6 +2411,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
   };
 
   const handleRestartSurvey = () => {
+    explicitSurveyReopenRef.current = true;
     setMatchingError('');
     setMatchChatError('');
     setMatchMessages([]);
