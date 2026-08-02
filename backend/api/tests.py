@@ -2438,6 +2438,7 @@ class PlatformFeedbackApiTests(APITestCase):
             exp_stance_change_1=4, exp_stance_change_2=4,
             exp_quality_1=4, exp_quality_2=4,
             exp_reflection_1=4, exp_reflection_2=4,
+            exp_comprehension_1=4,
             ccnd_attention=4, ccnd_awareness=4, ccnd_influence=4,
             opponent_judgment=2,
             post_open_comprehension="x" * 60,

@@ -3698,6 +3698,7 @@ class PostDialogueResponseView(APIView):
             exp_quality_2=validated["exp_quality_2"],
             exp_reflection_1=validated["exp_reflection_1"],
             exp_reflection_2=validated["exp_reflection_2"],
+            exp_comprehension_1=validated["exp_comprehension_1"],
             ccnd_attention=validated["ccnd_attention"],
             ccnd_awareness=validated["ccnd_awareness"],
             ccnd_influence=validated["ccnd_influence"],

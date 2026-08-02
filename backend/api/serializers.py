@@ -419,13 +419,14 @@ class PostDialogueResponseSerializer(serializers.Serializer):
     post_likert_7 = _likert_7()
     post_likert_8 = _likert_7()
 
-    # C-2 (6 Likert)
+    # C-2 (7 Likert)
     exp_stance_change_1 = _likert_7()
     exp_stance_change_2 = _likert_7()
     exp_quality_1 = _likert_7()
     exp_quality_2 = _likert_7()
     exp_reflection_1 = _likert_7()
     exp_reflection_2 = _likert_7()
+    exp_comprehension_1 = _likert_7()
 
     # C-3 (3 Likert)
     ccnd_attention = _likert_7()

@@ -544,6 +544,7 @@ class PostDialogueResponse(models.Model):
     exp_quality_2 = _likert_field("C2-4 對話品質感知")
     exp_reflection_1 = _likert_field("C2-5 自我反思/元認知")
     exp_reflection_2 = _likert_field("C2-6 自我反思/元認知")
+    exp_comprehension_1 = _likert_field("C2-7 議題理解程度")
 
     # Part C-3: CCND assessment
     ccnd_attention = _likert_field("C3-1 注意力門檻")

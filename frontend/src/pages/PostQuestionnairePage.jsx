@@ -15,6 +15,7 @@ const C2_QUESTIONS = [
   { key: 'exp_quality_2', text: '對話中我有感受到被尊重，而非被攻擊。' },
   { key: 'exp_reflection_1', text: '在對話過程中，我曾重新檢視過自己論點的邏輯是否充分。' },
   { key: 'exp_reflection_2', text: '這次對話讓我意識到自己在某些面向的認知可能不夠完整。' },
+  { key: 'exp_comprehension_1', text: '經過這次對話，我對這個議題的了解比之前更完整了。' },
 ];
 
 const C3_QUESTIONS = [

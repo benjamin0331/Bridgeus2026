@@ -58,6 +58,7 @@ class FindClosableSessionsTests(TestCase):
             exp_quality_2=4,
             exp_reflection_1=4,
             exp_reflection_2=4,
+            exp_comprehension_1=4,
             ccnd_attention=4,
             ccnd_awareness=4,
             ccnd_influence=4,

@@ -36,6 +36,7 @@ BASE_C2 = {
     "exp_quality_2": 5,
     "exp_reflection_1": 3,
     "exp_reflection_2": 4,
+    "exp_comprehension_1": 5,
 }
 BASE_C3 = {
     "ccnd_attention": 5,
