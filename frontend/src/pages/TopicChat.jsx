@@ -406,6 +406,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
   const sessionCreationPromiseRef = useRef(null);
   const activeMatchRef = useRef({ roomId: null, status: null, topicId: null });
   const leaveRequestSentRef = useRef(false);
+  const selfInitiatedLeaveRef = useRef(false);
   const cancelQueueRequestSentRef = useRef(false);
   const isChatPageMountedRef = useRef(true);
   const shouldAutoScrollAiRef = useRef(true);
@@ -904,6 +905,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     setMatchSuggestionDraft(null);
     activeMatchRef.current = { roomId: null, status: null, topicId: null };
     leaveRequestSentRef.current = false;
+    selfInitiatedLeaveRef.current = false;
     cancelQueueRequestSentRef.current = false;
     shouldAutoScrollMatchRef.current = true;
     setShowScrollToBottomButton(false);
@@ -1258,6 +1260,23 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     if (matchingState.status === 'idle') return;   // 一般入口本來就該顯示問卷
     setShowSurvey(false);
   }, [matchingState, showSurvey]);
+
+  useEffect(() => {
+    // 對方主動離開房間時，這裡的使用者只能靠輪詢發現 status 變成 closed；
+    // 主動離開的那一方已經在 handleLeaveMatchRoom 裡自己導去問卷了
+    // （selfInitiatedLeaveRef 標記），這裡只補「被動被結束」的那一方。
+    if (!isMatchingMode) return;
+    if (selfInitiatedLeaveRef.current) return;
+    if (matchingState?.status !== 'closed') return;
+    if (!matchingState?.room_id) return;
+    navigate('/post-questionnaire', {
+      state: {
+        topicId: Number(id),
+        roomId: matchingState.room_id,
+        condition: 'hh',
+      },
+    });
+  }, [id, isMatchingMode, matchingState?.room_id, matchingState?.status, navigate]);
 
   useEffect(() => {
     if (!isMatchChatReady) {
@@ -2350,6 +2369,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     setMatchChatError('');
     setIsMatchingActionLoading(true);
     leaveRequestSentRef.current = true;
+    selfInitiatedLeaveRef.current = true;
 
     try {
       const response = await api.post(
@@ -2370,6 +2390,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       });
     } catch (error) {
       leaveRequestSentRef.current = false;
+      selfInitiatedLeaveRef.current = false;
       setMatchChatError(
         error?.response?.data?.detail ||
           '目前無法退出聊天室，請稍後再試。',
