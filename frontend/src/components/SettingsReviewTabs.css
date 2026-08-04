@@ -1,0 +1,28 @@
+.srt-tab-row {
+  display: inline-flex;
+  align-self: flex-start;
+  flex-shrink: 0;
+  gap: 4px;
+  margin-bottom: 20px;
+  padding: 0px;
+  border-radius: 10px;
+  background: #fae9d7;
+}
+
+.srt-tab-btn {
+  min-width: 96px;
+  min-height: 36px;
+  padding: 0 20px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #d8c3ad;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.srt-tab-btn.is-active {
+  background: #d8c3ad;
+  color: #5f5045;
+}

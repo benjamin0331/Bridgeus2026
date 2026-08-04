@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import api from '../api/client';
+import SettingsReviewTabs from '../components/SettingsReviewTabs';
 import './SettingsPage.css';
 
 // 設定頁。研究者帳號管理面板；一般個人設定之後再加。實際存取控制在後端
@@ -202,15 +203,20 @@ function SettingsPage({ user }) {
 
   if (!isResearcher) {
     return (
-      <div className="settings-page">
-        <div className="settings-heading"><h1>設定</h1></div>
-        <div className="settings-empty-card">尚無設定項。</div>
+      <div className="settings-page-shell">
+        <div className="settings-page">
+          <div className="settings-heading"><h1>設定</h1></div>
+          <div className="settings-empty-card">尚無設定項。</div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="settings-page">
+    <div className="settings-page-shell">
+      <SettingsReviewTabs active="settings" />
+
+      <div className="settings-page">
       <div className="settings-heading">
         <span className="settings-kicker">研究者</span>
         <h1>研究者設定</h1>
@@ -432,6 +438,7 @@ function SettingsPage({ user }) {
             </tbody>
           </table>
         )}
+      </div>
       </div>
     </div>
   );

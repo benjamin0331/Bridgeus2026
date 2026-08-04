@@ -11,6 +11,7 @@ import TopicChat from './pages/TopicChat'
 import KnowledgeBase from './pages/KnowledgeBase'
 import KnowledgeBaseTopicPage from './pages/KnowledgeBaseTopicPage'
 import KnowledgeBaseConversationPage from './pages/KnowledgeBaseConversationPage'
+import FavoritesPage from './pages/FavoritesPage'
 import HistoryPage from './pages/HistoryPage'
 import NotificationPage from './pages/NotificationPage'
 import AchievementPage from './pages/AchievementPage'
@@ -212,22 +213,24 @@ function App() {
               <Route path="/kb" element={<KnowledgeBase />} />
               <Route path="/kb/topics/:topicId" element={<KnowledgeBaseTopicPage />} />
               <Route path="/kb/conversations/:viewpointId" element={<KnowledgeBaseConversationPage />} />
+              <Route path="/favorites" element={<FavoritesPage />} />
               <Route path="/history" element={<HistoryPage />} />
               <Route path="/notifications" element={<NotificationPage />} />
               <Route path="/post-questionnaire" element={<PostQuestionnairePage />} />
               <Route path="/debriefing" element={<DebriefingPage />} />
               <Route path="/platform-feedback" element={<PlatformFeedbackPage />} />
               <Route path="/achievement" element={<AchievementPage />} />
-              {/* 研究者專用；Sidebar 只在 user.isResearcher 時才顯示連結，但路徑本身
-                  任何登入者都連得到，實際存取控制一律在後端 IsResearcher——
-                  一般參與者帳號打開這條路徑只會看到 403 錯誤訊息。 */}
-              <Route path="/viewpoint-review" element={<ViewpointReviewPage />} />
+              {/* 研究者專用；只能從設定頁的「審核」tab 切換過來（該 tab 只在
+                  user.isResearcher 時才顯示），但路徑本身任何登入者都連得到，
+                  實際存取控制一律在後端 IsResearcher——一般參與者帳號打開這
+                  條路徑只會看到 403 錯誤訊息。 */}
+              <Route path="/viewpoint-review" element={<ViewpointReviewPage user={user} />} />
               <Route path="/settings" element={<SettingsPage user={user} />} />
               <Route path="/chat" element={<GodotLobby />} />
             </Routes>
           </div>
 
-          <Sidebar navigate={navigate} isTopicPage={isTopicPage} isResearcher={Boolean(user?.isResearcher)} />
+          <Sidebar navigate={navigate} isTopicPage={isTopicPage} />
         </div>
 
         <AchievementToast

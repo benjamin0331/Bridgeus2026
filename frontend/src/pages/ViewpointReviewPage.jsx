@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
 import api from '../api/client';
+import SettingsReviewTabs from '../components/SettingsReviewTabs';
 import './ViewpointReviewPage.css';
 
-// 研究者專用頁面。Sidebar 只在 user.isResearcher 時才顯示連結，但實際存取
-// 控制一律在後端 IsResearcher（api/permissions.py）：這裡列的是還沒定案的
-// 候選觀點，不是給參與者看的東西，一般帳號直接開 /viewpoint-review 也只會
-// 收到 403。
+// 研究者專用頁面，從設定頁的「審核」tab 切換過來。頂部 tab 只在
+// user.isResearcher 時才顯示，但實際存取控制一律在後端 IsResearcher
+// （api/permissions.py）：這裡列的是還沒定案的候選觀點，不是給參與者看的
+// 東西，一般帳號直接開 /viewpoint-review 也只會收到 403。
 
 const TABS = [
   { id: 'pending', label: '待審核' },
@@ -29,7 +30,8 @@ function truncate(text, maxLength = 60) {
   return cleaned.length <= maxLength ? cleaned : `${cleaned.slice(0, maxLength)}…`;
 }
 
-function ViewpointReviewPage() {
+function ViewpointReviewPage({ user }) {
+  const isResearcher = Boolean(user?.isResearcher);
   const [status, setStatus] = useState('pending');
   const [items, setItems] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
@@ -102,116 +104,120 @@ function ViewpointReviewPage() {
   };
 
   return (
-    <div className="vr-page">
-      <section className="vr-list-panel">
-        <div className="vr-heading">
-          <span className="vr-kicker">M6 · Step 4</span>
-          <h1>觀點知識庫人工終審</h1>
-          <p>審核 pipeline 篩選出的候選觀點，決定是否收錄進觀點知識庫。</p>
-        </div>
+    <div className="vr-page-shell">
+      {isResearcher && <SettingsReviewTabs active="review" />}
 
-        <div className="vr-tab-row" role="tablist" aria-label="審核狀態">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              className={`vr-tab-btn${status === tab.id ? ' is-active' : ''}`}
-              onClick={() => setStatus(tab.id)}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
+      <div className="vr-page">
+        <section className="vr-list-panel">
+          <div className="vr-heading">
+            <span className="vr-kicker">M6 · Step 4</span>
+            <h1>觀點知識庫人工終審</h1>
+            <p>審核 pipeline 篩選出的候選觀點，決定是否收錄進觀點知識庫。</p>
+          </div>
 
-        <div className="vr-list">
-          {isLoading && <div className="vr-empty-card">正在讀取...</div>}
-          {!isLoading && error && <div className="vr-empty-card error">{error}</div>}
-          {!isLoading && !error && items.length === 0 && (
-            <div className="vr-empty-card">這個分類目前沒有資料。</div>
-          )}
-          {!isLoading && items.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={`vr-card${selectedId === item.id ? ' is-active' : ''}`}
-              onClick={() => setSelectedId(item.id)}
-            >
-              <span className="vr-card-dimension">{item.dimension}</span>
-              <span className="vr-card-text">{truncate(item.user_input_text)}</span>
-              <span className="vr-card-meta">
-                {`分數 ${item.composite_score?.toFixed(4) ?? '—'} · ${formatTime(item.created_at)}`}
-              </span>
-            </button>
-          ))}
-        </div>
-      </section>
+          <div className="vr-tab-row" role="tablist" aria-label="審核狀態">
+            {TABS.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                className={`vr-tab-btn${status === tab.id ? ' is-active' : ''}`}
+                onClick={() => setStatus(tab.id)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
 
-      <section className="vr-detail-panel">
-        {!selected && <div className="vr-empty-card">請從左側選擇一筆觀點。</div>}
-        {selected && (
-          <>
-            <div className="vr-detail-header">
-              <span className="vr-detail-topic">{`topic ${selected.topic_id} · ${selected.dimension}`}</span>
-              <span className="vr-detail-dialogue">{`來源對話 ${selected.dialogue_id}`}</span>
-            </div>
-
-            <div className="vr-detail-block">
-              <h3>使用者發言</h3>
-              <p>{selected.user_input_text}</p>
-            </div>
-
-            {selected.ai_response_text && (
-              <div className="vr-detail-block">
-                <h3>對方回應</h3>
-                <p>{selected.ai_response_text}</p>
-              </div>
+          <div className="vr-list">
+            {isLoading && <div className="vr-empty-card">正在讀取...</div>}
+            {!isLoading && error && <div className="vr-empty-card error">{error}</div>}
+            {!isLoading && !error && items.length === 0 && (
+              <div className="vr-empty-card">這個分類目前沒有資料。</div>
             )}
-
-            <div className="vr-detail-score">
-              <span>{`綜合分數：${selected.composite_score?.toFixed(4) ?? '—'}`}</span>
-              <span>{`被引用次數：${selected.citation_count}`}</span>
-              <span>{`目前狀態：${selected.review_status}`}</span>
-            </div>
-
-            <details className="vr-score-detail">
-              <summary>評分細節</summary>
-              <pre>{JSON.stringify(selected.score_detail, null, 2)}</pre>
-            </details>
-
-            <label className="vr-notes-label" htmlFor="vr-notes">
-              審核備註（選填）
-            </label>
-            <textarea
-              id="vr-notes"
-              className="vr-notes-input"
-              value={notes}
-              onChange={(event) => setNotes(event.target.value)}
-              rows={3}
-            />
-
-            {actionError && <div className="vr-action-error">{actionError}</div>}
-
-            <div className="vr-action-row">
+            {!isLoading && items.map((item) => (
               <button
+                key={item.id}
                 type="button"
-                className="vr-approve-btn"
-                disabled={isSubmitting}
-                onClick={() => handleDecision('approve')}
+                className={`vr-card${selectedId === item.id ? ' is-active' : ''}`}
+                onClick={() => setSelectedId(item.id)}
               >
-                通過
+                <span className="vr-card-dimension">{item.dimension}</span>
+                <span className="vr-card-text">{truncate(item.user_input_text)}</span>
+                <span className="vr-card-meta">
+                  {`分數 ${item.composite_score?.toFixed(4) ?? '—'} · ${formatTime(item.created_at)}`}
+                </span>
               </button>
-              <button
-                type="button"
-                className="vr-reject-btn"
-                disabled={isSubmitting}
-                onClick={() => handleDecision('reject')}
-              >
-                退回
-              </button>
-            </div>
-          </>
-        )}
-      </section>
+            ))}
+          </div>
+        </section>
+
+        <section className="vr-detail-panel">
+          {!selected && <div className="vr-empty-card">請從左側選擇一筆觀點。</div>}
+          {selected && (
+            <>
+              <div className="vr-detail-header">
+                <span className="vr-detail-topic">{`topic ${selected.topic_id} · ${selected.dimension}`}</span>
+                <span className="vr-detail-dialogue">{`來源對話 ${selected.dialogue_id}`}</span>
+              </div>
+
+              <div className="vr-detail-block">
+                <h3>使用者發言</h3>
+                <p>{selected.user_input_text}</p>
+              </div>
+
+              {selected.ai_response_text && (
+                <div className="vr-detail-block">
+                  <h3>對方回應</h3>
+                  <p>{selected.ai_response_text}</p>
+                </div>
+              )}
+
+              <div className="vr-detail-score">
+                <span>{`綜合分數：${selected.composite_score?.toFixed(4) ?? '—'}`}</span>
+                <span>{`被引用次數：${selected.citation_count}`}</span>
+                <span>{`目前狀態：${selected.review_status}`}</span>
+              </div>
+
+              <details className="vr-score-detail">
+                <summary>評分細節</summary>
+                <pre>{JSON.stringify(selected.score_detail, null, 2)}</pre>
+              </details>
+
+              <label className="vr-notes-label" htmlFor="vr-notes">
+                審核備註（選填）
+              </label>
+              <textarea
+                id="vr-notes"
+                className="vr-notes-input"
+                value={notes}
+                onChange={(event) => setNotes(event.target.value)}
+                rows={3}
+              />
+
+              {actionError && <div className="vr-action-error">{actionError}</div>}
+
+              <div className="vr-action-row">
+                <button
+                  type="button"
+                  className="vr-approve-btn"
+                  disabled={isSubmitting}
+                  onClick={() => handleDecision('approve')}
+                >
+                  通過
+                </button>
+                <button
+                  type="button"
+                  className="vr-reject-btn"
+                  disabled={isSubmitting}
+                  onClick={() => handleDecision('reject')}
+                >
+                  退回
+                </button>
+              </div>
+            </>
+          )}
+        </section>
+      </div>
     </div>
   );
 }

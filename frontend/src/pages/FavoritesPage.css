@@ -1,0 +1,10 @@
+/* 收藏頁沿用 KnowledgeBase.css 的卡片/網格樣式，這裡只補頁面本身的間距。 */
+.kb-page > .kb-section-title:first-child {
+  margin-bottom: 0;
+}
+
+.kb-highlights-section,
+.kb-video-section {
+  display: flex;
+  flex-direction: column;
+}
