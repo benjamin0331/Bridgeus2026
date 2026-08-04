@@ -94,6 +94,10 @@
   cursor: pointer;
 }
 
+.kb-trending-item-active {
+  color: #3b587a;
+}
+
 /* 空狀態提示（無議題可搜／無搜尋紀錄／無活動資料） */
 .kb-empty-hint,
 .kb-history-empty {
@@ -126,6 +130,74 @@
 .kb-highlight-card:hover {
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
   transform: translateY(-2px);
+}
+
+/* 同一場對話（同一個聊天室）產生的多筆觀點分組顯示：外層是一張卡片，
+   裡面依序堆疊每一筆觀點（.kb-highlight-group-item），用虛線分隔——
+   跟 .kb-highlight-card 共用大部分視覺語言，只是外層多一層分組容器。 */
+.kb-highlight-group-card {
+  background: #fff;
+  border: 1.5px solid #e0d8cf;
+  border-radius: 24px;
+  padding: 20px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.kb-highlight-group-card:hover {
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
+  transform: translateY(-2px);
+}
+
+/* 展開/收合分組其他觀點的按鈕：包住原本的 badge，右邊加一個下拉箭頭。
+   跟外層 .kb-highlight-group-card 一樣可點擊，事件處理那邊有
+   stopPropagation，點箭頭不會連帶觸發卡片本身的導頁。 */
+.kb-highlight-group-toggle {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+/* 跟 .kb-highlight-stance 等其他 meta badge 同一套尺寸規格
+   （font-size/padding/border-radius/font-weight），只是換一個顏色。 */
+.kb-highlight-group-badge {
+  background: #efe7dd;
+  color: #8d7058;
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 50px;
+  font-weight: bold;
+}
+
+.kb-highlight-group-arrow {
+  color: #8d7058;
+  font-size: 20px;
+  font-weight: bold;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+
+.kb-highlight-group-arrow.is-expanded {
+  transform: rotate(180deg);
+}
+
+.kb-highlight-group-item {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.kb-highlight-group-item + .kb-highlight-group-item {
+  padding-top: 16px;
+  border-top: 1.5px dashed #e0d8cf;
 }
 
 .kb-highlight-meta {
@@ -181,37 +253,28 @@
   font-size: 13px;
 }
 
-/* ============================
-   對話紀錄詳情頁（KnowledgeBaseConversationPage）
-   ============================ */
-.kb-conversation-card {
-  background: #fff;
-  border: 1.5px solid #e0d8cf;
-  border-radius: 24px;
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+.kb-highlight-quote {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #eee;
 }
 
-.kb-conversation-stances {
-  display: flex;
-  gap: 8px;
+.kb-highlight-quote-label {
+  color: #a4713c;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
 }
 
-.kb-conversation-summary {
-  color: #333;
-  font-size: 16px;
-  line-height: 1.7;
-  margin: 0;
-  white-space: pre-wrap;
-}
-
-.kb-conversation-metrics {
-  display: flex;
-  gap: 20px;
-  color: #999;
+.kb-highlight-quote-text {
+  margin: 4px 0 0;
+  color: #555;
   font-size: 13px;
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .kb-view-more-btn {
@@ -234,6 +297,9 @@
 
 .kb-back-btn {
   align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   border: none;
   background: transparent;
   color: #3b587a;
@@ -241,6 +307,11 @@
   font-weight: bold;
   cursor: pointer;
   padding: 0;
+}
+
+.kb-back-icon {
+  width: 14px;
+  height: 14px;
 }
 
 .kb-browse-count {
@@ -288,6 +359,75 @@
   text-decoration: none;
   color: inherit;
   cursor: pointer;
+  /* 原本是 <a>，改成 <button> 觸發站內播放彈窗後要重置按鈕預設樣式，
+     不然會多出邊框/背景/內距，跟其他卡片視覺不一致。 */
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+}
+
+/* 影片站內播放彈窗：點卡片不再另開分頁，而是蓋一層 backdrop + <video>
+   原生播放器。後端 media_views.serve_media 已經支援 HTTP Range，這裡才能
+   正常拖時間軸、讀到音軌。 */
+.kb-video-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(20, 16, 12, 0.72);
+  padding: 24px;
+}
+
+.kb-video-modal {
+  position: relative;
+  width: min(920px, 100%);
+  max-height: 90vh;
+  overflow-y: auto;
+  background: #fff;
+  border-radius: 24px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.kb-video-modal-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 1;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.kb-video-modal-player {
+  width: 100%;
+  max-height: 70vh;
+  border-radius: 16px;
+  background: #000;
+}
+
+.kb-video-modal-title {
+  font-size: 17px;
+  font-weight: bold;
+  color: #2f2722;
+}
+
+.kb-video-modal-description {
+  font-size: 13px;
+  color: #666;
+  line-height: 1.6;
 }
 
 .kb-video-thumb {
@@ -312,24 +452,130 @@
   overflow: hidden;
 }
 
-/* 數據統計預留位置 */
-.kb-chart-placeholder {
-  flex: 1;
-  background: white;
-  border-radius: 30px;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  margin-top: 20px;
-  min-height: 150px;
+/* 對話詳情頁（KnowledgeBaseConversationPage）：左邊訊息串＋右邊 CCND
+   樹狀圖，跟 HistoryPage 的「訊息串＋CCND」佈局同一套邏輯，只是沒有最左邊
+   的清單欄——這裡是從單一「熱門對話」卡片點進來，不需要再切換對話。 */
+.kb-conversation-layout {
+  display: grid;
+  grid-template-columns: minmax(360px, 1.2fr) minmax(340px, 1fr);
+  gap: 18px;
+  align-items: start;
 }
 
-/* 模擬圓餅圖 CSS 繪製 */
-.dummy-pie-chart {
-  width: 120px;
-  height: 120px;
-  border-radius: 50%;
-  background: conic-gradient(#748ba7 0% 40%, #5d7594 40% 70%, #8ca2bc 70% 100%);
+.kb-conversation-message-panel,
+.kb-conversation-tree-panel {
+  min-height: 0;
+  border: 1px solid rgba(117, 96, 78, 0.12);
+  border-radius: 28px;
+  background: rgba(255, 251, 246, 0.72);
+  box-shadow: 0 16px 38px rgba(83, 62, 44, 0.08);
+}
+
+.kb-conversation-message-panel {
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+  gap: 20px;
+}
+
+.kb-conversation-tree-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 14px;
+}
+
+.kb-conversation-tree-panel > .conversation-tree-panel {
+  flex: none;
+  min-height: 480px;
+  height: 480px;
+}
+
+.kb-conversation-header {
+  flex-shrink: 0;
+}
+
+.kb-conversation-kicker {
+  color: #8d7058;
+  font-size: 9.6px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.kb-conversation-header h2 {
+  margin: 6px 0 12px;
+  color: #2f2722;
+  font-size: clamp(18px, 2vw, 24px);
+}
+
+.kb-conversation-stances {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.kb-conversation-metric {
+  font-size: 11.2px;
+  color: #725f50;
+}
+
+.kb-conversation-summary {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: #efe7dd;
+  color: #4a4038;
+  font-size: 12.8px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.kb-conversation-message-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 2px;
+}
+
+.kb-conversation-message-row {
+  display: grid;
+  max-width: 82%;
+  gap: 6px;
+  align-self: flex-start;
+}
+
+.kb-conversation-message-row.is-side-b {
+  align-self: flex-end;
+}
+
+.kb-conversation-message-row span {
+  color: #8a7a6d;
+  font-size: 9.6px;
+  font-weight: 800;
+}
+
+.kb-conversation-message-row p {
+  margin: 0;
+  border-radius: 20px 20px 20px 6px;
+  padding: 12px 16px;
+  background: #ede6df;
+  color: #2f2722;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.kb-conversation-message-row.is-side-b p {
+  border-radius: 20px 20px 6px 20px;
+  background: #315f46;
+  color: #fffaf4;
+}
+
+.kb-conversation-message-row small {
+  color: #9a8d82;
+  font-size: 8.8px;
 }
 
 /* ============================
@@ -370,10 +616,6 @@
     margin-bottom: 16px;
   }
 
-  .kb-chart-placeholder {
-    min-height: 120px;
-  }
-
   .kb-page {
     gap: 24px;
   }
@@ -381,5 +623,13 @@
   .kb-highlights-grid,
   .kb-video-grid {
     grid-template-columns: 1fr;
+  }
+
+  .kb-conversation-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .kb-conversation-message-row {
+    max-width: 92%;
   }
 }

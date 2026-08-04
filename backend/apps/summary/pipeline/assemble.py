@@ -16,16 +16,23 @@ ccnd_semantic_dist / ccnd_stance_shift 都是「這則發言本身帶來多少�
 門檻本來就會把它篩掉，不需要特殊處理）。
 """
 
-from api.models import DialogueMatch
+import logging
+import os
+
+from api.display_settings import resolve_stance_category
+from api.models import DialogueMatch, MatchStanceDrift
 from apps.matching.services.semantic_tree import (
     OWNER_USER_A,
     OWNER_USER_B,
     get_lit_node_count,
     get_message_dimension,
+    get_message_lit_nodes,
 )
 from apps.summary.pipeline.quality_filter import run_pipeline
 from apps.summary.pipeline.write import write_dialogue_summary, write_viewpoint
 from chat.services.embedding import cosine_distance
+
+logger = logging.getLogger(__name__)
 
 # ccnd_stance_shift 的縮放常數。Step 3 的 score_and_rank 會對整批候選配對做
 # min-max 正規化，任何正的線性縮放對正規化後的排序結果沒有影響——這個常數
@@ -88,6 +95,105 @@ def build_messages_for_match(match: DialogueMatch) -> list[dict]:
     return messages
 
 
+def _stance_for_score(topic_id: int, stance_score) -> str:
+    """DialogueMatch.user_a_score / user_b_score 換算成 support/neutral/oppose。
+
+    對應 DialogueSummary.side_a_stance / side_b_stance。沿用配對當下記錄在
+    DialogueMatch 上的分數（而不是重查 UserStanceProfile 的當前值，那可能在
+    配對之後又被使用者填了新的問卷、跟這場對話當時的立場對不上），並且套用
+    api.display_settings.resolve_stance_category() 同一套 topic 門檻，跟問卷
+    結果頁、配對演算法用同一套判定標準，不再自己另立一份。
+    """
+    return resolve_stance_category(topic_id=topic_id, user_stance_score=float(stance_score))
+
+
+def _quality_score(ranked: list[dict]) -> float | None:
+    """整場對話的品質分數 = Step 3 選中的配對 composite_score 平均值。"""
+    scores = [pair["composite_score"] for pair in ranked]
+    if not scores:
+        return None
+    return round(sum(scores) / len(scores), 4)
+
+
+def _build_summary_text(messages: list[dict]) -> str:
+    """把整場對話雙方所有發言依時間順序串成純文字記錄，當作 AI 摘要
+    （generate_ai_summary）失敗時的備援，以及還沒被知識庫頁面觸發過摘要生成
+    前的暫時內容。
+
+    對應 DialogueSummary.summary_text；messages 用的是 build_messages_for_match()
+    回傳的全部訊息，不是 Step 3 篩選後的 ranked 子集。
+    """
+    return "\n".join(f"{msg['side'].upper()}: {msg['content']}" for msg in messages)
+
+
+def is_raw_summary_text(summary_text: str) -> bool:
+    """判斷 DialogueSummary.summary_text 是不是還停留在 _build_summary_text()
+    的原始逐字稿格式（還沒被 generate_ai_summary() 換成真正的 AI 摘要）。
+
+    用「開頭是不是 'A: '/'B: '」這個簡單字串特徵判斷，不新增一個布林欄位
+    （不想為這個小事再加一次 migration）：真正的 AI 摘要是一段連貫的中文
+    描述，幾乎不可能剛好以這個固定英文字母+冒號組合開頭。
+    """
+    stripped = (summary_text or "").lstrip()
+    return stripped.startswith("A: ") or stripped.startswith("B: ")
+
+
+def generate_ai_summary(messages: list[dict], *, topic_title: str) -> str | None:
+    """呼叫 Claude 幫這場已審核通過的對話寫一段簡短摘要，給知識庫「對話詳情」
+    頁最上方用（取代原本逐字稿直接複製貼上的 _build_summary_text）。
+
+    沒設 ANTHROPIC_API_KEY，或呼叫失敗（額度、逾時、API 錯誤等），回傳 None，
+    由呼叫端自行 fallback 回 _build_summary_text() 的逐字稿版本——不能讓知識庫
+    頁面因為 AI 摘要生成失敗就整頁掛掉。
+    """
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+
+    transcript = "\n".join(f"{msg['side'].upper()}: {msg['content']}" for msg in messages)
+    prompt = (
+        f"以下是一場關於「{topic_title}」的雙人討論逐字稿，A、B 分別代表兩位匿名參與者。"
+        "請用繁體中文寫一段 150 字以內的摘要，客觀描述雙方各自的立場與討論重點、"
+        "分歧所在，不要加任何前言、標題或說明文字，只回傳摘要本文。\n\n"
+        f"{transcript}"
+    )
+    try:
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model=os.getenv("CLAUDE_CHAT_MODEL", "claude-sonnet-4-6"),
+            max_tokens=400,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.content[0].text.strip()
+        return text or None
+    except Exception:
+        logger.exception("Claude API call failed while generating KB conversation AI summary.")
+        return None
+
+
+def _stance_shift_magnitude(match: DialogueMatch) -> float | None:
+    """整場對話的立場偏移量 = 雙方 |最後一筆 drift_value − 第一筆| 的平均。
+
+    只在至少一方有 MatchStanceDrift 記錄時才有值；一方完全沒發言、沒觸發過
+    drift 重算，就不計入平均（而不是當成 0 拉低整體）。雙方都沒有記錄時回傳
+    None。
+    """
+    magnitudes = []
+    for user_id in (match.user_a_id, match.user_b_id):
+        drifts = list(
+            MatchStanceDrift.objects.filter(match_id=match.id, user_id=user_id)
+            .order_by("measured_at")
+            .values_list("drift_value", flat=True)
+        )
+        if drifts:
+            magnitudes.append(abs(drifts[-1] - drifts[0]))
+    if not magnitudes:
+        return None
+    return round(sum(magnitudes) / len(magnitudes), 4)
+
+
 def run_pipeline_for_match(match_id: int) -> int:
     """M6 觀點知識庫的自動觸發入口：配對房結束對話時呼叫這支函式，跑完整條
     品質篩選 → 去重 → 寫入流程，回傳實際寫入的 ViewpointNode 筆數。
@@ -97,10 +203,9 @@ def run_pipeline_for_match(match_id: int) -> int:
     鎖已釋放）之後才觸發。任何一步失敗都不該讓配對房關不掉，所以呼叫端把整支
     函式包在自己的例外處理裡，這裡不特別 catch。
 
-    side_a_stance / side_b_stance / summary_text / quality_score /
-    stance_shift_magnitude 目前都沒有餵值（DialogueSummary 這幾個欄位本來就是
-    nullable/blank，不影響寫入）——這些欄位要填什麼是還沒拍板的另一個問題，
-    先不要在這裡自己發明公式。
+    summary_text 這裡先存雙方所有發言的純文字紀錄（見 _build_summary_text()）；
+    真正的 AI 摘要要等到有人第一次點開知識庫對話詳情頁時才即時生成
+    （見 generate_ai_summary / is_raw_summary_text），不在關房當下打 LLM API。
     """
     match = DialogueMatch.objects.get(pk=match_id)
     messages = build_messages_for_match(match)
@@ -109,7 +214,15 @@ def run_pipeline_for_match(match_id: int) -> int:
         return 0
 
     summary_id = write_dialogue_summary(
-        {"dialogue_id": str(match.id), "topic_id": match.topic_id}
+        {
+            "dialogue_id": str(match.id),
+            "topic_id": match.topic_id,
+            "summary_text": _build_summary_text(messages),
+            "side_a_stance": _stance_for_score(match.topic_id, match.user_a_score),
+            "side_b_stance": _stance_for_score(match.topic_id, match.user_b_score),
+            "quality_score": _quality_score(ranked),
+            "stance_shift_magnitude": _stance_shift_magnitude(match),
+        }
     )
 
     written = 0
@@ -123,6 +236,12 @@ def run_pipeline_for_match(match_id: int) -> int:
         if dimension is None:
             continue  # 這則發言沒有對應到任何 CCND anchor，無法分類，跳過不寫入
 
+        lit_nodes = get_message_lit_nodes(
+            match,
+            owner_key=owner_key,
+            source_message_id=str(pair["user_message_id"]),
+        )
+
         if write_viewpoint(
             {
                 "summary_id": summary_id,
@@ -130,6 +249,8 @@ def run_pipeline_for_match(match_id: int) -> int:
                 "speaker_side": pair["speaker_side"],
                 "user_input_text": pair["user_input_text"],
                 "ai_response_text": pair["ai_response_text"],
+                "viewpoint_summary": "、".join(node["name"] for node in lit_nodes),
+                "stance_direction": lit_nodes[0]["stance"] if lit_nodes else "",
                 "source_message_ids": [pair["user_message_id"]],
                 "composite_score": pair["composite_score"],
                 "score_detail": pair["score_detail"],

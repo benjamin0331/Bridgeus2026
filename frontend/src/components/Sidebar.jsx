@@ -91,7 +91,7 @@ function Sidebar({ navigate, isTopicPage = false, isResearcher = false }) {
               aria-label="觀點知識庫審核"
               title="觀點知識庫審核"
             >
-              📋
+              <img src="/review.svg" alt="" className="utility-icon" />
             </button>
           )}
         </div>

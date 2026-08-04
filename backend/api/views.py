@@ -971,6 +971,26 @@ def _history_match_messages(match: DialogueMatch, *, user_id: int) -> list[dict]
     return messages
 
 
+def _approved_match_messages(match: DialogueMatch) -> list[dict]:
+    """給知識庫『對話詳情』頁用的逐字稿：跟 _history_match_messages 不同，
+    這裡沒有『目前使用者』（瀏覽的人不是對話當事人），一律用 A/B 方標示，
+    不帶 sender_id/使用者名稱——不需要讓第三方看得出「這是誰說的」，直接按
+    speaker side 標示更單純。"""
+    messages = []
+    for message in match.messages.select_related("sender").order_by("created_at", "id"):
+        side = "a" if message.sender_id == match.user_a_id else "b"
+        messages.append(
+            {
+                "id": f"match-{message.id}",
+                "side": side,
+                "sender_label": "A方" if side == "a" else "B方",
+                "content": message.content,
+                "created_at": message.created_at,
+            }
+        )
+    return messages
+
+
 def _last_message_content_by_role(messages: list[dict], role: str) -> str:
     """最後一則指定角色的訊息內容，找不到就回空字串（例如對方/AI 還沒回過）。"""
     for message in reversed(messages):
@@ -2324,9 +2344,15 @@ class ViewpointReviewListView(generics.ListAPIView):
 
 
 class ViewpointReviewDecisionView(APIView):
-    """研究者專用：核准或退回單一 ViewpointNode。"""
+    """研究者專用：核准、標記未通過，或把已核准/未通過的節點重新送回待審核。"""
 
     permission_classes = [IsResearcher]
+
+    _STATUS_BY_ACTION = {
+        "approve": ViewpointNode.ReviewStatus.APPROVED,
+        "reject": ViewpointNode.ReviewStatus.REJECTED,
+        "reset": ViewpointNode.ReviewStatus.PENDING,
+    }
 
     def post(self, request, pk: int):
         try:
@@ -2337,11 +2363,7 @@ class ViewpointReviewDecisionView(APIView):
         decision = ViewpointNodeReviewDecisionSerializer(data=request.data)
         decision.is_valid(raise_exception=True)
 
-        node.review_status = (
-            ViewpointNode.ReviewStatus.APPROVED
-            if decision.validated_data["action"] == "approve"
-            else ViewpointNode.ReviewStatus.REJECTED
-        )
+        node.review_status = self._STATUS_BY_ACTION[decision.validated_data["action"]]
         node.reviewed_by = request.user
         node.reviewed_at = timezone.now()
         node.review_notes = decision.validated_data["notes"]
@@ -2377,8 +2399,16 @@ def _approved_viewpoints_queryset(topic_id: int | None):
 
 
 def _serialize_viewpoint_rows(nodes) -> list[dict]:
-    """把 ViewpointNode queryset/list 轉成公開卡片用的 dict——只暴露
-    viewpoint_summary 等已篩選過的欄位，不帶 user_input_text 原始逐字稿。"""
+    """把 ViewpointNode queryset/list 轉成公開卡片用的 dict。
+
+    帶 user_input_text/ai_response_text（使用者發言／對方回應）：只有走過
+    人工審核通過（review_status=approved）的節點才會被傳進這裡，跟對話詳情
+    頁（KnowledgeBaseConversationDetailView）已經在用的隱私範圍一致。
+
+    帶 dialogue_summary_id：同一場對話（同一個聊天室）產生的多筆觀點會共用
+    同一個 summary_id，前端知識庫頁面用這個欄位把它們歸類在同一組卡片下，
+    而不是打散成互不相關的獨立卡片。
+    """
     anchor_names_by_topic: dict[int, dict[str, str]] = {}
     rows = []
     for node in nodes:
@@ -2389,6 +2419,7 @@ def _serialize_viewpoint_rows(nodes) -> list[dict]:
         rows.append(
             {
                 "id": node.id,
+                "dialogue_summary_id": node.summary_id,
                 "topic_id": node.topic_id,
                 "topic_title": TOPIC_CONFIGS.get(node.topic_id, {}).get("title", ""),
                 "dimension": node.dimension,
@@ -2396,6 +2427,8 @@ def _serialize_viewpoint_rows(nodes) -> list[dict]:
                 "speaker_side": node.speaker_side,
                 "stance_direction": node.stance_direction,
                 "viewpoint_summary": node.viewpoint_summary,
+                "user_input_text": node.user_input_text,
+                "ai_response_text": node.ai_response_text,
                 "citation_count": node.citation_count,
                 "composite_score": node.composite_score,
                 "created_at": node.created_at,
@@ -2443,15 +2476,26 @@ class KnowledgeBaseConversationDetailView(APIView):
     """GET /api/summary/viewpoints/<pk>/conversation/
 
     「熱門對話」卡片點進去看的對話紀錄。pk 是 ViewpointNode id，只接受已通過
-    審核的節點（跟 highlights/browse 同一道 gate）；回傳它所屬 DialogueSummary
-    已沉澱的摘要欄位（summary_text/雙方立場/品質分數/立場偏移量），以及同一場
-    對話底下其他已審核通過的觀點列表——不回傳 user_input_text/ai_response_text
-    原始逐字稿，理由同 KnowledgeBaseHighlightsView。
+    審核的節點（跟 highlights/browse 同一道 gate）。回傳它所屬 DialogueSummary
+    已沉澱的摘要欄位、同一場對話底下其他已審核通過的觀點列表，並且直接把
+    完整逐字稿（messages）跟雙方的 CCND 語意樹（semantic_tree）也一併回傳，
+    讓前端能重用聊天室的「訊息串 + CCND 樹狀圖」畫面，不再是精簡摘要卡片。
+
+    逐字稿只標示 A/B 方（見 _approved_match_messages），不帶 sender_id/使用者
+    名稱——這裡開放給任何登入使用者看，但看到的仍然是「A 方說了什麼」，不是
+    「誰說的」，跟匿名精神一致，只是把「摘要」換成「完整逐字稿」。
+
+    最上方的 summary_text 是 AI 摘要（generate_ai_summary），不是逐字稿——第一次
+    有人點開這筆對話時才即時呼叫 Claude 生成並存回 DialogueSummary.summary_text，
+    之後都是直接讀快取，不會每次開頁都重打一次 API（見 is_raw_summary_text）。
     """
 
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, pk: int):
+        from apps.matching.services.semantic_tree import approved_match_tree_payload
+        from apps.summary.pipeline.assemble import generate_ai_summary, is_raw_summary_text
+
         try:
             node = ViewpointNode.objects.select_related("summary").get(
                 pk=pk, review_status=ViewpointNode.ReviewStatus.APPROVED
@@ -2463,6 +2507,29 @@ class KnowledgeBaseConversationDetailView(APIView):
             )
 
         summary = node.summary
+        try:
+            match = DialogueMatch.objects.get(pk=int(summary.dialogue_id))
+        except (DialogueMatch.DoesNotExist, ValueError, TypeError):
+            return Response(
+                {"detail": "找不到這場對話對應的配對房間紀錄。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        topic_title = TOPIC_CONFIGS.get(summary.topic_id, {}).get("title", "")
+        messages = _approved_match_messages(match)
+
+        if is_raw_summary_text(summary.summary_text):
+            ai_summary = generate_ai_summary(messages, topic_title=topic_title)
+            if ai_summary:
+                summary.summary_text = ai_summary
+                summary.save(update_fields=["summary_text"])
+            else:
+                # 不存回資料庫：故意只改記憶體裡這個 response 用的值，讓
+                # summary.summary_text 在 DB 裡繼續保持逐字稿格式，下次有人
+                # 點開時 is_raw_summary_text() 才會再次嘗試生成——等到真的
+                # 設定了 ANTHROPIC_API_KEY，不用手動清資料就會自動補上。
+                summary.summary_text = "這裡是 AI 摘要，對話要加 API 金鑰才能顯示。"
+
         sibling_nodes = ViewpointNode.objects.filter(
             summary_id=summary.id,
             review_status=ViewpointNode.ReviewStatus.APPROVED,
@@ -2473,7 +2540,7 @@ class KnowledgeBaseConversationDetailView(APIView):
         data = {
             "dialogue_summary_id": summary.id,
             "topic_id": summary.topic_id,
-            "topic_title": TOPIC_CONFIGS.get(summary.topic_id, {}).get("title", ""),
+            "topic_title": topic_title,
             "summary_text": summary.summary_text,
             "side_a_stance": summary.side_a_stance,
             "side_b_stance": summary.side_b_stance,
@@ -2481,6 +2548,10 @@ class KnowledgeBaseConversationDetailView(APIView):
             "stance_shift_magnitude": summary.stance_shift_magnitude,
             "created_at": summary.created_at,
             "viewpoints": _serialize_viewpoint_rows(sibling_nodes),
+            "messages": messages,
+            "semantic_tree": approved_match_tree_payload(
+                match=match, root_name=_semantic_tree_root_name(match)
+            ),
         }
         serializer = DialogueSummaryDetailSerializer(data)
         return Response(serializer.data)

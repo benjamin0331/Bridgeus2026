@@ -48,6 +48,10 @@ class ViewpointNodeReviewSerializer(serializers.ModelSerializer):
     """
 
     dialogue_id = serializers.CharField(source="summary.dialogue_id", read_only=True)
+    # summary_id 本身（DialogueSummary 的 PK），跟 dialogue_id（DialogueMatch
+    # 的 id，字串形式）是兩回事：前端審核清單用這個欄位把同一場對話產生的
+    # 多筆觀點歸類在一起審核，不用另外自己拼字串比對 dialogue_id。
+    dialogue_summary_id = serializers.IntegerField(source="summary_id", read_only=True)
     reviewed_by_username = serializers.CharField(
         source="reviewed_by.username", read_only=True, default=None
     )
@@ -57,6 +61,7 @@ class ViewpointNodeReviewSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "dialogue_id",
+            "dialogue_summary_id",
             "topic_id",
             "dimension",
             "speaker_side",
@@ -77,7 +82,9 @@ class ViewpointNodeReviewSerializer(serializers.ModelSerializer):
 
 
 class ViewpointNodeReviewDecisionSerializer(serializers.Serializer):
-    action = serializers.ChoiceField(choices=["approve", "reject"])
+    # reset：把已通過/未通過的節點退回「待審核」，讓它重新走一次審核流程
+    # （不是在通過/未通過之間直接切換，是真的送回佇列從頭審）。
+    action = serializers.ChoiceField(choices=["approve", "reject", "reset"])
     notes = serializers.CharField(required=False, allow_blank=True, default="")
 
 
@@ -85,10 +92,14 @@ class ViewpointHighlightSerializer(serializers.Serializer):
     """知識庫首頁「熱門對話」卡片、以及「觀看更多」清單用的公開唯讀欄位——
     只允許已通過人工審核（review_status=approved）的 ViewpointNode 走這條
     序列化，見 views.KnowledgeBaseHighlightsView / KnowledgeBaseViewpointBrowseView。
-    不重用 ViewpointNodeReviewSerializer，因為那個是研究者審核用，會帶
-    user_input_text 等未經篩選的原始逐字稿。"""
+
+    帶 user_input_text/ai_response_text 這組原始逐字稿：知識庫「對話詳情」頁
+    已經改成顯示完整逐字稿 + CCND 樹（KnowledgeBaseConversationDetailView），
+    這裡只是把同一個隱私範圍決定延伸到小卡本身——只有走過人工審核通過的
+    節點才會用這條序列化，一般使用者只看得到「已核准可公開」的內容。"""
 
     id = serializers.IntegerField()
+    dialogue_summary_id = serializers.IntegerField()
     topic_id = serializers.IntegerField()
     topic_title = serializers.CharField()
     dimension = serializers.CharField()
@@ -96,15 +107,31 @@ class ViewpointHighlightSerializer(serializers.Serializer):
     speaker_side = serializers.CharField(allow_blank=True)
     stance_direction = serializers.CharField(allow_blank=True)
     viewpoint_summary = serializers.CharField(allow_blank=True)
+    user_input_text = serializers.CharField(allow_blank=True)
+    ai_response_text = serializers.CharField(allow_blank=True)
     citation_count = serializers.IntegerField()
     composite_score = serializers.FloatField(allow_null=True)
     created_at = serializers.DateTimeField()
 
 
+class ApprovedDialogueMessageSerializer(serializers.Serializer):
+    """知識庫對話詳情頁的逐字稿——只標示 A/B 方，不帶 sender_id/使用者名稱，
+    維持跟即時聊天室同一套匿名精神：這裡任何登入使用者都能看，但看到的仍然
+    是「A 方說了什麼」而不是「誰說的」。
+    """
+
+    id = serializers.CharField()
+    side = serializers.CharField()
+    sender_label = serializers.CharField()
+    content = serializers.CharField()
+    created_at = serializers.DateTimeField()
+
+
 class DialogueSummaryDetailSerializer(serializers.Serializer):
-    """知識庫「熱門對話」卡片點進去的對話紀錄——只回傳 DialogueSummary 已沉澱
-    的摘要欄位，不帶 ViewpointNode.user_input_text/ai_response_text 原始逐字
-    稿，避免把真實參與者的對話內容直接開放給任何登入使用者看。"""
+    """知識庫「熱門對話」卡片點進去的對話紀錄。除了 DialogueSummary 已沉澱的
+    摘要欄位，也回傳完整逐字稿（messages，僅標示 A/B 方）跟雙方的 CCND 語意樹
+    （semantic_tree），讓前端可以用跟聊天室一致的「訊息串 + CCND 樹狀圖」呈現，
+    不再只是精簡摘要卡片。逐字稿不帶 sender_id/使用者名稱，維持匿名。"""
 
     dialogue_summary_id = serializers.IntegerField()
     topic_id = serializers.IntegerField()
@@ -116,6 +143,12 @@ class DialogueSummaryDetailSerializer(serializers.Serializer):
     stance_shift_magnitude = serializers.FloatField(allow_null=True)
     created_at = serializers.DateTimeField()
     viewpoints = ViewpointHighlightSerializer(many=True)
+    messages = ApprovedDialogueMessageSerializer(many=True)
+    # 用 DictField 而不是 MatchingRoomSemanticTreeSerializer：那個類別定義在
+    # 這個檔案更後面，這裡直接參照會在 import 當下 NameError；反正這裡只做
+    # 序列化輸出（不需要驗證輸入），值也已經是 approved_match_tree_payload()
+    # 組好的正確結構，DictField 原樣透傳即可。
+    semantic_tree = serializers.DictField()
 
 
 class VideoRecommendationSerializer(serializers.ModelSerializer):

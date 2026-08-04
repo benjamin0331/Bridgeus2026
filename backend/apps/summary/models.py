@@ -39,7 +39,7 @@ class ViewpointNode(models.Model):
     class ReviewStatus(models.TextChoices):
         PENDING = "pending", "待審核"
         APPROVED = "approved", "已通過"
-        REJECTED = "rejected", "已退回"
+        REJECTED = "rejected", "未通過"
 
     class SpeakerSide(models.TextChoices):
         A = "a", "A"

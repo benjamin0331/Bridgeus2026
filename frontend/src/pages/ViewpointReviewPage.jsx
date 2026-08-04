@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import api from '../api/client';
 import './ViewpointReviewPage.css';
 
@@ -10,9 +10,15 @@ import './ViewpointReviewPage.css';
 const TABS = [
   { id: 'pending', label: '待審核' },
   { id: 'approved', label: '已通過' },
-  { id: 'rejected', label: '已退回' },
+  { id: 'rejected', label: '未通過' },
   { id: 'all', label: '全部' },
 ];
+
+const STATUS_LABELS = {
+  pending: '待審核',
+  approved: '已通過',
+  rejected: '未通過',
+};
 
 function formatTime(value) {
   if (!value) return '';
@@ -29,8 +35,30 @@ function truncate(text, maxLength = 60) {
   return cleaned.length <= maxLength ? cleaned : `${cleaned.slice(0, maxLength)}…`;
 }
 
+// 同一場對話（同一個聊天室）產生的多筆觀點依 dialogue_summary_id 分組，
+// 讓審核者可以一次把同一場對話的候選觀點都看過、審完，而不是被清單依分數
+// 排序打散成互不相關的項目。保留原本清單的排序（Map 插入順序 = 第一次
+// 出現該 summary_id 的順序）。
+function groupItemsBySummary(items) {
+  const groups = [];
+  const bySummaryId = new Map();
+  items.forEach((item) => {
+    const key = item.dialogue_summary_id;
+    let group = bySummaryId.get(key);
+    if (!group) {
+      group = { summaryId: key, items: [] };
+      bySummaryId.set(key, group);
+      groups.push(group);
+    }
+    group.items.push(item);
+  });
+  return groups;
+}
+
 function ViewpointReviewPage() {
   const [status, setStatus] = useState('pending');
+  const [topics, setTopics] = useState([]);
+  const [selectedTopicId, setSelectedTopicId] = useState(null);
   const [items, setItems] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -39,6 +67,25 @@ function ViewpointReviewPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [actionError, setActionError] = useState('');
   const [notesResetForId, setNotesResetForId] = useState(selectedId);
+  // 同一場對話分組後預設折疊，只顯示分數最高的第一筆；點箭頭才展開看其他筆。
+  const [expandedGroupIds, setExpandedGroupIds] = useState(() => new Set());
+
+  useEffect(() => {
+    let cancelled = false;
+
+    api
+      .get('/api/dialogue/topics/')
+      .then((response) => {
+        if (!cancelled) setTopics(Array.isArray(response.data) ? response.data : []);
+      })
+      .catch(() => {
+        if (!cancelled) setTopics([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -47,7 +94,9 @@ function ViewpointReviewPage() {
       setIsLoading(true);
       setError('');
       try {
-        const response = await api.get('/api/summary/viewpoints/', { params: { status } });
+        const params = { status };
+        if (selectedTopicId) params.topic_id = selectedTopicId;
+        const response = await api.get('/api/summary/viewpoints/', { params });
         if (cancelled) return;
         const nextItems = Array.isArray(response.data) ? response.data : [];
         setItems(nextItems);
@@ -73,7 +122,23 @@ function ViewpointReviewPage() {
     return () => {
       cancelled = true;
     };
-  }, [status]);
+  }, [status, selectedTopicId]);
+
+  const topicTitleById = topics.reduce((acc, topic) => {
+    acc[topic.id] = topic.title;
+    return acc;
+  }, {});
+
+  const groupedItems = useMemo(() => groupItemsBySummary(items), [items]);
+
+  const toggleGroupExpanded = (summaryId) => {
+    setExpandedGroupIds((current) => {
+      const next = new Set(current);
+      if (next.has(summaryId)) next.delete(summaryId);
+      else next.add(summaryId);
+      return next;
+    });
+  };
 
   // 選中的觀點換了就清空備註/錯誤訊息；照 React 官方建議在渲染時直接調整
   // state（比對 selectedId 是否變過），不要在 useEffect 裡同步呼叫 setState
@@ -123,26 +188,75 @@ function ViewpointReviewPage() {
           ))}
         </div>
 
+        <div className="vr-topic-row" role="tablist" aria-label="議題篩選">
+          <button
+            type="button"
+            className={`vr-topic-btn${selectedTopicId === null ? ' is-active' : ''}`}
+            onClick={() => setSelectedTopicId(null)}
+          >
+            全部議題
+          </button>
+          {topics.map((topic) => (
+            <button
+              key={topic.id}
+              type="button"
+              className={`vr-topic-btn${selectedTopicId === topic.id ? ' is-active' : ''}`}
+              onClick={() => setSelectedTopicId(topic.id)}
+            >
+              {topic.title}
+            </button>
+          ))}
+        </div>
+
         <div className="vr-list">
           {isLoading && <div className="vr-empty-card">正在讀取...</div>}
           {!isLoading && error && <div className="vr-empty-card error">{error}</div>}
           {!isLoading && !error && items.length === 0 && (
             <div className="vr-empty-card">這個分類目前沒有資料。</div>
           )}
-          {!isLoading && items.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={`vr-card${selectedId === item.id ? ' is-active' : ''}`}
-              onClick={() => setSelectedId(item.id)}
-            >
-              <span className="vr-card-dimension">{item.dimension}</span>
-              <span className="vr-card-text">{truncate(item.user_input_text)}</span>
-              <span className="vr-card-meta">
-                {`分數 ${item.composite_score?.toFixed(4) ?? '—'} · ${formatTime(item.created_at)}`}
-              </span>
-            </button>
-          ))}
+          {!isLoading && groupedItems.map((group) => {
+            const hasMultiple = group.items.length > 1;
+            const isExpanded = expandedGroupIds.has(group.summaryId);
+            // 折疊時只顯示第一筆——清單本身已經照分數排序，第一筆就是這場
+            // 對話裡分數最高的那則，跟知識庫分組卡片預設只顯示最高分那筆
+            // 是同一套邏輯。
+            const visibleItems = hasMultiple && !isExpanded ? group.items.slice(0, 1) : group.items;
+            return (
+              <div
+                key={group.summaryId}
+                className="vr-group"
+                onDoubleClick={hasMultiple ? () => toggleGroupExpanded(group.summaryId) : undefined}
+              >
+                {visibleItems.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`vr-card${selectedId === item.id ? ' is-active' : ''}`}
+                    onClick={() => setSelectedId(item.id)}
+                  >
+                    <span className="vr-card-dimension">
+                      {topicTitleById[item.topic_id] ?? `topic ${item.topic_id}`} · {item.dimension}
+                    </span>
+                    <span className="vr-card-text">{truncate(item.user_input_text)}</span>
+                    <span className="vr-card-meta">
+                      {`分數 ${item.composite_score?.toFixed(4) ?? '—'} · ${formatTime(item.created_at)}`}
+                    </span>
+                  </button>
+                ))}
+                {hasMultiple && (
+                  <button
+                    type="button"
+                    className="vr-group-toggle"
+                    onClick={() => toggleGroupExpanded(group.summaryId)}
+                    aria-expanded={isExpanded}
+                  >
+                    <span className="vr-group-label">同一場對話 · {group.items.length} 則</span>
+                    <span className={`vr-group-arrow${isExpanded ? ' is-expanded' : ''}`}>▾</span>
+                  </button>
+                )}
+              </div>
+            );
+          })}
         </div>
       </section>
 
@@ -151,7 +265,9 @@ function ViewpointReviewPage() {
         {selected && (
           <>
             <div className="vr-detail-header">
-              <span className="vr-detail-topic">{`topic ${selected.topic_id} · ${selected.dimension}`}</span>
+              <span className="vr-detail-topic">
+                {`${topicTitleById[selected.topic_id] ?? `topic ${selected.topic_id}`} · ${selected.dimension}`}
+              </span>
               <span className="vr-detail-dialogue">{`來源對話 ${selected.dialogue_id}`}</span>
             </div>
 
@@ -170,7 +286,7 @@ function ViewpointReviewPage() {
             <div className="vr-detail-score">
               <span>{`綜合分數：${selected.composite_score?.toFixed(4) ?? '—'}`}</span>
               <span>{`被引用次數：${selected.citation_count}`}</span>
-              <span>{`目前狀態：${selected.review_status}`}</span>
+              <span>{`目前狀態：${STATUS_LABELS[selected.review_status] ?? selected.review_status}`}</span>
             </div>
 
             <details className="vr-score-detail">
@@ -192,22 +308,35 @@ function ViewpointReviewPage() {
             {actionError && <div className="vr-action-error">{actionError}</div>}
 
             <div className="vr-action-row">
-              <button
-                type="button"
-                className="vr-approve-btn"
-                disabled={isSubmitting}
-                onClick={() => handleDecision('approve')}
-              >
-                通過
-              </button>
-              <button
-                type="button"
-                className="vr-reject-btn"
-                disabled={isSubmitting}
-                onClick={() => handleDecision('reject')}
-              >
-                退回
-              </button>
+              {selected.review_status === 'pending' ? (
+                <>
+                  <button
+                    type="button"
+                    className="vr-approve-btn"
+                    disabled={isSubmitting}
+                    onClick={() => handleDecision('approve')}
+                  >
+                    通過
+                  </button>
+                  <button
+                    type="button"
+                    className="vr-reject-btn"
+                    disabled={isSubmitting}
+                    onClick={() => handleDecision('reject')}
+                  >
+                    未通過
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="vr-reset-btn"
+                  disabled={isSubmitting}
+                  onClick={() => handleDecision('reset')}
+                >
+                  重新審查
+                </button>
+              )}
             </div>
           </>
         )}

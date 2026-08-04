@@ -1320,6 +1320,38 @@ def get_message_dimension(
     return None
 
 
+def get_message_lit_nodes(
+    match: DialogueMatch,
+    *,
+    owner_key: str,
+    source_message_id: str,
+) -> list[dict[str, str]]:
+    """回傳某位參與者在 source_message_id 那則訊息點亮（命中）的所有 CCND 節點，
+    每筆為 {"name": node_name, "stance": 支持/反對/無關/中立}。
+
+    給 M6 觀點知識庫 pipeline（apps/summary/pipeline/assemble.py）用來組
+    ViewpointNode.viewpoint_summary（join 所有 name）與 stance_direction
+    （取第一筆的 stance，同 get_message_dimension 只取第一個命中的慣例）：
+    一則訊息最多命中 MAX_ANALYSIS_ITEMS=2 個節點，這裡依 flatten_tree 出現
+    順序回傳全部命中。訊息沒有任何 CCND 分析紀錄（不曾命中任何節點）時回傳
+    空 list，呼叫端應該視為「沒有可用節點」而留空，不要自己編內容。
+    """
+    from apps.matching.services.ccnd_snapshot_analysis import flatten_tree
+
+    state = get_semantic_tree_state(match, root_name="核電")
+    owner_state = state["participants"].get(owner_key)
+    if not owner_state:
+        return []
+
+    target_id = clean_text(source_message_id)
+    hits = flatten_tree(owner_state["treeData"], owner_key=owner_key)
+    return [
+        {"name": hit["node_name"], "stance": clean_text(hit.get("stance"))}
+        for hit in hits
+        if clean_text(hit.get("source_message_id")) == target_id and hit.get("node_name")
+    ]
+
+
 def _owner_payload(
     owner_state: dict[str, Any],
     *,
@@ -1387,6 +1419,37 @@ def semantic_tree_payload(
         "analysisStatus": analysis_status,
         "message": message,
         "analyzedCount": analyzed_count,
+    }
+
+
+def approved_match_tree_payload(*, match: DialogueMatch, root_name: str) -> dict[str, Any]:
+    """給知識庫『對話詳情』頁用：回傳雙方（A/B）各自的 CCND 語意樹。
+
+    跟 semantic_tree_payload() 不同——那個是給聊天室/歷史紀錄用，永遠只回傳
+    『目前登入使用者自己那一側』（current_user_id 決定），因為那些情境下
+    瀏覽的人就是對話當事人之一。這裡瀏覽的人是任何登入使用者（已審核通過
+    的對話對所有人開放），沒有『自己那一側』的概念，所以兩側都給，交給
+    ConversationTreePanel 的 matching 模式切換顯示。
+    """
+    state = get_semantic_tree_state(match, root_name=root_name)
+    trees = [
+        _owner_payload(state["participants"][OWNER_USER_A], label="A方", is_current_user=False),
+        _owner_payload(state["participants"][OWNER_USER_B], label="B方", is_current_user=False),
+    ]
+    return {
+        "room_id": match.room_id,
+        "match_id": match.id,
+        "topic_id": match.topic_id,
+        "semanticMode": MATCH_TREE_MODE,
+        "treeData": trees[0]["treeData"],
+        "trees": trees,
+        "anchors": state["anchors"],
+        "analysisHistory": trees[0]["analysisHistory"],
+        "analyzedMessageIds": trees[0]["analyzedSourceIds"],
+        "analyzedSourceIds": trees[0]["analyzedSourceIds"],
+        "analysisStatus": "ready",
+        "message": "",
+        "analyzedCount": len(trees[0]["analyzedSourceIds"]) + len(trees[1]["analyzedSourceIds"]),
     }
 
 

@@ -73,6 +73,31 @@
   color: #fbf5ee;
 }
 
+.vr-topic-row {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 16px;
+}
+
+.vr-topic-btn {
+  border: 1px solid rgba(117, 96, 78, 0.25);
+  border-radius: 999px;
+  padding: 6px 14px;
+  background: transparent;
+  color: #725f50;
+  font-size: 10.4px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.vr-topic-btn.is-active {
+  border-color: #a4713c;
+  background: #a4713c;
+  color: #fbf5ee;
+}
+
 .vr-list {
   flex: 1;
   min-height: 0;
@@ -80,6 +105,50 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* 同一場對話產生的多筆觀點分組：淺色底把 .vr-card 們框在一起，跟其他
+   分組之間用 .vr-list 本身的 gap 拉開距離，一眼就能看出哪些卡片是同一場
+   對話的。 */
+.vr-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 20px;
+  background: rgba(164, 113, 60, 0.06);
+}
+
+/* 展開/收合分組其他觀點的按鈕：放在該組卡片下方，跟知識庫分組卡片同一套
+   互動邏輯（預設折疊只顯示分數最高那筆，點箭頭展開看其他筆）。 */
+.vr-group-toggle {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  padding: 0 6px;
+  cursor: pointer;
+}
+
+.vr-group-label {
+  font-size: 9.6px;
+  font-weight: 900;
+  color: #a4713c;
+  letter-spacing: 0.02em;
+}
+
+.vr-group-arrow {
+  color: #a4713c;
+  font-size: 22px;
+  font-weight: bold;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+
+.vr-group-arrow.is-expanded {
+  transform: rotate(180deg);
 }
 
 .vr-card {
@@ -216,7 +285,8 @@
 }
 
 .vr-approve-btn,
-.vr-reject-btn {
+.vr-reject-btn,
+.vr-reset-btn {
   flex: 1;
   min-height: 42px;
   border: none;
@@ -232,9 +302,15 @@
 }
 
 .vr-approve-btn:disabled,
-.vr-reject-btn:disabled {
+.vr-reject-btn:disabled,
+.vr-reset-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.vr-reset-btn {
+  background: #8d7058;
+  color: #fbf5ee;
 }
 
 .vr-reject-btn {
