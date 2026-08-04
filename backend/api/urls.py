@@ -44,6 +44,15 @@ urlpatterns = [
         views.KnowledgeBaseConversationDetailView.as_view(),
     ),
     path('summary/videos/', views.VideoRecommendationListView.as_view()),
+    # 研究者專用：知識庫影片管理面板（前端設定頁）
+    path(
+        'summary/videos/admin/',
+        views.VideoRecommendationAdminListCreateView.as_view(),
+    ),
+    path(
+        'summary/videos/admin/<int:pk>/',
+        views.VideoRecommendationAdminDetailView.as_view(),
+    ),
     path('accounts/', views.AccountListCreateView.as_view()),
     path('accounts/<int:pk>/', views.AccountDetailView.as_view()),
     path('accounts/<int:pk>/reset-password/', views.AccountPasswordResetView.as_view()),

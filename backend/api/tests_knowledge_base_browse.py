@@ -6,11 +6,17 @@ KnowledgeBaseViewpointBrowseView / VideoRecommendationListView.
 登入使用者都能看的公開端點，只看得到 review_status=approved 的節點。
 """
 
+import tempfile
+
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from api.models import AIConversation, DialogueMatch, MatchMessage
+from api.permissions import RESEARCHER_GROUP_NAME
 from apps.summary.models import DialogueSummary, VideoRecommendation, ViewpointNode
 
 User = get_user_model()
@@ -330,3 +336,95 @@ class DialogueTopicTrendingTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertTrue(all(row["hits"] == 0 for row in response.data))
         self.assertGreater(len(response.data), 0)
+
+
+# 上傳測試會真的把檔案寫進 MEDIA_ROOT；導到暫存目錄，不要在 backend/media/
+# 底下留下測試殘骸。
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp(prefix="bridgeus-test-media-"))
+class VideoRecommendationAdminTests(APITestCase):
+    """研究者專用的影片管理面板（前端設定頁「影片管理」分頁）。"""
+
+    def setUp(self):
+        group, _ = Group.objects.get_or_create(name=RESEARCHER_GROUP_NAME)
+        self.researcher = User.objects.create_user(username="kb_researcher", password="pw")
+        self.researcher.groups.add(group)
+        self.participant = User.objects.create_user(username="kb_participant", password="pw")
+
+    def _upload(self, name="clip.mp4", title="測試影片"):
+        return self.client.post(
+            "/api/summary/videos/admin/",
+            {
+                "title": title,
+                "video_file": SimpleUploadedFile(name, b"fake-video-bytes", "video/mp4"),
+            },
+            format="multipart",
+        )
+
+    def test_participant_cannot_list_or_upload(self):
+        self.client.force_authenticate(user=self.participant)
+        self.assertEqual(
+            self.client.get("/api/summary/videos/admin/").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(self._upload().status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_upload_fills_url_from_the_stored_file(self):
+        self.client.force_authenticate(user=self.researcher)
+
+        response = self._upload()
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        video = VideoRecommendation.objects.get(pk=response.data["id"])
+        # url 沒帶也要自動補成該檔案的絕對網址，下游只認 url。
+        self.assertTrue(video.url.startswith("http"))
+        self.assertIn("kb_videos/", video.url)
+
+    def test_upload_without_file_or_url_is_rejected(self):
+        self.client.force_authenticate(user=self.researcher)
+
+        response = self.client.post(
+            "/api/summary/videos/admin/", {"title": "沒有來源"}, format="multipart"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_external_url_without_a_file_is_accepted(self):
+        self.client.force_authenticate(user=self.researcher)
+
+        response = self.client.post(
+            "/api/summary/videos/admin/",
+            {"title": "外部連結", "url": "https://example.com/v"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_admin_list_includes_unpublished_but_public_list_does_not(self):
+        VideoRecommendation.objects.create(
+            title="未發布", url="https://example.com/hidden", is_published=False
+        )
+
+        self.client.force_authenticate(user=self.researcher)
+        admin_titles = [row["title"] for row in self.client.get("/api/summary/videos/admin/").data]
+        self.assertIn("未發布", admin_titles)
+
+        self.client.force_authenticate(user=self.participant)
+        public_titles = [row["title"] for row in self.client.get("/api/summary/videos/").data]
+        self.assertNotIn("未發布", public_titles)
+
+    def test_researcher_can_publish_and_delete(self):
+        video = VideoRecommendation.objects.create(
+            title="待發布", url="https://example.com/v", is_published=False
+        )
+        self.client.force_authenticate(user=self.researcher)
+
+        patch = self.client.patch(
+            f"/api/summary/videos/admin/{video.id}/", {"is_published": True}, format="json"
+        )
+        self.assertEqual(patch.status_code, status.HTTP_200_OK)
+        video.refresh_from_db()
+        self.assertTrue(video.is_published)
+
+        delete = self.client.delete(f"/api/summary/videos/admin/{video.id}/")
+        self.assertEqual(delete.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(VideoRecommendation.objects.filter(pk=video.id).exists())

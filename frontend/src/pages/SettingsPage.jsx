@@ -14,8 +14,15 @@ function formatTime(value) {
   }).format(date);
 }
 
+const TABS = [
+  { id: 'display', label: '顯示設定' },
+  { id: 'videos', label: '影片管理' },
+  { id: 'accounts', label: '帳號管理' },
+];
+
 function SettingsPage({ user }) {
   const isResearcher = Boolean(user?.isResearcher);
+  const [activeTab, setActiveTab] = useState('display');
 
   const [accounts, setAccounts] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -44,6 +51,24 @@ function SettingsPage({ user }) {
     }
     return fallback;
   };
+
+  // 知識庫影片管理
+  const [videos, setVideos] = useState([]);
+  const [isVideosLoading, setIsVideosLoading] = useState(false);
+  const [videosError, setVideosError] = useState('');
+  const [videoActionError, setVideoActionError] = useState('');
+  const [videosReloadKey, setVideosReloadKey] = useState(0);
+  const refreshVideos = () => setVideosReloadKey((key) => key + 1);
+
+  const [newVideoTitle, setNewVideoTitle] = useState('');
+  const [newVideoFile, setNewVideoFile] = useState(null);
+  const [newVideoThumbnail, setNewVideoThumbnail] = useState('');
+  const [newVideoDescription, setNewVideoDescription] = useState('');
+  const [newVideoTopicId, setNewVideoTopicId] = useState('');
+  const [isCreatingVideo, setIsCreatingVideo] = useState(false);
+  // <input type="file"> 是 uncontrolled，選完檔案後要手動清空 value 才能
+  // 重選同一個檔案再觸發一次 onChange；用 key 強制重新掛載最單純。
+  const [videoFileInputKey, setVideoFileInputKey] = useState(0);
 
   // 顯示設定
   const [displaySettings, setDisplaySettings] = useState(null);
@@ -83,6 +108,37 @@ function SettingsPage({ user }) {
       cancelled = true;
     };
   }, [isResearcher, reloadKey]);
+
+  useEffect(() => {
+    if (!isResearcher) return undefined;
+
+    let cancelled = false;
+    const loadVideos = async () => {
+      setIsVideosLoading(true);
+      setVideosError('');
+      try {
+        const response = await api.get('/api/summary/videos/admin/');
+        if (cancelled) return;
+        setVideos(Array.isArray(response.data) ? response.data : []);
+      } catch (requestError) {
+        if (cancelled) return;
+        setVideos([]);
+        setVideosError(
+          requestError?.response?.status === 403
+            ? '這個功能只開放給研究者帳號使用。'
+            : requestError?.response?.data?.detail || '目前無法讀取影片清單。'
+        );
+      } finally {
+        if (!cancelled) setIsVideosLoading(false);
+      }
+    };
+
+    void loadVideos();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isResearcher, videosReloadKey]);
 
   useEffect(() => {
     if (!isResearcher) return undefined;
@@ -158,6 +214,60 @@ function SettingsPage({ user }) {
     }
   };
 
+  const handleCreateVideo = async (event) => {
+    event.preventDefault();
+    if (isCreatingVideo) return;
+    if (!newVideoFile) {
+      setVideoActionError('請選擇要上傳的影片檔案。');
+      return;
+    }
+    setIsCreatingVideo(true);
+    setVideoActionError('');
+    try {
+      const formData = new FormData();
+      formData.append('title', newVideoTitle);
+      formData.append('video_file', newVideoFile);
+      formData.append('thumbnail_url', newVideoThumbnail);
+      formData.append('description', newVideoDescription);
+      if (newVideoTopicId !== '') formData.append('topic_id', newVideoTopicId);
+      await api.post('/api/summary/videos/admin/', formData);
+      setNewVideoTitle('');
+      setNewVideoFile(null);
+      setVideoFileInputKey((key) => key + 1);
+      setNewVideoThumbnail('');
+      setNewVideoDescription('');
+      setNewVideoTopicId('');
+      refreshVideos();
+    } catch (requestError) {
+      setVideoActionError(extractError(requestError, '新增影片失敗，請再試一次。'));
+    } finally {
+      setIsCreatingVideo(false);
+    }
+  };
+
+  const handleToggleVideoPublished = async (video) => {
+    setVideoActionError('');
+    try {
+      await api.patch(`/api/summary/videos/admin/${video.id}/`, {
+        is_published: !video.is_published,
+      });
+      refreshVideos();
+    } catch (requestError) {
+      setVideoActionError(extractError(requestError, '更新發布狀態失敗。'));
+    }
+  };
+
+  const handleDeleteVideo = async (video) => {
+    if (!window.confirm(`確定要刪除「${video.title}」嗎？此操作無法復原。`)) return;
+    setVideoActionError('');
+    try {
+      await api.delete(`/api/summary/videos/admin/${video.id}/`);
+      refreshVideos();
+    } catch (requestError) {
+      setVideoActionError(extractError(requestError, '刪除影片失敗。'));
+    }
+  };
+
   const patchPlatformSetting = async (payload) => {
     setDisplayError('');
     setDisplayNotice('');
@@ -217,7 +327,20 @@ function SettingsPage({ user }) {
         <p>調整前端顯示與議題開關，或管理帳號。</p>
       </div>
 
-      {displaySettings && (
+      <div className="settings-tab-row" role="tablist" aria-label="設定分類">
+        {TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            className={`settings-tab-btn${activeTab === tab.id ? ' is-active' : ''}`}
+            onClick={() => setActiveTab(tab.id)}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'display' && displaySettings && (
         <section className="settings-display-panel">
           <h2>顯示設定</h2>
 
@@ -347,6 +470,111 @@ function SettingsPage({ user }) {
         </section>
       )}
 
+      {activeTab === 'videos' && (
+      <>
+      <h2>觀點知識庫影片管理</h2>
+
+      <form className="settings-create-form" onSubmit={handleCreateVideo}>
+        <h2>新增影片</h2>
+        <div className="settings-create-row">
+          <input
+            type="text"
+            placeholder="影片標題"
+            value={newVideoTitle}
+            onChange={(e) => setNewVideoTitle(e.target.value)}
+            required
+          />
+          <input
+            key={videoFileInputKey}
+            type="file"
+            accept="video/*"
+            onChange={(e) => setNewVideoFile(e.target.files?.[0] ?? null)}
+            required
+          />
+          <input
+            type="url"
+            placeholder="縮圖網址（選填）"
+            value={newVideoThumbnail}
+            onChange={(e) => setNewVideoThumbnail(e.target.value)}
+          />
+          <select
+            value={newVideoTopicId}
+            onChange={(e) => setNewVideoTopicId(e.target.value)}
+          >
+            <option value="">不限議題</option>
+            {(displaySettings?.topics || []).map((topic) => (
+              <option key={topic.topic_id} value={topic.topic_id}>
+                {topic.title}
+              </option>
+            ))}
+          </select>
+          <button type="submit" disabled={isCreatingVideo}>
+            {isCreatingVideo ? '上傳中…' : '上傳'}
+          </button>
+        </div>
+        <textarea
+          className="settings-video-description"
+          placeholder="影片說明（選填）"
+          value={newVideoDescription}
+          onChange={(e) => setNewVideoDescription(e.target.value)}
+          rows={2}
+        />
+      </form>
+
+      {videoActionError && <div className="settings-action-error">{videoActionError}</div>}
+
+      <div className="settings-list">
+        {isVideosLoading && <div className="settings-empty-card">正在讀取…</div>}
+        {!isVideosLoading && videosError && (
+          <div className="settings-empty-card error">{videosError}</div>
+        )}
+        {!isVideosLoading && !videosError && videos.length === 0 && (
+          <div className="settings-empty-card">目前沒有上傳任何影片。</div>
+        )}
+        {!isVideosLoading && !videosError && videos.length > 0 && (
+          <table className="settings-table">
+            <thead>
+              <tr>
+                <th>標題</th>
+                <th>議題</th>
+                <th>狀態</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {videos.map((video) => (
+                <tr key={video.id}>
+                  <td>
+                    <a href={video.url} target="_blank" rel="noopener noreferrer">
+                      {video.title}
+                    </a>
+                  </td>
+                  <td>
+                    {video.topic_id == null
+                      ? '不限議題'
+                      : displaySettings?.topics?.find((t) => t.topic_id === video.topic_id)
+                          ?.title || `議題 ${video.topic_id}`}
+                  </td>
+                  <td>{video.is_published ? '已發布' : '未發布'}</td>
+                  <td className="settings-actions">
+                    <button type="button" onClick={() => handleToggleVideoPublished(video)}>
+                      {video.is_published ? '取消發布' : '發布'}
+                    </button>
+                    <button type="button" onClick={() => handleDeleteVideo(video)}>
+                      刪除
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+      </>
+      )}
+
+      {activeTab === 'accounts' && (
+      <>
       <h2>帳號管理</h2>
 
       <form className="settings-create-form" onSubmit={handleCreate}>
@@ -433,6 +661,8 @@ function SettingsPage({ user }) {
           </table>
         )}
       </div>
+      </>
+      )}
     </div>
   );
 }

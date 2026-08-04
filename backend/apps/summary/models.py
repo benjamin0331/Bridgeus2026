@@ -111,11 +111,14 @@ class ViewpointNode(models.Model):
 
 
 class VideoRecommendation(models.Model):
-    """觀點知識庫首頁的影片推薦區塊。內容由後台（Django admin）人工維護，
-    不是自動生成或爬蟲產生——目前平台沒有影片抓取/上傳管線。"""
+    """觀點知識庫首頁的影片推薦區塊。研究者從前端設定頁的「影片管理」面板
+    本地上傳影片檔（video_file），上傳成功後 url 會自動填成該檔案的存取
+    網址——其餘讀取路徑（公開清單、前端 <video src>）全部只認 url，不需要
+    知道背後究竟是本地上傳檔案還是外部連結。"""
 
     title = models.CharField(max_length=255)
-    url = models.URLField()
+    url = models.URLField(blank=True)
+    video_file = models.FileField(upload_to="kb_videos/%Y/%m/", blank=True, null=True)
     thumbnail_url = models.URLField(blank=True)
     description = models.TextField(blank=True)
     # 對應 api.dialogue_topics.TOPIC_CONFIGS 的 key；留空 = 不限議題的推薦。

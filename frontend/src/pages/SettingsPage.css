@@ -22,6 +22,32 @@
   text-transform: uppercase;
 }
 
+.settings-tab-row {
+  display: flex;
+  gap: 8px;
+  margin: 20px 0 24px;
+  padding: 5px;
+  border-radius: 999px;
+  background: #f3f4f6;
+}
+
+.settings-tab-btn {
+  flex: 1;
+  min-height: 36px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: #6b7280;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.settings-tab-btn.is-active {
+  background: #111827;
+  color: #fff;
+}
+
 .settings-empty-card {
   margin-top: 16px;
   padding: 32px;
@@ -51,10 +77,27 @@
   align-items: center;
 }
 
-.settings-create-row input[type="text"] {
+.settings-create-row input[type="text"],
+.settings-create-row input[type="url"],
+.settings-create-row select {
   padding: 8px 10px;
   border: 1px solid #d1d5db;
   border-radius: 8px;
+}
+
+.settings-create-row input[type="file"] {
+  font-size: 13px;
+}
+
+.settings-video-description {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font: inherit;
+  resize: vertical;
 }
 
 .settings-checkbox {

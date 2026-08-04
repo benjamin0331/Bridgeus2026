@@ -14,6 +14,7 @@ from django.db.models import FloatField, Q, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework import exceptions, generics, permissions, status
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -104,6 +105,7 @@ from .serializers import (
     DialogueSummaryDetailSerializer,
     DialogueTopicTrendingSerializer,
     TopicDisplayOverrideSerializer,
+    VideoRecommendationAdminSerializer,
     VideoRecommendationSerializer,
     ViewpointHighlightSerializer,
     ViewpointNodeReviewDecisionSerializer,
@@ -2617,6 +2619,54 @@ class VideoRecommendationListView(generics.ListAPIView):
         if topic_id is not None:
             qs = qs.filter(topic_id=topic_id)
         return qs
+
+
+def _fill_video_url_from_file(instance, request):
+    """video_file 有值、url 還是空的時候，自動補上這個檔案的存取網址。
+
+    研究者本地上傳影片檔是現在的主要路徑，不該還要求另外手動填一個 url——
+    但下游所有讀取路徑（公開清單、KB 首頁的播放器）都只認 url 欄位，這裡
+    補完之後其他地方完全不用知道背後是本地檔案還是外部連結。
+
+    一定要組成絕對網址（build_absolute_uri），不能存 instance.video_file.url
+    的相對路徑：前端跟後端是不同網域/port（開發環境 5173 vs 8005，正式環境
+    也可能是不同子網域），存相對路徑的話瀏覽器會拿前端自己的網域去解析，
+    404 找不到檔案。
+    """
+    if instance.video_file and not instance.url:
+        instance.url = request.build_absolute_uri(instance.video_file.url)
+        instance.save(update_fields=["url"])
+
+
+class VideoRecommendationAdminListCreateView(generics.ListCreateAPIView):
+    """研究者專用：知識庫影片管理面板（前端設定頁）的清單 + 新增。
+
+    跟 VideoRecommendationListView 不同：這裡回傳所有影片（含未發布的），
+    不只 is_published=True，讓研究者上傳新影片後、公開發布前可以先預覽。
+    """
+
+    permission_classes = [IsResearcher]
+    serializer_class = VideoRecommendationAdminSerializer
+    queryset = VideoRecommendation.objects.all()
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def perform_create(self, serializer):
+        instance = serializer.save()
+        _fill_video_url_from_file(instance, self.request)
+
+
+class VideoRecommendationAdminDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """研究者專用：更新（含發布/取消發布、調整排序、重新上傳檔案）或刪除
+    單一影片。"""
+
+    permission_classes = [IsResearcher]
+    serializer_class = VideoRecommendationAdminSerializer
+    queryset = VideoRecommendation.objects.all()
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        _fill_video_url_from_file(instance, self.request)
 
 
 class AccountListCreateView(generics.ListCreateAPIView):

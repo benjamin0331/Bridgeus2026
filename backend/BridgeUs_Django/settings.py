@@ -251,6 +251,10 @@ STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
+# 研究者從設定頁上傳的知識庫影片檔（VideoRecommendation.video_file）。
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
 # 讓 DRF 預設使用 JWT 驗證
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (

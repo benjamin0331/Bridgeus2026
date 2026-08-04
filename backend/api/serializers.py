@@ -165,6 +165,41 @@ class VideoRecommendationSerializer(serializers.ModelSerializer):
         ]
 
 
+class VideoRecommendationAdminSerializer(serializers.ModelSerializer):
+    """研究者專用：知識庫影片管理面板（前端設定頁）用，比公開的
+    VideoRecommendationSerializer 多帶 is_published/display_order——這兩個
+    欄位控制影片會不會出現在知識庫首頁、排序順序，只有研究者需要看/改。
+
+    video_file 是研究者從設定頁本地上傳的影片檔；url 改成非必填——上傳
+    video_file 時由 VideoRecommendationAdminListCreateView.perform_create()
+    自動從檔案路徑補上 url，呼叫端不用自己算。兩者都沒帶才會擋在
+    validate()（總要有個能播放的來源）。"""
+
+    class Meta:
+        model = VideoRecommendation
+        fields = [
+            "id",
+            "title",
+            "url",
+            "video_file",
+            "thumbnail_url",
+            "description",
+            "topic_id",
+            "is_published",
+            "display_order",
+            "created_at",
+        ]
+        read_only_fields = ["id", "created_at"]
+        extra_kwargs = {"url": {"required": False}}
+
+    def validate(self, attrs):
+        has_url = bool(attrs.get("url") or getattr(self.instance, "url", ""))
+        has_file = bool(attrs.get("video_file") or getattr(self.instance, "video_file", None))
+        if not has_url and not has_file:
+            raise serializers.ValidationError("請上傳影片檔案，或填寫影片網址。")
+        return attrs
+
+
 class AIConversationSerializer(serializers.ModelSerializer):
     class Meta:
         model = AIConversation
