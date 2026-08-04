@@ -3289,39 +3289,10 @@ class MatchingCancelView(APIView):
         )
 
 
-def _apply_match_input_gate(*, match, user, content: str):
-    """Input gate for the match room's REST path. Mirrors MatchRoomConsumer.
-
-    Blocked messages are reported back to the sender only and never become a
-    MatchMessage, so the partner sees nothing and no downstream analysis
-    (embedding, topic relevance, CCND) ever sees the text.
-    """
-    from apps.matching.services.input_gate import (
-        COOLDOWN_NOTICE,
-        InputVerdict,
-        classify,
-        fallback_message,
-        rate_limit_notice,
-        throttle_tier,
-    )
-    from apps.matching.services.input_gate_store import record_match_attempt
-    from apps.matching.services.rate_limit import (
-        check_rate_limit,
-        cooldown_remaining,
-        start_cooldown,
-    )
-
-    scope = f"match:{match.id}:{user.id}"
-    remaining = cooldown_remaining(scope)
-    if remaining:
-        return Response(
-            {
-                "type": "input_cooldown",
-                "seconds": remaining,
-                "detail": COOLDOWN_NOTICE.format(seconds=remaining),
-            },
-            status=status.HTTP_429_TOO_MANY_REQUESTS,
-        )
+def _apply_match_rate_limit(*, user):
+    """Keep anti-spam throttling on the match room's REST fallback path."""
+    from apps.matching.services.input_gate import rate_limit_notice
+    from apps.matching.services.rate_limit import check_rate_limit
 
     rate = check_rate_limit(user.id)
     if not rate["allowed"]:
@@ -3334,36 +3305,7 @@ def _apply_match_input_gate(*, match, user, content: str):
             },
             status=status.HTTP_429_TOO_MANY_REQUESTS,
         )
-
-    # 配對房沒有「AI 剛提問」這種脈絡，恆為 False。
-    verdict = classify(content, prev_ai_is_question=False)
-    if verdict is InputVerdict.VALID:
-        record_match_attempt(match.id, user.id, blocked=False)
-        return None
-
-    count = record_match_attempt(match.id, user.id, blocked=True)
-    if throttle_tier(count) == "cooldown":
-        seconds = start_cooldown(scope)
-        return Response(
-            {
-                "type": "input_cooldown",
-                "seconds": seconds,
-                "invalid_input_count": count,
-                "detail": COOLDOWN_NOTICE.format(seconds=seconds),
-            },
-            status=status.HTTP_429_TOO_MANY_REQUESTS,
-        )
-
-    return Response(
-        {
-            "type": "input_blocked",
-            "presentation": "notice",
-            "reason": verdict.value,
-            "detail": fallback_message(verdict, count),
-            "invalid_input_count": count,
-        },
-        status=status.HTTP_422_UNPROCESSABLE_ENTITY,
-    )
+    return None
 
 
 class MatchingRoomMessagesView(APIView):
@@ -3424,11 +3366,9 @@ class MatchingRoomMessagesView(APIView):
         content = serializer.validated_data["content"].strip()
 
         # HTTP fallback for the match room, used when the WebSocket is not open.
-        # Same gate as MatchRoomConsumer — otherwise a dropped socket is a way
-        # around it.
-        gate_response = _apply_match_input_gate(
-            match=match, user=request.user, content=content
-        )
+        # H-H does not need the H-AI token-saving content gate. Keep the same
+        # anti-spam rate limit as MatchRoomConsumer.
+        gate_response = _apply_match_rate_limit(user=request.user)
         if gate_response is not None:
             return gate_response
 

@@ -23,7 +23,6 @@ from api.models import (
     AIConversation,
     DialogueMatch,
     DialogueSessionRecord,
-    MatchInputGateStat,
     MatchMessage,
 )
 from apps.matching.services.rate_limit import reset_rate_limit
@@ -444,7 +443,7 @@ async def test_repeated_profanity_escalates_to_cooldown():
 @pytest.mark.asyncio
 @pytest.mark.django_db(transaction=True)
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
-async def test_match_room_blocks_standalone_profanity_before_the_partner_sees_it():
+async def test_match_room_does_not_apply_hai_profanity_gate():
     from BridgeUs_Django.asgi import application
 
     alice = await create_user(username="gate_alice3", password="secret123")
@@ -463,12 +462,11 @@ async def test_match_room_blocks_standalone_profanity_before_the_partner_sees_it
     assert (await bob_ws.connect())[0]
 
     await alice_ws.send_json_to({"type": "match_message", "content": "幹幹幹"})
-    notice = await alice_ws.receive_json_from(timeout=3)
+    received = await bob_ws.receive_json_from(timeout=3)
 
-    assert notice["type"] == "input_blocked"
-    assert notice["reason"] == "profanity_only"
-    assert await bob_ws.receive_nothing(timeout=0.5) is True
-    assert await MatchMessage.objects.filter(match_id=match.id).acount() == 0
+    assert received["type"] == "match_message"
+    assert received["message"]["content"] == "幹幹幹"
+    assert await MatchMessage.objects.filter(match_id=match.id).acount() == 1
 
     await alice_ws.disconnect()
     await bob_ws.disconnect()
@@ -581,7 +579,7 @@ async def _make_active_match(alice, bob):
 @pytest.mark.asyncio
 @pytest.mark.django_db(transaction=True)
 @override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
-async def test_match_room_blocked_message_is_not_relayed_to_the_partner():
+async def test_match_room_low_information_message_is_relayed_to_the_partner():
     from BridgeUs_Django.asgi import application
 
     alice = await create_user(username="gate_alice", password="secret123")
@@ -601,18 +599,11 @@ async def test_match_room_blocked_message_is_not_relayed_to_the_partner():
     assert (await bob_ws.connect())[0]
 
     await alice_ws.send_json_to({"type": "match_message", "content": "6456"})
-    notice = await alice_ws.receive_json_from(timeout=3)
+    received = await bob_ws.receive_json_from(timeout=3)
 
-    assert notice["type"] == "input_blocked"
-    # H-H 一律走系統提示列，不偽造成一則對話訊息。
-    assert notice["presentation"] == "notice"
-    # 對方什麼都收不到。
-    assert await bob_ws.receive_nothing(timeout=0.5) is True
-    assert await MatchMessage.objects.filter(match_id=match.id).acount() == 0
-
-    stat = await MatchInputGateStat.objects.aget(match_id=match.id, user_id=alice.id)
-    assert stat.invalid_input_count == 1
-    assert stat.input_attempt_total == 1
+    assert received["type"] == "match_message"
+    assert received["message"]["content"] == "6456"
+    assert await MatchMessage.objects.filter(match_id=match.id).acount() == 1
 
     await alice_ws.disconnect()
     await bob_ws.disconnect()
@@ -647,9 +638,41 @@ async def test_match_room_valid_message_still_relays():
     assert received["type"] == "match_message"
     assert received["message"]["content"] == "核廢料最終處置場址一直選不出來"
 
-    stat = await MatchInputGateStat.objects.aget(match_id=match.id, user_id=alice.id)
-    assert stat.invalid_input_count == 0
-    assert stat.input_attempt_total == 1
+    await alice_ws.disconnect()
+    await bob_ws.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_match_room_still_rate_limits_messages_sent_too_fast():
+    from BridgeUs_Django.asgi import application
+
+    alice = await create_user(username="gate_alice_rate", password="secret123")
+    bob = await create_user(username="gate_bob_rate", password="secret123")
+    match = await _make_active_match(alice, bob)
+
+    alice_token = await _access_token_for(alice)
+    bob_token = await _access_token_for(bob)
+    alice_ws = WebsocketCommunicator(
+        application, f"/ws/matching/rooms/{match.room_id}/?token={alice_token}"
+    )
+    bob_ws = WebsocketCommunicator(
+        application, f"/ws/matching/rooms/{match.room_id}/?token={bob_token}"
+    )
+    assert (await alice_ws.connect())[0]
+    assert (await bob_ws.connect())[0]
+
+    await alice_ws.send_json_to({"type": "match_message", "content": "54"})
+    assert (await alice_ws.receive_json_from(timeout=3))["type"] == "match_message"
+    assert (await bob_ws.receive_json_from(timeout=3))["type"] == "match_message"
+
+    await alice_ws.send_json_to({"type": "match_message", "content": "6456"})
+    notice = await alice_ws.receive_json_from(timeout=3)
+
+    assert notice["type"] == "rate_limited"
+    assert await bob_ws.receive_nothing(timeout=0.5) is True
+    assert await MatchMessage.objects.filter(match_id=match.id).acount() == 1
 
     await alice_ws.disconnect()
     await bob_ws.disconnect()
@@ -697,7 +720,7 @@ def test_rest_reply_path_is_gated_too():
 
 
 @pytest.mark.django_db
-def test_rest_match_message_path_is_gated_too():
+def test_rest_match_message_path_allows_low_information_content():
     from rest_framework.test import APIClient
 
     alice = User.objects.create_user(username="gate_rest_a", password="secret123")
@@ -720,9 +743,20 @@ def test_rest_match_message_path_is_gated_too():
         format="json",
     )
 
-    assert response.status_code == 422
-    assert response.data["type"] == "input_blocked"
-    assert MatchMessage.objects.filter(match_id=match.id).count() == 0
+    assert response.status_code == 201
+    assert MatchMessage.objects.filter(
+        match_id=match.id, sender=alice, content="6456"
+    ).exists()
+
+    too_fast = client.post(
+        f"/api/matching/rooms/{match.room_id}/messages/",
+        {"content": "好"},
+        format="json",
+    )
+
+    assert too_fast.status_code == 429
+    assert too_fast.data["type"] == "rate_limited"
+    assert MatchMessage.objects.filter(match_id=match.id).count() == 1
 
 
 # ═══════════════════════════════════════════════════════════

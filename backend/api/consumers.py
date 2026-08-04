@@ -38,7 +38,6 @@ from apps.matching.services.input_gate import (
 )
 from apps.matching.services.input_gate_store import (
     arecord_ai_attempt,
-    arecord_match_attempt,
 )
 from apps.matching.services.rate_limit import (
     acheck_rate_limit,
@@ -659,7 +658,7 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
             await self.close(code=4000)
             return
 
-        if not await self._passes_input_gate(content):
+        if not await self._passes_rate_limit():
             return
 
         if hh_ai_assist_enabled():
@@ -668,22 +667,10 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
 
         await self._relay_and_persist(content)
 
-    # ── Input gate（H-H）────────────────────────────────────────────────────
-    # 同一套規則，行為不同：攔截後不產生任何 AI 訊息，只向發送者推提示，
-    # 對方完全看不到，訊息也不寫進 MatchMessage（所以不會進 embedding、
-    # 離題偵測、CCND 或摘要）。節流與 rate limit 規則與 H-AI 相同。
-    # H-H 沒有「AI 剛提問」這種脈絡，prev_ai_is_question 恆為 False——
-    # 對真人發「好」一個字同樣是低訊息量輸入。
+    # H-H 不會呼叫對話 LLM，因此不做內容充足度的 token 節流。
+    # 只保留獨立的短時間連發限制；不當內容與情緒改寫由 AI assist 負責。
 
-    def _cooldown_scope(self) -> str:
-        return f"match:{self.match.id}:{self.user.id}"
-
-    async def _passes_input_gate(self, content: str) -> bool:
-        remaining = await acooldown_remaining(self._cooldown_scope())
-        if remaining:
-            await self._send_cooldown(remaining)
-            return False
-
+    async def _passes_rate_limit(self) -> bool:
         rate = await acheck_rate_limit(self.user.id)
         if not rate["allowed"]:
             await self.send(
@@ -698,46 +685,7 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
             )
             return False
 
-        verdict = classify(content, prev_ai_is_question=False)
-        if verdict is InputVerdict.VALID:
-            await arecord_match_attempt(
-                self.match.id, self.user.id, blocked=False
-            )
-            return True
-
-        count = await arecord_match_attempt(
-            self.match.id, self.user.id, blocked=True
-        )
-        tier = throttle_tier(count)
-        if tier == "cooldown":
-            seconds = await astart_cooldown(self._cooldown_scope())
-            await self._send_cooldown(seconds, invalid_input_count=count)
-            return False
-
-        self.blocked_count += 1
-        await self.send(
-            json.dumps(
-                {
-                    "type": "input_blocked",
-                    # H-H 一律走系統提示列：對方看不到，也不該偽造成一則對話訊息。
-                    "presentation": "notice",
-                    "reason": verdict.value,
-                    "content": fallback_message(verdict, count),
-                    "invalid_input_count": count,
-                }
-            )
-        )
-        return False
-
-    async def _send_cooldown(self, seconds: int, invalid_input_count: int | None = None):
-        payload = {
-            "type": "input_cooldown",
-            "seconds": int(seconds),
-            "content": COOLDOWN_NOTICE.format(seconds=int(seconds)),
-        }
-        if invalid_input_count is not None:
-            payload["invalid_input_count"] = invalid_input_count
-        await self.send(json.dumps(payload))
+        return True
 
     async def _handle_ai_assisted_message(self, content: str):
         try:
@@ -807,17 +755,6 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
         modified_content = (data.get("content") or "").strip()
         if not modified_content:
             await self._send_error("修改後的訊息不可為空白。")
-            return
-
-        # 改寫框是繞過 receive() 的第二個入口，閘門必須在這裡再擋一次，
-        # 否則使用者可以用「送出 → 改寫成 6456」把垃圾內容送進配對房。
-        # 不重複計 attempt：這一則的送出嘗試在原訊息時已經記過。
-        modified_verdict = classify(modified_content, prev_ai_is_question=False)
-        if modified_verdict is not InputVerdict.VALID:
-            await self._send_system_prompt(
-                category="input_blocked",
-                message=fallback_message(modified_verdict),
-            )
             return
 
         suggestion.user_action = suggestion.Action.MODIFY

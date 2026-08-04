@@ -974,17 +974,17 @@ async def test_match_room_ai_assist_modifies_suggestion_after_second_emotion_che
         await comm_a.send_json_to({
             "type": "modify_suggestion",
             "suggestion_id": suggestion["suggestion_id"],
-            "content": "我不同意，但想聽聽你的理由。",
+            "content": "好",
         })
         response_a = await comm_a.receive_json_from(timeout=3)
         response_b = await comm_b.receive_json_from(timeout=3)
 
     assert response_a == response_b
-    assert response_a["message"]["content"] == "我不同意，但想聽聽你的理由。"
+    assert response_a["message"]["content"] == "好"
     saved = await MatchAISuggestion.objects.aget(id=suggestion["suggestion_id"])
     assert saved.user_action == MatchAISuggestion.Action.MODIFY
-    assert saved.modified_content == "我不同意，但想聽聽你的理由。"
-    assert saved.final_content == "我不同意，但想聽聽你的理由。"
+    assert saved.modified_content == "好"
+    assert saved.final_content == "好"
 
     await comm_a.disconnect()
     await comm_b.disconnect()
