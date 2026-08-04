@@ -4,6 +4,7 @@ import './App.css'
 
 import api, { AUTH_LOGOUT_EVENT, clearAuthStorage } from './api/client'
 import { NotificationsProvider } from './context/NotificationsContext'
+import { MatchingHeartbeatProvider } from './context/MatchingHeartbeatContext'
 import Navbar from './components/Navbar'
 import Sidebar from './components/Sidebar'
 import HomePage from './pages/HomePage'
@@ -175,6 +176,7 @@ function App() {
 
   return (
     <NotificationsProvider user={user}>
+      <MatchingHeartbeatProvider>
       <div className="app-container">
         <Navbar
           navigate={navigate}
@@ -242,6 +244,7 @@ function App() {
           }}
         />
       </div>
+      </MatchingHeartbeatProvider>
     </NotificationsProvider>
   )
 }
