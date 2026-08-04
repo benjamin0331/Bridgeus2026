@@ -59,6 +59,161 @@ func _ready():
 	_pitch_slider.value_changed.connect(_on_pitch)
 	_build_reaction_buttons()
 	_build_reaction_counts()
+	_build_level_legend()
+	_build_rare_popup()
+
+# --- 等級色表（畫面右上角）------------------------------------------------
+# 讓玩家看得懂「哪個顏色是哪一級」。圖示直接用青蛙 sprite 本身，不是色塊 ——
+# 這樣顏色只有 scripts/recolor_frog.py 一個來源，UI 不會抄一份 hex 出來跟素材走鐘。
+const LEGEND_SPRITE := "res://Assets/ToxicFrog/Level/Frog_Lv%d_Idle.png"
+const LEGEND_MAX := 16          # 上限保護：檔案是逐級探測的，避免哪天出錯就無限迴圈
+# 青蛙在 48×48 的格子裡只佔這一塊，其餘是透明空白（量測值：七個等級 × 全部 idle 幀的
+# 聯集，見 git 記錄的 bbox 量測）。直接用整格當圖示的話一半以上是空的，看起來就特別小。
+# 素材若重畫成別的尺寸，這個 region 要重量。
+const LEGEND_ICON_REGION := Rect2(11, 16, 22, 17)
+
+# 整個色表的縮放倍率——調這一個數字就等比放大／縮小（圖示、字、間距、內距全跟著走）。
+# 4/3 = 比基準大 1/3。基準（1.0）是 102×160，這裡是約 136×213。
+#
+# ⚠️ 非整數倍會讓像素畫的格子大小不均（有些原始像素佔 1px、有些佔 2px），青蛙輪廓
+# 會微微歪。1.0 / 2.0 這種整數倍才是 1:1 乾淨的。目前 4/3 是刻意換取尺寸剛好。
+const LEGEND_ZOOM := 4.0 / 3.0
+
+const LEGEND_FONT_PX := 11      # 以下都是 ZOOM = 1.0 時的基準值
+const LEGEND_MARGIN := 8.0
+const LEGEND_PAD := 6.0         # 面板內距
+const LEGEND_ROW_SEP := 4.0     # 圖示與文字的水平間距
+const LEGEND_COL_SEP := 2.0     # 列與列的垂直間距
+
+var _legend_labels: Array[Label] = []   # index = 等級，用來標出「你在這一級」
+
+func _build_level_legend() -> void:
+	var panel := PanelContainer.new()
+	panel.name = "LevelLegend"
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE   # 純顯示，不吃點擊
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.15, 0.15, 0.15, 0.85)        # 同議題泡泡/頭銜底色
+	sb.set_corner_radius_all(4)
+	sb.set_content_margin_all(LEGEND_PAD * LEGEND_ZOOM)
+	panel.add_theme_stylebox_override("panel", sb)
+
+	var font_px := roundi(LEGEND_FONT_PX * LEGEND_ZOOM)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", roundi(LEGEND_COL_SEP * LEGEND_ZOOM))
+	var head := Label.new()
+	head.text = "等級"
+	head.add_theme_font_size_override("font_size", font_px)
+	col.add_child(head)
+
+	for lv in LEGEND_MAX:
+		var path: String = LEGEND_SPRITE % lv
+		if not ResourceLoader.exists(path):
+			break        # 等級數以素材為準，跟 player_00.gd::level_count() 同一個原則
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", roundi(LEGEND_ROW_SEP * LEGEND_ZOOM))
+		# 只取第一格裡青蛙本體那一塊。若整格 48×48 都取，會連帶一整條 8 格；
+		# 若取整格但不裁白邊，青蛙只佔一半、看起來很小。
+		var atlas := AtlasTexture.new()
+		atlas.atlas = load(path)
+		atlas.region = LEGEND_ICON_REGION
+		var icon := TextureRect.new()
+		icon.texture = atlas
+		icon.custom_minimum_size = LEGEND_ICON_REGION.size * LEGEND_ZOOM
+		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		icon.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST   # 像素畫不要模糊
+		row.add_child(icon)
+		var label := Label.new()
+		label.add_theme_font_size_override("font_size", font_px)
+		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		row.add_child(label)
+		_legend_labels.append(label)
+		col.add_child(row)
+
+	panel.add_child(col)
+	add_child(panel)
+	# 右上角。寬高都刻意設成 0（offset_left = offset_right、offset_bottom = offset_top）
+	# ——Control 會把自己的尺寸夾到 get_combined_minimum_size()，所以面板剛好貼合內容，
+	# 不會像給固定寬度那樣在文字右邊留一大片空灰底。grow 方向決定它往哪邊長：往左、往下。
+	# 別改成在這裡呼叫 get_combined_minimum_size()：add_child 當下 layout 還沒跑過，
+	# 那時候會拿到 0，面板就變成零尺寸、整個色表看不見。
+	panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	panel.grow_vertical = Control.GROW_DIRECTION_END
+	var margin := LEGEND_MARGIN * LEGEND_ZOOM
+	panel.offset_right = -margin
+	panel.offset_left = -margin
+	panel.offset_top = margin
+	panel.offset_bottom = margin
+	refresh_level_legend(true)   # 玩家還沒生成，先按「正常顯示等級」畫；擲完稀有款會再刷
+
+# 文字內容依後端資料變動（門檻、目前等級），所以跟建構分開；player_00.gd 在擲完稀有款
+# 之後、game.gd 在 /titles/me/ 回來後都會呼叫。後端沒開時只顯示 Lv 編號，不顯示場次。
+#
+# show_marker=false 用在玩家刷到稀有款彩虹蛙時：那隻不屬於任何一級，整欄都不該有箭頭，
+# 也不該把某一列高亮成「你在這」。下次進場沒刷到就會再傳 true 回來。
+func refresh_level_legend(show_marker: bool) -> void:
+	for lv in _legend_labels.size():
+		var text: String = "Lv%d" % lv
+		if lv < Backend.level_thresholds.size():
+			text += " · %d場" % int(Backend.level_thresholds[lv])
+		var here := show_marker and lv == Backend.level
+		_legend_labels[lv].text = ("▸ " + text) if here else text
+		_legend_labels[lv].modulate = Color.WHITE if here else Color(1, 1, 1, 0.55)
+
+# --- 稀有款彈窗 ------------------------------------------------------------
+# 只有一種內容：刷到稀有款彩虹蛙的恭喜訊息。
+#
+# 曾經還有一個「首次解鎖某一級」的進度彈窗，已移除 —— 等級與已完成場次改成常駐顯示在
+# 主功能的成就頁最上面（frontend/src/pages/AchievementPage.jsx），玩家隨時看得到，
+# 不需要用彈窗打斷遊戲。順帶也免掉了「彈窗跳過了沒」那個 user:// 已讀狀態，
+# 那份本機紀錄換瀏覽器就會失效，本來是要請後端補欄位的（見 docs/0804.md）。
+const POPUP_W := 360.0
+const POPUP_FONT_PX := 15
+
+var _popup: PanelContainer
+var _popup_label: Label
+
+func _build_rare_popup() -> void:
+	_popup = PanelContainer.new()
+	_popup.name = "RarePopup"
+	_popup.visible = false
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.11, 0.11, 0.13, 0.96)
+	sb.border_color = Color(1, 1, 1, 0.25)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(6)
+	sb.set_content_margin_all(16)
+	_popup.add_theme_stylebox_override("panel", sb)
+
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 12)
+	_popup_label = Label.new()
+	_popup_label.add_theme_font_size_override("font_size", POPUP_FONT_PX)
+	_popup_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_popup_label.custom_minimum_size = Vector2(POPUP_W, 0)
+	_popup_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(_popup_label)
+	var ok := Button.new()
+	ok.text = "確定"
+	ok.custom_minimum_size = Vector2(96, 32)
+	ok.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	ok.pressed.connect(func(): _popup.visible = false)
+	col.add_child(ok)
+	_popup.add_child(col)
+	add_child(_popup)
+	# 置中：寬高都設 0 讓 Control 夾到內容最小值，再靠 grow 往兩側對稱長開。
+	_popup.set_anchors_preset(Control.PRESET_CENTER)
+	_popup.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_popup.grow_vertical = Control.GROW_DIRECTION_BOTH
+
+func _show_popup(text: String) -> void:
+	_popup_label.text = text
+	_popup.visible = true
+
+# 刷到稀有款彩虹蛙 —— 每次刷到都跳（就是要讓玩家知道自己中了）。
+func show_rare_popup() -> void:
+	_show_popup("恭喜你在本次探索中，獲得了稀有形態的炫彩青蛙！")
 
 # Read 面板底部一排表情按鈕：按下 → 對正在讀的對方議題送出表情回復。
 # 一人對一議題只有一個表情，但可改選：目前選的那個底部顯示灰條，按別的就換過去。

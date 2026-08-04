@@ -1,5 +1,6 @@
 import './AchievementPage.css';
 import { CATEGORIES } from './achievements.data';
+import LevelSummaryCard from './LevelSummaryCard';
 
 function AchievementPage() {
   return (
@@ -9,6 +10,8 @@ function AchievementPage() {
         <h1>成就</h1>
         <p>在 TakeABridge 的每一步，都會留下屬於你的足跡與頭銜。</p>
       </div>
+
+      <LevelSummaryCard />
 
       <div className="achievement-body">
         {CATEGORIES.map((category) => (

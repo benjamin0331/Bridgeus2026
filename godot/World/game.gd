@@ -318,7 +318,24 @@ func _fetch_banner_options() -> void:
 		var c = data.get("color")
 		if typeof(c) == TYPE_STRING and c != "":
 			color_btn.color = Color.html(c)
+		# 這支同時帶回等級（Backend.get_my_titles 已快取進 Backend.level）。等級決定
+		# 青蛙顏色，而這個 HTTP 回應跟玩家按 Host/Join 的時機無關，所以兩邊都要顧：
+		# 先生成的話這裡補設，後生成的話 player_00.gd::_ready 自己讀 Backend.level。
+		_apply_level_to_local_player()
 	)
+
+# 把 Backend.level 套到自己的青蛙上（appearance 是同步欄位，改了就會廣播出去）。
+# apply_level 內部會順便刷右上角色表（含「你在這一級」的箭頭與場次門檻），而且刷到
+# 稀有款彩虹蛙時會自己擋掉等級色的覆寫，所以這裡不需要判斷稀有與否。
+func _apply_level_to_local_player() -> void:
+	var p = _local_player()
+	if p:
+		p.apply_level(Backend.level)
+		return
+	# 玩家還沒生成（HTTP 比 Host/Join 先回來）：色表先把場次門檻填上，箭頭等
+	# player_00.gd::roll_appearance 擲完稀有款後自己刷。
+	for ui in get_tree().get_nodes_in_group("issue_ui"):
+		ui.refresh_level_legend(true)
 
 # 選了頭銜 → 用目前調色盤顏色貼到自己頭上（P2P 廣播）＋有真 id 才回寫後端。
 func _on_banner_selected(index: int) -> void:

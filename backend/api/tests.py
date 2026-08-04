@@ -22,6 +22,7 @@ from api.models import (
     UserStanceProfile,
 )
 from api.display_settings import resolve_stance_category
+from api.views import LEVEL_THRESHOLDS, dialogue_level
 
 
 def unlock_timeline(user, kind, conversation_id):
@@ -2196,3 +2197,84 @@ class PlatformFeedbackApiTests(APITestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class DialogueLevelTests(APITestCase):
+    """等級（Godot 青蛙顏色）— 門檻邊界與 /api/titles/me/ 的回傳。"""
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="level_user",
+            password="secret123",
+        )
+        self.client.force_authenticate(user=self.user)
+
+    def _complete(self, n):
+        """製造 n 場「已完成」的對話（＝送出後測，留下 PostDialogueResponse）。"""
+        for i in range(n):
+            PostDialogueResponse.objects.create(
+                user=self.user,
+                topic_id=102,
+                session_id=f"sess-lv-{i}",
+                experiment_condition=PostDialogueResponse.ExperimentCondition.AI,
+                post_likert_1=4, post_likert_2=4, post_likert_3=4, post_likert_4=4,
+                post_likert_5=4, post_likert_6=4, post_likert_7=4, post_likert_8=4,
+                exp_stance_change_1=4, exp_stance_change_2=4,
+                exp_quality_1=4, exp_quality_2=4,
+                exp_reflection_1=4, exp_reflection_2=4,
+                ccnd_attention=4, ccnd_awareness=4, ccnd_influence=4,
+                post_open_comprehension="x" * 60,
+            )
+
+    def test_thresholds_at_every_boundary(self):
+        # 門檻 (0, 2, 5, 10, 17, 27, 40)：每一級的最低場次與其上界都測到。
+        expected = {
+            0: 0, 1: 0,
+            2: 1, 4: 1,
+            5: 2, 9: 2,
+            10: 3, 16: 3,
+            17: 4, 26: 4,
+            27: 5, 39: 5,
+            40: 6, 41: 6, 100: 6,
+        }
+        for count, level in expected.items():
+            self.assertEqual(dialogue_level(count), level, f"{count} 場應該是 Lv{level}")
+
+    def test_level_is_monotonic_and_never_out_of_range(self):
+        prev = 0
+        for count in range(0, 60):
+            level = dialogue_level(count)
+            self.assertGreaterEqual(level, prev, "等級不能隨場次增加而下降")
+            self.assertIn(level, range(len(LEVEL_THRESHOLDS)))
+            prev = level
+
+    def test_titles_me_reports_level(self):
+        self._complete(11)
+        response = self.client.get("/api/titles/me/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["dialogue_count"], 11)
+        self.assertEqual(response.data["level"], 3)
+        self.assertEqual(response.data["level_thresholds"], list(LEVEL_THRESHOLDS))
+
+    def test_brand_new_user_is_level_zero(self):
+        response = self.client.get("/api/titles/me/")
+        self.assertEqual(response.data["dialogue_count"], 0)
+        self.assertEqual(response.data["level"], 0)
+
+    def test_other_users_dialogues_do_not_count(self):
+        other = get_user_model().objects.create_user(username="someone_else", password="x")
+        PostDialogueResponse.objects.create(
+            user=other,
+            topic_id=102,
+            session_id="sess-other",
+            experiment_condition=PostDialogueResponse.ExperimentCondition.HH,
+            post_likert_1=4, post_likert_2=4, post_likert_3=4, post_likert_4=4,
+            post_likert_5=4, post_likert_6=4, post_likert_7=4, post_likert_8=4,
+            exp_stance_change_1=4, exp_stance_change_2=4,
+            exp_quality_1=4, exp_quality_2=4,
+            exp_reflection_1=4, exp_reflection_2=4,
+            ccnd_attention=4, ccnd_awareness=4, ccnd_influence=4,
+            post_open_comprehension="x" * 60,
+        )
+        response = self.client.get("/api/titles/me/")
+        self.assertEqual(response.data["dialogue_count"], 0)

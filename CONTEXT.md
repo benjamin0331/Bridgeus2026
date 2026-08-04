@@ -7,7 +7,24 @@
 
 ## 🟡 待提交變更（Uncommitted）
 
-> 每完成一項未 commit 的工作就記在這；commit 後刪掉該行。目前無。
+> 每完成一項未 commit 的工作就記在這；commit 後刪掉該行。
+
+- **Godot 等級系統（七色青蛙）**——規格見 `docs/godot_level_colors.md`。
+  - 後端：`views.py` 加 `LEVEL_THRESHOLDS` / `dialogue_level()`，`TitleMeView.get` 回傳 `level` / `dialogue_count` / `level_thresholds`（無 migration，純衍生值）。`tests.py` 加 `DialogueLevelTests`（5 項，全過）。
+  - Godot：`Backend.gd` 快取 `level`；`player_00.gd` 的 `appearance` 改成等級並播 `lvN_*`（原 `char_N_*` 保留但不播）；`game_ui.gd` 右上角等級色表；`player_00.tscn` 加 14 個 `lv0`–`lv6` 動畫。
+  - 新增 `scripts/recolor_frog.py` 生成 `godot/Assets/ToxicFrog/Level/` 的 14 張 sprite，以及 `--rainbow` 產的 Lv777 稀有款彩虹蛙（每次進場 1/10 機率，不持久化；刷到時色表不標箭頭）。
+  - 新增 `scripts/check_player_tscn.py`：tscn 等級動畫接線的靜態檢查（無 Godot CLI 時的替代驗證）。
+  - 稀有款恭喜彈窗（`game_ui.gd`）。等級彈窗**已移除**，改成常駐顯示在成就頁最上面：
+    新增 `frontend/src/pages/LevelSummaryCard.jsx`（等級／場次／離下一級 + hover 小問號說明），
+    掛在 `AchievementPage` 頂端，CSS 併入 `AchievementPage.css`。
+    卡片背景是遊戲內實拍截圖 `public/frogs/map_bg.png`，青蛙上緣露出卡片外 1/3 做層次；尺寸全部由 `--frog-w`（clamp）推導，響應式等比縮放。
+    ⚠️ 目前吃寫死的示意資料（卡上有「後端尚未串接」標籤）—— `/api/titles/me/` 實測抓不到，見 `docs/0804.md` §2.1。
+  - 新增 `scripts/export_web_assets.py`（青蛙圖）→ `frontend/public/frogs/`。背景改用人工截圖；曾寫的 `render_map_region.py`（解析 tscn 重畫地圖）因水域畫壞已移除。
+    首頁虛擬大廳卡片也改用同一張地圖背景，右下角加了一隻水平翻轉的待機動畫青蛙（CSS sprite，非 GIF）。
+  - 新增 `frontend/src/components/ScatterDecor.jsx`＋CSS：首頁兩張入口卡的散落裝飾（大廳＝6 隻等級青蛙，知識庫＝5 個遊戲內表情），固定座標非亂數。
+    `ActionCard` 多一個 `children` prop 供裝飾層掛載。`export_web_assets.py` 一併匯出 `emoji0`–`emoji4.png`（座標同 `Globals/Emoji.gd`）。
+  - **新增 `docs/0804.md`**：交接給後端，列出等級功能上線後需要確認／補的事（成就系統的資料缺口為主；彈窗已讀狀態那項已因改成常駐顯示而取消）。
+  - ⚠️ 未完成：`godot/Assets/GreenBlue/`（`Assets/ToxicFrog/GreenBlue/` 的整份重複、無人引用）該刪但還沒刪。
 
 _（未追蹤的資料/設定檔 `.claude/`、`chroma_data/`、`*.csv`、`0530…txt` 不納入 commit。）_
 

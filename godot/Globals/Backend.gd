@@ -8,6 +8,13 @@ var BASE_URL := "http://localhost:8005/api"
 var access_token := ""   # 二擇一來源：acquire_token_from_host()（正式）或 guest_login()（本機測試 fallback）
 var user_id := 0         # 主功能後端 user id，隨 host token 一併交接；guest_login 沒有對應 id，維持 0
 
+# 玩家等級（0–6）＝ 青蛙顏色，由 get_my_titles() 從 /titles/me/ 帶回來後快取在這裡。
+# 預設 0（Lv0 白）：後端沒開、訪客登入、或還沒抓回來時都是這個值，遊戲照跑。
+# 門檻在後端（views.py::LEVEL_THRESHOLDS），這裡不重複一份，只存算好的結果。
+var level := 0
+var dialogue_count := 0           # 累積完成場次，用來顯示「再 N 場升級」
+var level_thresholds: Array = []  # 後端給的門檻表，同上；空陣列＝還沒抓到
+
 # 只在常駐 headless server 從環境變數讀到才會有值；web client 一律空字串，
 # 不會/不該呼叫需要它的方法（金鑰絕不可流向瀏覽器，見部署規格 §4「服務金鑰建房契約」）。
 var service_token := ""
@@ -71,10 +78,18 @@ func get_issues(callback := Callable()) -> void:
 	)
 
 # --- 頭銜 Titles（見 godot-backend-integration.md §3.1）--------------------
-# 讀自己擁有的頭銜清單＋目前選哪個。需登入。
-# data 形如 {"owned":[{"id":1,"name":"探索者"},...], "selected_id":1, "color":"#2680d9"}。
+# 讀自己擁有的頭銜清單＋目前選哪個，順便帶回等級。需登入。
+# data 形如 {"owned":[{"id":1,"name":"探索者"},...], "selected_id":1, "color":"#2680d9",
+#            "level":3, "dialogue_count":11, "level_thresholds":[2,4,7,11,16,22,29]}。
+# 等級在這裡就快取進 Backend.level，呼叫端（game.gd）不用自己解一次。
 func get_my_titles(callback := Callable()) -> void:
 	_http_get("/titles/me/", true, func(code, data):
+		if code == 200 and typeof(data) == TYPE_DICTIONARY:
+			level = int(data.get("level", level))
+			dialogue_count = int(data.get("dialogue_count", dialogue_count))
+			var th = data.get("level_thresholds")
+			if th is Array:
+				level_thresholds = th
 		if callback.is_valid():
 			callback.call(code, data)
 	)

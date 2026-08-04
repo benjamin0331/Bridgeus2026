@@ -165,3 +165,176 @@
     padding: 0 0 calc(18px + env(safe-area-inset-bottom));
   }
 }
+
+/* --- 等級摘要卡（成就頁最上面）------------------------------------------
+   Godot 等級 + 已完成場次 + 離下一級還差幾場。取代原本 Godot 內的等級彈窗：
+   常駐顯示，玩家隨時看得到，不用彈窗打斷遊戲。 */
+.level-summary {
+  /* 青蛙的尺寸是唯一的旋鈕：卡片左內距、上外距、青蛙溢出量全部由它算出來，
+     所以視窗縮放時整張卡會一起等比變，不會出現「青蛙不縮、把版面撐爆」。 */
+  --frog-w: clamp(88px, 11vw, 154px);
+  --frog-h: calc(var(--frog-w) * 17 / 22);   /* sprite 是 22:17 */
+  --frog-out: calc(var(--frog-h) / 3);       /* 上緣露出卡片外的高度 */
+
+  position: relative;              /* 青蛙的定位錨點 */
+  display: flex;
+  flex-wrap: wrap;
+  gap: 28px;
+  align-items: center;
+  margin-top: calc(var(--frog-out) + 16px);  /* 露出的部分不能壓到上面的說明文字 */
+  border: 1px solid rgba(117, 96, 78, 0.12);
+  border-radius: 22px;
+  padding: 18px 24px;
+  padding-left: calc(var(--frog-w) + 50px);  /* 左側讓給青蛙（26 左偏移 + 24 間距） */
+  min-height: calc(var(--frog-h) - 14px);
+  box-shadow: 0 12px 30px rgba(83, 62, 44, 0.07);
+  /* 背景 /frogs/map_bg.png 是**遊戲內實拍截圖**（人工從 Godot 場景截的）。曾經改用腳本
+     解析 Game.tscn 的圖磚重畫，結果水域被畫成大片深褐色方塊、完全不能看，所以那條路
+     放棄了，腳本也移除以免它覆蓋這張圖。要換背景就換掉這個 PNG 檔。
+
+     薄紗做成「左濃右淡」的橫向漸層，而不是整片同一個濃度：文字只佔到約 35% 寬，
+     那一段要 0.9 才讀得清（均勻 0.55 時字壓在紅樹上就看不見了）；過了文字就快速淡掉，
+     右半邊幾乎不壓，地圖看得清楚。轉折點跟著文字結束的位置走。 */
+  background-image:
+    linear-gradient(
+      to right,
+      rgba(255, 251, 246, 0.93) 0%,
+      rgba(255, 251, 246, 0.9) 33%,
+      rgba(255, 251, 246, 0.45) 52%,
+      rgba(255, 251, 246, 0.16) 72%,
+      rgba(255, 251, 246, 0.08) 100%
+    ),
+    url('/frogs/map_bg.png');
+  background-size: 100% 100%, cover;
+  background-position: center, center 20%;
+  background-repeat: repeat, no-repeat;
+  image-rendering: pixelated;
+  overflow: visible;               /* 讓青蛙的上半部露出去 */
+}
+
+/* 等級對應的青蛙。刻意比背景地圖大很多、而且上緣超出卡片 —— 這就是層次感的來源：
+   牠是站在地圖前面的角色，不是貼在地圖上的圖示。drop-shadow 補足浮起的感覺。 */
+.level-summary-frog {
+  position: absolute;
+  left: 26px;
+  top: calc(var(--frog-out) * -1);
+  width: var(--frog-w);
+  height: var(--frog-h);
+  image-rendering: pixelated;
+  filter: drop-shadow(0 4px 6px rgba(47, 39, 34, 0.4));
+  pointer-events: none;
+}
+
+/* 窄畫面：青蛙回到正常流排在最左邊，不再溢出也不再吃左內距。手機上硬留 88px 的
+   左側空位會把三塊數字擠成一行一個字，反而更難看。 */
+@media (max-width: 640px) {
+  .level-summary {
+    --frog-w: 72px;
+    gap: 16px;
+    margin-top: 20px;
+    padding: 14px 16px;
+    min-height: 0;
+  }
+
+  .level-summary-frog {
+    position: static;
+    top: auto;
+    left: auto;
+    filter: none;
+  }
+}
+
+.level-summary-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.level-summary-label {
+  position: relative;   /* 提示泡泡的定位錨點；沒有這行 absolute 會跑去對整頁定位 */
+  /* 白色外光：即使漸層薄紗沒完全蓋住底下的深色圖案，字的邊緣也還分得出來 */
+  text-shadow: 0 0 3px rgba(255, 251, 246, 0.95);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #6d543c;   /* 比頁面其他標籤深：草綠背景上 #8d7058 對比不夠 */
+  font-size: 11.5px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.level-summary-value {
+  text-shadow: 0 0 4px rgba(255, 251, 246, 0.95);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #2f2722;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.level-summary-unit {
+  color: #7e7167;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+/* 小問號：用 button 而不是 span，鍵盤 focus 也能叫出提示（title 屬性只吃滑鼠）。 */
+.level-summary-info {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border: 1px solid rgba(141, 112, 88, 0.5);
+  border-radius: 50%;
+  background: transparent;
+  color: #8d7058;
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1;
+  cursor: help;
+}
+
+.level-summary-tip {
+  /* 泡泡是深底白字，會從 .level-summary-label 繼承到白色 text-shadow —— 白光壓在白字上
+     看起來就是一團糊。這裡明確關掉。 */
+  text-shadow: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 5;
+  width: max-content;
+  max-width: 260px;
+  margin-top: 6px;
+  border-radius: 10px;
+  padding: 8px 11px;
+  background: rgba(47, 39, 34, 0.94);
+  color: #f7f3f0;
+  font-size: 12.5px;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.5;
+  text-transform: none;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.14s ease;
+}
+
+.level-summary-info:hover + .level-summary-tip,
+.level-summary-info:focus-visible + .level-summary-tip {
+  opacity: 1;
+}
+
+/* 後端還沒串上時的標記。串好之後連同 JSX 的 isPlaceholder 一起刪。 */
+.level-summary-placeholder {
+  align-self: center;
+  margin-left: auto;
+  border: 1px dashed rgba(176, 85, 64, 0.5);
+  border-radius: 999px;
+  padding: 4px 10px;
+  color: #b05540;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
