@@ -77,6 +77,8 @@ const LEGEND_ICON_REGION := Rect2(11, 16, 22, 17)
 #
 # ⚠️ 非整數倍會讓像素畫的格子大小不均（有些原始像素佔 1px、有些佔 2px），青蛙輪廓
 # 會微微歪。1.0 / 2.0 這種整數倍才是 1:1 乾淨的。目前 4/3 是刻意換取尺寸剛好。
+#
+# 曾放大到 16/9（再大 1/3），面板太搶戲、壓到右上角的畫面，已退回 4/3。
 const LEGEND_ZOOM := 4.0 / 3.0
 
 const LEGEND_FONT_PX := 11      # 以下都是 ZOOM = 1.0 時的基準值
@@ -100,10 +102,7 @@ func _build_level_legend() -> void:
 	var font_px := roundi(LEGEND_FONT_PX * LEGEND_ZOOM)
 	var col := VBoxContainer.new()
 	col.add_theme_constant_override("separation", roundi(LEGEND_COL_SEP * LEGEND_ZOOM))
-	var head := Label.new()
-	head.text = "等級"
-	head.add_theme_font_size_override("font_size", font_px)
-	col.add_child(head)
+	# 沒有「等級」標題：每一列都寫著 Lv{n}，標題只是再說一次同一件事，白佔一行。
 
 	for lv in LEGEND_MAX:
 		var path: String = LEGEND_SPRITE % lv
@@ -158,7 +157,11 @@ func refresh_level_legend(show_marker: bool) -> void:
 		if lv < Backend.level_thresholds.size():
 			text += " · %d場" % int(Backend.level_thresholds[lv])
 		var here := show_marker and lv == Backend.level
-		_legend_labels[lv].text = ("▸ " + text) if here else text
+		# 「你在這一級」的箭頭用 ▶ (U+25B6) 而不是 ▸ (U+25B8)：後者不在
+		# Assets/fonts/NotoSansTC-Regular.otf 的 cmap 裡。桌面版看起來正常是因為 Godot
+		# 會退回 Windows 系統字型補字，Web 版沒有系統字型可退 → 直接畫成豆腐框。
+		# 要換別的符號先確認字型有收：uv run --with fonttools python -c "..." 查 cmap。
+		_legend_labels[lv].text = ("▶ " + text) if here else text
 		_legend_labels[lv].modulate = Color.WHITE if here else Color(1, 1, 1, 0.55)
 
 # --- 稀有款彈窗 ------------------------------------------------------------
@@ -168,52 +171,74 @@ func refresh_level_legend(show_marker: bool) -> void:
 # 主功能的成就頁最上面（frontend/src/pages/AchievementPage.jsx），玩家隨時看得到，
 # 不需要用彈窗打斷遊戲。順帶也免掉了「彈窗跳過了沒」那個 user:// 已讀狀態，
 # 那份本機紀錄換瀏覽器就會失效，本來是要請後端補欄位的（見 docs/0804.md）。
-const POPUP_W := 360.0
-const POPUP_FONT_PX := 15
+# 版面刻意照抄 GameUI.tscn 裡的 Invite 面板：預設主題的 Panel、同樣 360×170 的框、
+# 18px 自動換行標籤、底部兩顆按鈕（左否定右肯定）。之前用自訂 StyleBoxFlat 做深色圓角
+# 框，跟遊戲裡其他面板不是同一套，看起來像外掛上去的。
+#
+# ⚠️ 位置用 anchor 算，**不要**像 Invite 那樣寫死 offset。專案的 stretch 是
+# canvas_items + expand（project.godot [display]），實際可見範圍會比 1280×720 更寬，
+# 寫死 (460, 280) 在寬螢幕上會明顯偏左 —— Invite 面板現在就有這個問題。
+const POPUP_SIZE := Vector2(360, 170)
+const POPUP_BOTTOM_MARGIN := 56.0   # 距畫面底部，放在中間下方避開頭頂的議題泡泡
 
-var _popup: PanelContainer
+var _popup: Panel
 var _popup_label: Label
+var _rare_owner: Node = null   # 開這個彈窗的玩家，按「我不要」時要回頭叫它換色
 
 func _build_rare_popup() -> void:
-	_popup = PanelContainer.new()
+	_popup = Panel.new()        # 預設主題 = 跟 Menu / Read / Invite / Chat 同一個外觀
 	_popup.name = "RarePopup"
 	_popup.visible = false
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.11, 0.11, 0.13, 0.96)
-	sb.border_color = Color(1, 1, 1, 0.25)
-	sb.set_border_width_all(1)
-	sb.set_corner_radius_all(6)
-	sb.set_content_margin_all(16)
-	_popup.add_theme_stylebox_override("panel", sb)
+	# 底部置中：左右 anchor 都 0.5、上下都 1.0，offset 再從那個點往外推。
+	_popup.anchor_left = 0.5
+	_popup.anchor_right = 0.5
+	_popup.anchor_top = 1.0
+	_popup.anchor_bottom = 1.0
+	_popup.offset_left = -POPUP_SIZE.x / 2.0
+	_popup.offset_right = POPUP_SIZE.x / 2.0
+	_popup.offset_bottom = -POPUP_BOTTOM_MARGIN
+	_popup.offset_top = -POPUP_BOTTOM_MARGIN - POPUP_SIZE.y
 
-	var col := VBoxContainer.new()
-	col.add_theme_constant_override("separation", 12)
 	_popup_label = Label.new()
-	_popup_label.add_theme_font_size_override("font_size", POPUP_FONT_PX)
+	_popup_label.add_theme_font_size_override("font_size", 18)
 	_popup_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_popup_label.custom_minimum_size = Vector2(POPUP_W, 0)
-	_popup_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	col.add_child(_popup_label)
+	_popup_label.offset_left = 20
+	_popup_label.offset_top = 24
+	_popup_label.offset_right = 340
+	_popup_label.offset_bottom = 96
+	_popup.add_child(_popup_label)
+
+	# 左：放棄稀有款，換回自己的等級色（只影響這一場）。右：留著。
+	var decline := Button.new()
+	decline.text = "太閃了，我不要"
+	decline.offset_left = 20
+	decline.offset_top = 112
+	decline.offset_right = 180
+	decline.offset_bottom = 148
+	decline.pressed.connect(func():
+		if _rare_owner != null and is_instance_valid(_rare_owner):
+			_rare_owner.decline_rare()
+		_popup.visible = false
+	)
+	_popup.add_child(decline)
+
 	var ok := Button.new()
 	ok.text = "確定"
-	ok.custom_minimum_size = Vector2(96, 32)
-	ok.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	ok.offset_left = 220
+	ok.offset_top = 112
+	ok.offset_right = 340
+	ok.offset_bottom = 148
 	ok.pressed.connect(func(): _popup.visible = false)
-	col.add_child(ok)
-	_popup.add_child(col)
-	add_child(_popup)
-	# 置中：寬高都設 0 讓 Control 夾到內容最小值，再靠 grow 往兩側對稱長開。
-	_popup.set_anchors_preset(Control.PRESET_CENTER)
-	_popup.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	_popup.grow_vertical = Control.GROW_DIRECTION_BOTH
+	_popup.add_child(ok)
 
-func _show_popup(text: String) -> void:
-	_popup_label.text = text
-	_popup.visible = true
+	add_child(_popup)
 
 # 刷到稀有款彩虹蛙 —— 每次刷到都跳（就是要讓玩家知道自己中了）。
-func show_rare_popup() -> void:
-	_show_popup("恭喜你在本次探索中，獲得了稀有形態的炫彩青蛙！")
+# owner = 刷到稀有款的那個玩家節點；「太閃了，我不要」要回頭叫它換色，所以要留著。
+func show_rare_popup(owner: Node) -> void:
+	_rare_owner = owner
+	_popup_label.text = "恭喜你在本次探索中，獲得了稀有形態的炫彩青蛙！"
+	_popup.visible = true
 
 # Read 面板底部一排表情按鈕：按下 → 對正在讀的對方議題送出表情回復。
 # 一人對一議題只有一個表情，但可改選：目前選的那個底部顯示灰條，按別的就換過去。
@@ -344,8 +369,24 @@ func _update_menu():
 	_menu.visible = true
 
 # 讀議題面板開啟時鎖住移動，關掉才能動。
+# 有任何視窗開著就鎖住移動。player_00.gd 的 _physics_process 每幀問這支，所以這裡是
+# 「開著視窗不能走路」的唯一收斂點 —— 新增面板只要加進這個清單。
+#
+# ⚠️ Menu（走近別人時跳出的小面板）刻意**不**列入：那個面板是靠「走出範圍」自己消失的，
+# 鎖住移動會讓玩家永遠走不出去、面板永遠不關，直接卡死。
+#
+# NPC 對話框與提交議題表單不是這個節點的子節點，所以分別轉問：
+#   對話框在 "dialogue" group（UI/dialogue_box.gd::is_open）
+#   議題表單由 game.gd 開關時設 suppress_menu（見 game.gd::_set_menu_suppressed）
 func blocks_movement() -> bool:
-	return _read.visible
+	if _read.visible or _invite.visible or _chat.visible or _voice.visible:
+		return true
+	if _popup != null and _popup.visible:      # 稀有款彩虹蛙的恭喜視窗
+		return true
+	if suppress_menu:                          # 提交議題表單開著
+		return true
+	var dlg = get_tree().get_first_node_in_group("dialogue")
+	return dlg != null and dlg.is_open()
 
 func _open_read():
 	if _target == null:

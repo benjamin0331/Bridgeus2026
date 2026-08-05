@@ -533,12 +533,21 @@ func roll_appearance() -> void:
 		print("[外觀] 玩家 %s 刷到稀有款彩虹蛙" % name)
 		_refresh_level_legend()
 		for ui in get_tree().get_nodes_in_group("issue_ui"):
-			ui.show_rare_popup()
+			ui.show_rare_popup(self)
 	else:
 		apply_level(Backend.level)
 
 func is_rare() -> bool:
 	return appearance == RAINBOW_APPEARANCE
+
+# 玩家在彈窗按「太閃了，我不要」：放棄這次的稀有款，換回自己的等級色。
+# 只影響這一場 —— 下次進場照樣有 1/10 機率再刷到，不做持久化的「拒絕」紀錄。
+# 不能重用 apply_level()：那支在 is_rare() 時會刻意不套色（防止 /titles/me/ 覆寫）。
+func decline_rare() -> void:
+	if not is_multiplayer_authority() or not is_rare():
+		return
+	appearance = clampi(Backend.level, 0, max(0, level_count() - 1))
+	_refresh_level_legend()
 
 # 只有 authority 該呼叫（appearance 是同步欄位）。夾在合法範圍內：後端等級數若比
 # 素材多（新增門檻但還沒畫圖），夾住比播不存在的動畫噴錯好。

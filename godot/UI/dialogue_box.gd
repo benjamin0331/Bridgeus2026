@@ -15,6 +15,10 @@ func _ready() -> void:
 	add_to_group("dialogue")   # 讓 NPC 用 group 找到我
 	_panel.hide()
 
+# 對話中要鎖住玩家移動（player_00.gd 每幀問 game_ui.blocks_movement()，那邊會轉問這裡）。
+func is_open() -> bool:
+	return _panel != null and _panel.visible
+
 # 由 NPC 傳入多句對話，從第一句開始顯示。
 func start_dialogue(lines: Array[String]) -> void:
 	if lines.is_empty():

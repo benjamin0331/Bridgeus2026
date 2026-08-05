@@ -22,10 +22,17 @@ var service_token := ""
 func _ready() -> void:
 	if OS.has_feature("web"):
 		var override = JavaScriptBridge.eval("window.bridgeus_api_base || ''", true)
+		var base := "/api"      # 同源拓樸預設
 		if typeof(override) == TYPE_STRING and override != "":
-			BASE_URL = override
-		else:
-			BASE_URL = "/api"   # 同源拓樸預設：相對路徑，瀏覽器自動補目前 origin
+			base = override
+		# ⚠️ HTTPRequest 不吃相對路徑：request() 會先 parse URL，沒有 http(s):// scheme
+		# 就直接回 ERR_INVALID_PARAMETER，請求根本送不出去（瀏覽器沒有機會補 origin）。
+		# 主功能傳過來的 window.bridgeus_api_base 是 "/api"，所以這裡一定要補成絕對網址。
+		# 這個 bug 讓 Web 版所有 API 全滅：/titles/me/ 拿不到 → 等級永遠 0（白青蛙）。
+		if base.begins_with("/"):
+			base = str(JavaScriptBridge.eval("window.location.origin", true)) + base
+		BASE_URL = base
+		print("[Backend] Web BASE_URL=%s" % BASE_URL)   # 同類問題只要看 console 第一行就知道
 	else:
 		service_token = OS.get_environment("GODOT_SERVICE_TOKEN")
 

@@ -14,7 +14,10 @@
   - Godot：`Backend.gd` 快取 `level`；`player_00.gd` 的 `appearance` 改成等級並播 `lvN_*`（原 `char_N_*` 保留但不播）；`game_ui.gd` 右上角等級色表；`player_00.tscn` 加 14 個 `lv0`–`lv6` 動畫。
   - 新增 `scripts/recolor_frog.py` 生成 `godot/Assets/ToxicFrog/Level/` 的 14 張 sprite，以及 `--rainbow` 產的 Lv777 稀有款彩虹蛙（每次進場 1/10 機率，不持久化；刷到時色表不標箭頭）。
   - 新增 `scripts/check_player_tscn.py`：tscn 等級動畫接線的靜態檢查（無 Godot CLI 時的替代驗證）。
-  - 稀有款恭喜彈窗（`game_ui.gd`）。等級彈窗**已移除**，改成常駐顯示在成就頁最上面：
+  - 稀有款恭喜彈窗（`game_ui.gd`）：版面照 Invite 面板（預設主題 Panel、絕對 offset 置中），
+    兩顆按鈕「太閃了，我不要」（→ `decline_rare()` 換回等級色，只影響該場）／「確定」。
+    彩虹彩度由 0.95 降到 0.62（原本螢光刺眼）。
+    等級彈窗**已移除**，改成常駐顯示在成就頁最上面：
     新增 `frontend/src/pages/LevelSummaryCard.jsx`（等級／場次／離下一級 + hover 小問號說明），
     掛在 `AchievementPage` 頂端，CSS 併入 `AchievementPage.css`。
     卡片背景是遊戲內實拍截圖 `public/frogs/map_bg.png`，青蛙上緣露出卡片外 1/3 做層次；尺寸全部由 `--frog-w`（clamp）推導，響應式等比縮放。
@@ -24,6 +27,17 @@
   - 新增 `frontend/src/components/ScatterDecor.jsx`＋CSS：首頁兩張入口卡的散落裝飾（大廳＝6 隻等級青蛙，知識庫＝5 個遊戲內表情），固定座標非亂數。
     `ActionCard` 多一個 `children` prop 供裝飾層掛載。`export_web_assets.py` 一併匯出 `emoji0`–`emoji4.png`（座標同 `Globals/Emoji.gd`）。
   - **新增 `docs/0804.md`**：交接給後端，列出等級功能上線後需要確認／補的事（成就系統的資料缺口為主；彈窗已讀狀態那項已因改成常駐顯示而取消）。
+  - 稀有款彈窗改用 anchor 定位到「中間下方」（原本照 Invite 寫死 1280 座標，
+    但 stretch 是 canvas_items+expand、實際視野更寬，所以會偏左；`.tscn` 裡的舊面板同樣有此問題，未修）。
+  - 修掉主功能交接的競態：`game.gd::_ready()` 在 Web 上先 `await _await_host_handoff()`
+    （輪詢 `window.bridgeus_token`，2 秒逾時）再讀那些變數，並重解析連線位址。
+    這是「偶爾等級表沒有場次／等級永遠 0」的根因——Godot 開機比 `GodotLobby.jsx::handleLoad` 設值更早時搶輸。
+  - 視窗開著時鎖移動：`game_ui.blocks_movement()` 從只擋 Read 擴充成擋 Read/Invite/Chat/Voice/稀有款彈窗
+    ＋ NPC 對話框（`dialogue` group 轉問 `dialogue_box.is_open()`）＋ 議題表單（`suppress_menu`）。
+    Menu 刻意不擋（那個面板靠走出範圍才關，鎖了會卡死）。
+  - 背景音樂：新增 `Globals/Bgm.gd` autoload（循環播放 `Assets/Audio/retro-bgm-chan-home-at-night-516298.mp3`，-14dB），
+    語音通話期間靜音、掛斷還原；靜音鉤子放在 `VoiceChat.start()/stop()`（語音唯一的開關點）。
+    `project.godot` 註冊 autoload。⚠️ mp3 還沒被 Godot 匯入過，第一次開編輯器會產生 `.import`，記得一起 commit。
   - ⚠️ 未完成：`godot/Assets/GreenBlue/`（`Assets/ToxicFrog/GreenBlue/` 的整份重複、無人引用）該刪但還沒刪。
 
 _（未追蹤的資料/設定檔 `.claude/`、`chroma_data/`、`*.csv`、`0530…txt` 不納入 commit。）_

@@ -47,6 +47,16 @@ func _ready():
 	if OS.has_feature("web"):
 		host_btn.hide()
 
+	# ⚠️ 先等主功能把 window.bridgeus_* 設好再讀。那些變數是在 iframe 的 load 事件裡設的
+	# （frontend GodotLobby.jsx::handleLoad），而 wasm/pck 被瀏覽器快取時 Godot 開機可能
+	# 更快，於是這裡有機會跑在設值之前。這就是「偶爾等級表沒有場次、偶爾又有」的原因：
+	# 搶輸 → 拿不到 token → 退回訪客登入 → 從不呼叫 /titles/me/ → 沒有門檻可顯示，
+	# 等級也永遠是 0（白青蛙）。連線位址 bridgeus_ws_url 吃同一組變數，搶輸會連到本機
+	# 預設位址，症狀更嚴重，所以等完之後要重解析一次。
+	if OS.has_feature("web"):
+		await _await_host_handoff()
+		_resolve_connection_settings()
+
 	# 身份交接：優先用主功能登入的真 JWT（window.bridgeus_token，見 Backend.gd）。
 	# 桌面開發、或還沒從主功能進來時，acquire_token_from_host() 回 false，
 	# 退回訪客登入方便本機測試——純測試用，不是正式使用者，正式環境不會走到這條。
@@ -61,6 +71,22 @@ func _ready():
 			else:
 				push_warning("訪客登入失敗 code=%d data=%s" % [code, data])
 		)
+
+# --- 等主功能交接 window.bridgeus_* ----------------------------------------
+# 輪詢到 window.bridgeus_token 有值就放行，逾時就放行（讓「直接開 build」或桌面測試
+# 照舊退回訪客登入，不要卡死在這裡）。UI 已經在上面接好了，等的期間畫面仍可操作。
+const HANDOFF_TIMEOUT_SEC := 2.0
+const HANDOFF_POLL_SEC := 0.05
+
+func _await_host_handoff() -> void:
+	var waited := 0.0
+	while waited < HANDOFF_TIMEOUT_SEC:
+		var t = JavaScriptBridge.eval("window.bridgeus_token || ''", true)
+		if typeof(t) == TYPE_STRING and t != "":
+			return
+		await get_tree().create_timer(HANDOFF_POLL_SEC).timeout
+		waited += HANDOFF_POLL_SEC
+	push_warning("等不到 window.bridgeus_token（%.1fs），改用訪客登入" % HANDOFF_TIMEOUT_SEC)
 
 # --- 連線位址解析 -----------------------------------------------------------
 # 桌面開發固定連本機；Web 版優先讀主功能交接的 window.bridgeus_ws_url

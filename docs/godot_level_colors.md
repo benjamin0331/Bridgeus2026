@@ -69,9 +69,13 @@ PostDialogueResponse 筆數
 
 兩個時機都要顧：HTTP 回應和玩家按 Host/Join 的先後不固定，所以 `player_00.gd::_ready` 會讀 `Backend.level`，而 `game.gd::_apply_level_to_local_player` 在回應到達時再補設一次。
 
+**Web 版這條鏈第一環曾整條斷掉**（2026-08-05 修）：`GodotLobby.jsx` 把 `window.bridgeus_api_base = '/api'` 交給 Godot，而 `HTTPRequest.request()` 會自己 parse URL、沒有 `http(s)://` scheme 就回 `ERR_INVALID_PARAMETER`，請求連送都沒送出去——瀏覽器根本沒機會補 origin。結果網頁版拿不到等級（永遠白青蛙，色表也沒有場次），但桌面版一切正常。`Backend.gd::_ready()` 現在把開頭是 `/` 的 base 用 `window.location.origin` 補成絕對網址，並印出 `[Backend] Web BASE_URL=…` 以便一眼確認。順帶：受影響的不只等級，Web 版的 `/issues/`、`/titles/me/` POST、表情回復全都在同一個坑裡。
+
 ## 四、右上角等級色表
 
-`game_ui.gd::_build_level_legend()` 在程式裡建（無 .tscn 改動）。豎排，每列＝一級：青蛙圖示 + `Lv{n} · {門檻}場`，玩家自己那一級加 `▸` 並提高不透明度。
+`game_ui.gd::_build_level_legend()` 在程式裡建（無 .tscn 改動）。豎排，每列＝一級：青蛙圖示 + `Lv{n} · {門檻}場`，玩家自己那一級加 `▶` 並提高不透明度。**沒有「等級」標題**——每列都寫著 `Lv{n}`，標題只是再說一次同一件事。
+
+箭頭是 `▶` (U+25B6) 而不是 `▸` (U+25B8)：後者不在 `Assets/fonts/NotoSansTC-Regular.otf` 裡。桌面版看起來正常是因為 Godot 會退回 Windows 系統字型補字，**Web 版沒有系統字型可退，缺字直接畫成豆腐框**。要在 Godot 的 UI 加任何符號前先查字型 cmap（`uv run --with fonttools python` 讀 `getBestCmap()`）。
 
 **圖示用青蛙 sprite 本身，不是色塊** ——這樣顏色只有 `recolor_frog.py` 一個來源，UI 不會抄一份 hex 出來跟素材走鐘。等級數也是逐級探測 `Frog_LvN_Idle.png` 是否存在，跟 `player_00.gd::level_count()` 同一個原則：加一級只要加素材＋動畫。
 
@@ -81,6 +85,7 @@ PostDialogueResponse 筆數
 |---|---|
 | `guest_login`（桌面測試）| 每次建新 User → 一律 Lv0 白。不打 `/titles/me/` |
 | 後端沒開 / 請求失敗 | `Backend.level` 維持 0，遊戲照跑；色表只顯示 Lv 編號、不顯示場次 |
+| **色表沒有「· N場」** | 就是上一列那個情況的判斷依據：門檻是 `/titles/me/` 給的，沒場次＝這支請求沒成功，青蛙顏色也一定不對 |
 | 對話中升級 | **不即時更新**，下次進場才變色。省掉整條推播路徑 |
 | 升級提示 | Godot 內**不跳彈窗**。等級與場次常駐顯示在主功能成就頁最上面（見第七節） |
 | 刷到稀有款 | 跳恭喜彈窗（每次刷到都跳）。這是 Godot 裡唯一的彈窗 |
@@ -91,11 +96,27 @@ PostDialogueResponse 筆數
 **每次進入 Godot 有 1/10 機率**刷到，取代該場的等級色青蛙。不持久化——下次進場重新擲，沒刷到就正常顯示等級色。
 
 - 素材：`Frog_Lv777_{Idle,Hop}.png`，由 `recolor_frog.py --rainbow` 產生。色相由像素座標決定（斜向掃過整隻，含肚子），每格推進 1/幀數 → 播放時彩虹會流動，一輪動畫剛好一個循環。描邊與眼睛不彩虹化，否則整隻失去輪廓。
+- **彩度壓在 `RAINBOW_S = 0.42`**：第一版 0.95 在遊戲裡是螢光級、0.62 仍然刺眼，0.34 以下又洗成粉彩、看不出是「炫彩」。降彩度會讓整隻變灰，所以明度階同時各提一點補回來。⚠️ 這個值要在**遊戲比例**下判斷（相機 2.5x、貼在真實地圖上）——縮圖上看起來剛好的值，放進遊戲通常還是太亮。
 - 觸發：`player_00.gd::roll_appearance()`，在 `_ready()`（authority）擲一次。混入 peer id 當亂源，因為多開實例同時啟動時時間種子會撞在一起。
 - **777 是哨兵值，不是第 777 級**：`_update_anim` 用 `"lv%d_%s"` 組動畫名，所以 `appearance = 777` 就自然播到 `lv777_idle`，零對映程式碼，而且照樣走 MultiplayerSynchronizer → 別人也看得到你刷到稀有款。
 - `apply_level()` 在 `is_rare()` 時不套等級色（否則 `/titles/me/` 回來會把彩虹蛙覆寫掉），但色表照刷。
 - `level_count()` 是從 0 依序探測到缺號為止，所以 777 不會被算成一個等級。
 - **色表不標箭頭**：刷到稀有款時 `refresh_level_legend(false)`，整欄都沒有 `▸`、也不高亮任何一列，因為玩家的青蛙不屬於任何一級。
+
+### 恭喜彈窗
+
+`game_ui.gd::_build_rare_popup()`。版面**刻意照抄 `GameUI.tscn` 裡的 Invite 面板**：預設主題的 `Panel`、同樣 360×170 的框與位置、18px 自動換行標籤、底部兩顆按鈕（左否定右肯定）。
+
+早期版本用自訂 `StyleBoxFlat` 做深色圓角框，跟遊戲裡其他面板不是同一套，看起來像外掛上去的；而且用 `set_anchors_preset(PRESET_CENTER)` 置中會失敗——那支會依「當時的 rect」回算 offset，而建構當下 rect 是 0×0，結果整個框跑到畫面左上角。改用跟 Invite 一樣的絕對 offset 就沒這個問題。
+
+兩顆按鈕：
+
+| 按鈕 | 行為 |
+|---|---|
+| 太閃了，我不要 | `player_00.gd::decline_rare()` —— 放棄這次的稀有款，換回自己的等級色。**只影響這一場**，下次進場照樣有 1/10 機率再刷到，不做持久化的「拒絕」紀錄 |
+| 確定 | 只關閉彈窗，留著彩虹蛙 |
+
+`decline_rare()` 不能重用 `apply_level()`：那支在 `is_rare()` 時會刻意不套色（防止 `/titles/me/` 覆寫）。`show_rare_popup(owner)` 要帶入玩家節點，否則 UI 沒有對象可以叫。
 
 ## 六、主功能成就頁的等級摘要
 
