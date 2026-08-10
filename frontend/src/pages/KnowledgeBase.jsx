@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api/client';
+import { useFavorites } from '../hooks/useFavorites';
+import FavoriteStarButton from '../components/FavoriteStarButton';
 import './KnowledgeBase.css';
 
 const TRENDING_DISPLAY_LIMIT = 4;
@@ -49,6 +51,9 @@ const KnowledgeBase = () => {
   const [topConversationsLoaded, setTopConversationsLoaded] = useState(false);
   const [videos, setVideos] = useState([]);
   const [videosLoaded, setVideosLoaded] = useState(false);
+
+  const { isFavorited: isViewpointFavorited, toggleFavorite: toggleViewpointFavorite } = useFavorites('viewpoint');
+  const { isFavorited: isVideoFavorited, toggleFavorite: toggleVideoFavorite } = useFavorites('video');
   // 同一場對話分組後預設折疊，只顯示分數最高的第一筆；點箭頭才展開看其他筆。
   const [expandedGroupIds, setExpandedGroupIds] = useState(() => new Set());
   // 點影片卡片直接在站內彈窗播放，不再另開分頁——後端 media_views.serve_media
@@ -286,7 +291,13 @@ const KnowledgeBase = () => {
                           <p className="kb-highlight-quote-text">{viewpoint.ai_response_text}</p>
                         </div>
                       )}
-                      <div className="kb-highlight-footer">被引用 {viewpoint.citation_count} 次</div>
+                      <div className="kb-highlight-footer">
+                        <span>被引用 {viewpoint.citation_count} 次</span>
+                        <FavoriteStarButton
+                          active={isViewpointFavorited(viewpoint.id)}
+                          onToggle={() => toggleViewpointFavorite(viewpoint)}
+                        />
+                      </div>
                     </div>
                   ))}
                   {hasMultiple && (
@@ -344,7 +355,13 @@ const KnowledgeBase = () => {
                         ? { backgroundImage: `url(${video.thumbnail_url})` }
                         : undefined
                     }
-                  />
+                  >
+                    <FavoriteStarButton
+                      className="favorite-star-btn--overlay"
+                      active={isVideoFavorited(video.id)}
+                      onToggle={() => toggleVideoFavorite(video)}
+                    />
+                  </div>
                   <div className="kb-video-title">{video.title}</div>
                   {video.description && (
                     <div className="kb-video-description">{video.description}</div>

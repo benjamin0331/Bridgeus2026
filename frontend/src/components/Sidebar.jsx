@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNotifications } from '../context/NotificationsContext';
 
-function Sidebar({ navigate, isTopicPage = false, isResearcher = false }) {
+function Sidebar({ navigate, isTopicPage = false }) {
   const [isOpen, setIsOpen] = useState(false);
   const { hasUnread } = useNotifications();
   const handleNavigate = (path) => {
@@ -47,9 +47,9 @@ function Sidebar({ navigate, isTopicPage = false, isResearcher = false }) {
           <button
             className="sidebar-icon-btn"
             type="button"
-            onClick={() => handleNavigate('/kb')}
-            aria-label="觀點知識庫"
-            title="觀點知識庫"
+            onClick={() => handleNavigate('/favorites')}
+            aria-label="我的收藏"
+            title="我的收藏"
           >
             <img src="/star.png" alt="" className="utility-icon" />
           </button>
@@ -81,19 +81,9 @@ function Sidebar({ navigate, isTopicPage = false, isResearcher = false }) {
           >
             <img src="/settings.png" alt="" className="utility-icon" />
           </button>
-          {/* 只有屬於「研究者」Group 的帳號才看得到，實際存取控制在後端
-              IsResearcher，這裡只是決定要不要顯示連結。 */}
-          {isResearcher && (
-            <button
-              className="sidebar-icon-btn"
-              type="button"
-              onClick={() => handleNavigate('/viewpoint-review')}
-              aria-label="觀點知識庫審核"
-              title="觀點知識庫審核"
-            >
-              <img src="/review.svg" alt="" className="utility-icon" />
-            </button>
-          )}
+          {/* 觀點審核入口已改由設定頁的分頁列（SettingsReviewTabs）提供，
+              側邊欄不再另外放一顆研究者專用按鈕，所以這個元件也不再需要
+              isResearcher prop。實際存取控制仍在後端 IsResearcher。 */}
         </div>
 
         {/* 回到首頁導航按鈕：點擊後執行 navigate('/') 跳轉 */}

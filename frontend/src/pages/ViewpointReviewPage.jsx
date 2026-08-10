@@ -1,11 +1,12 @@
 import { useEffect, useState, useMemo } from 'react';
 import api from '../api/client';
+import SettingsReviewTabs from '../components/SettingsReviewTabs';
 import './ViewpointReviewPage.css';
 
-// 研究者專用頁面。Sidebar 只在 user.isResearcher 時才顯示連結，但實際存取
-// 控制一律在後端 IsResearcher（api/permissions.py）：這裡列的是還沒定案的
-// 候選觀點，不是給參與者看的東西，一般帳號直接開 /viewpoint-review 也只會
-// 收到 403。
+// 研究者專用頁面，從設定頁的「審核」tab 切換過來。頂部 tab 只在
+// user.isResearcher 時才顯示，但實際存取控制一律在後端 IsResearcher
+// （api/permissions.py）：這裡列的是還沒定案的候選觀點，不是給參與者看的
+// 東西，一般帳號直接開 /viewpoint-review 也只會收到 403。
 
 const TABS = [
   { id: 'pending', label: '待審核' },
@@ -55,7 +56,8 @@ function groupItemsBySummary(items) {
   return groups;
 }
 
-function ViewpointReviewPage() {
+function ViewpointReviewPage({ user }) {
+  const isResearcher = Boolean(user?.isResearcher);
   const [status, setStatus] = useState('pending');
   const [topics, setTopics] = useState([]);
   const [selectedTopicId, setSelectedTopicId] = useState(null);
@@ -167,7 +169,10 @@ function ViewpointReviewPage() {
   };
 
   return (
-    <div className="vr-page">
+    <div className="vr-page-shell">
+      {isResearcher && <SettingsReviewTabs active="review" />}
+
+      <div className="vr-page">
       <section className="vr-list-panel">
         <div className="vr-heading">
           <span className="vr-kicker">M6 · Step 4</span>
@@ -341,6 +346,7 @@ function ViewpointReviewPage() {
           </>
         )}
       </section>
+      </div>
     </div>
   );
 }

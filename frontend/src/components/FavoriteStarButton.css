@@ -1,0 +1,37 @@
+.favorite-star-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #b8b0a6;
+  cursor: pointer;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.favorite-star-btn:hover {
+  color: #d9a441;
+  background-color: rgba(0, 0, 0, 0.06);
+}
+
+.favorite-star-btn--active {
+  color: #e0a020;
+}
+
+/* 疊在圖片（如影片縮圖）上的星星：需要背景墊底，不然淺色星星會糊在圖片上看不清楚 */
+.favorite-star-btn--overlay {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  background-color: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+}
+
+.favorite-star-btn--overlay:hover {
+  background-color: rgba(255, 255, 255, 0.95);
+}

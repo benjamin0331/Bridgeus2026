@@ -7,6 +7,7 @@ import SurveyModal from '../components/SurveyModal';
 import StanceReuseModal from '../components/StanceReuseModal';
 import api from '../api/client';
 import { useNotifications } from '../context/NotificationsContext';
+import { useMatchingHeartbeat } from '../context/MatchingHeartbeatContext';
 
 const MATCHING_POLL_INTERVAL_MS = 3000;
 const MATCH_SCROLL_BOTTOM_THRESHOLD_PX = 96;
@@ -311,6 +312,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
   const location = useLocation();
   const navigate = useNavigate();
   const { markRoomRead } = useNotifications();
+  const { keepAlive: keepMatchingQueueAlive, release: releaseMatchingQueueHeartbeat } = useMatchingHeartbeat();
   const mode = useMemo(() => {
     // 伺服器是分組的權威，網址不是。後端的入口把關存在的唯一理由就是
     // 「?mode= 只是 query string，受試者改個網址就能自己換組」（見
@@ -866,6 +868,19 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     matchingState?.status,
     showSurvey,
   ]);
+
+  // 排隊心跳提升到 App 根層級的 MatchingHeartbeatProvider（見該檔案註解），
+  // 讓使用者離開這個畫面（切去別頁）時排隊仍會繼續刷新、不會被後端逾時機制
+  // 誤判放棄。這裡只負責「還在排隊時去註冊」，真正停止只交給 provider 自己
+  // （偵測到狀態不再是 matching）或使用者按下「取消配對」（見
+  // handleCancelMatching），刻意不用 effect cleanup 觸發，避免 unmount 又把
+  // 心跳一起停掉。
+  useEffect(() => {
+    if (!isMatchingMode || matchingState?.status !== 'matching') {
+      return;
+    }
+    keepMatchingQueueAlive(id);
+  }, [id, isMatchingMode, keepMatchingQueueAlive, matchingState?.status]);
 
   useEffect(() => {
     setSurvey(null);
@@ -1662,6 +1677,12 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       return undefined;
     }
 
+    // 只在瀏覽器真的離開頁面（關分頁、重新整理、導去外部網址）時才自動取消排隊。
+    // 這裡刻意不在 effect 的 cleanup 裡呼叫 triggerAutoCancelMatchingQueue——
+    // cleanup 在 React Router 站內導航造成的 unmount 時也會跑，若也取消，
+    // 使用者只是切去別頁看一下就會把排隊中的配對砍掉。真正「使用者離開配對
+    // 畫面但沒按取消」的情況交給後端 heartbeat 逾時機制（見 matcher.py
+    // expire_stale_matching_entries）兜底回收，前端不用搶著清。
     const handlePageHide = () => {
       triggerAutoCancelMatchingQueue({ keepalive: true });
     };
@@ -1670,7 +1691,6 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
 
     return () => {
       window.removeEventListener('pagehide', handlePageHide);
-      triggerAutoCancelMatchingQueue({ keepalive: true });
     };
   }, [isMatchingMode, triggerAutoCancelMatchingQueue]);
 
@@ -2377,6 +2397,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       });
 
       cancelQueueRequestSentRef.current = true;
+      releaseMatchingQueueHeartbeat(id);
       setMatchingState(response.data);
       setShowSurvey(false);
       setMatchMessages([]);
@@ -2444,6 +2465,11 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     setPendingMatchSuggestion(null);
     setMatchSuggestionDraft(null);
     setStanceRedoConfirmed(false);
+    // matchingState 這時還停在 'closed'/'cancelled'，若只開問卷不清掉，下面
+    // 那個「問卷開著但 status 不是 idle 就強制關閉」的保險絲 effect
+    // （見該 effect 註解）會在下一個 render 立刻把問卷關掉，使用者只會看到
+    // 問卷閃一下就消失。清成 null 讓它跟一開始進頁面時的狀態一致。
+    setMatchingState(null);
     setShowSurvey(true);
   };
 
@@ -2673,7 +2699,11 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
             </div>
           )}
           {pendingMatchSuggestion && (
-            <div className="match-assist-card">
+            <div
+              className={`match-assist-card${
+                pendingMatchSuggestion.category === 'redirect' ? ' pinned' : ''
+              }`}
+            >
               <div className="match-assist-content">
                 <span className="match-assist-label">
                   {formatSuggestionCategory(pendingMatchSuggestion.category)}
