@@ -1,0 +1,23 @@
+/* 散落裝飾層：鋪滿整張卡片但完全不吃事件，卡片本身的 onClick 照常運作。 */
+.scatter-decor {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;      /* 不要溢出卡片圓角 */
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.scatter-decor img {
+  position: absolute;
+  height: auto;
+  image-rendering: pixelated;   /* 像素畫放大不要模糊 */
+  filter: drop-shadow(0 2px 2px rgba(47, 39, 34, 0.22));
+}
+
+/* 窄畫面把整層縮小：對整層做 scale 而不是逐張改寬度，位置會一起往中間收，
+   剛好避開變窄後更靠近的標題文字。（不用 zoom，那個不是標準屬性。） */
+@media (max-width: 640px) {
+  .scatter-decor {
+    transform: scale(0.72);
+  }
+}

@@ -4035,21 +4035,57 @@ class IssueListCreateView(APIView):
 _HEX_COLOR_RE = re.compile(r"#[0-9a-fA-F]{6}")
 
 
+# 等級門檻：index = 等級（Lv0–Lv6），值 = 該級最低累積完成場次。Godot 大廳用它決定
+# 玩家青蛙的顏色（見 godot/Entities/player/player_00.gd 與 scripts/recolor_frog.py）。
+#
+# 「完成」= 送出後測，也就是 PostDialogueResponse 有一筆紀錄 —— 這與成就頁「完成前測
+# 與後測」「完成完整聊天流程」是同一個定義，也是唯一每場對話都留下一筆的耐久紀錄。
+# H-H 與 H-AI 都算（不看 experiment_condition）。
+#
+# 門檻由指導教授指定，改這個 tuple 就能調；等級數要跟 SpriteFrames 裡的 lvN 動畫數一致。
+# 級距刻意遞增（+2 +3 +5 +7 +10 +13），所以後段升級愈來愈慢。
+LEVEL_THRESHOLDS = (0, 2, 5, 10, 17, 27, 40)
+
+
+def dialogue_level(count: int) -> int:
+    """累積完成場次 → 等級（0–6）。
+
+    Lv0 的門檻是 0，所以每個人一開始就有顏色（白青蛙）。回傳值預設 0 是防禦性的：
+    就算哪天門檻表被改成 Lv0 > 0，新玩家也還是拿得到一個合法等級而不是沒有等級。
+    """
+    level = 0
+    for i, need in enumerate(LEVEL_THRESHOLDS):
+        if count >= need:
+            level = i
+    return level
+
+
 class TitleMeView(APIView):
-    """GET/POST /api/titles/me/ — 玩家在 Godot 大廳看/選自己擁有的頭銜。
+    """GET/POST /api/titles/me/ — 玩家在 Godot 大廳看/選自己擁有的頭銜，順便回等級。
+
     頭銜本身怎麼解鎖由主功能成就系統決定（見 UserTitle 模型註解），這裡只管
-    「我有哪些、目前選哪個」。契約見 godot-backend-integration.md §3.1。"""
+    「我有哪些、目前選哪個」。契約見 godot-backend-integration.md §3.1。
+
+    等級（青蛙顏色）刻意掛在這支而不是新開端點：Godot 大廳本來就會打它拿頭銜，
+    等級是純衍生值（不存欄位、無 migration），順路回傳就好。頭銜與等級語意分開 ——
+    頭銜是玩家自選的展示文字，等級是客觀資歷。
+    """
 
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         owned = UserTitle.objects.filter(user=request.user).select_related("title")
         selected = next((ut for ut in owned if ut.is_selected), None)
+        count = PostDialogueResponse.objects.filter(user=request.user).count()
         return Response(
             {
                 "owned": [{"id": ut.title_id, "name": ut.title.name} for ut in owned],
                 "selected_id": selected.title_id if selected else None,
                 "color": (selected.color or selected.title.color) if selected else None,
+                "dialogue_count": count,
+                "level": dialogue_level(count),
+                # 讓 Godot 能顯示「再 N 場升級」而不必自己抄一份門檻表
+                "level_thresholds": list(LEVEL_THRESHOLDS),
             }
         )
 

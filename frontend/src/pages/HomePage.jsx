@@ -1,5 +1,6 @@
 import IssueCard from '../components/IssueCard';
 import ActionCard from '../components/ActionCard';
+import ScatterDecor from '../components/ScatterDecor';
 import './HomePage.css';
 
 function HomePage({ navigate, userName, issues, issuesLoaded, entryMode }) {
@@ -28,7 +29,10 @@ function HomePage({ navigate, userName, issues, issuesLoaded, entryMode }) {
                         text="虛擬大廳"
                         className="virtual-chat-entry"
                         onClick={() => navigate('/chat')} 
-                    />
+                    >
+                        {/* 散落各等級青蛙 + 遊戲內表情，大小角度都不規則 */}
+                        <ScatterDecor />
+                    </ActionCard>
                 </aside>
             </div>
         </div>

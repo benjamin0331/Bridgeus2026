@@ -44,8 +44,13 @@ var _nearby: Array = []   # other player nodes currently in range (authority onl
 var _seated := false          # 坐上木樁等待配對時鎖住移動
 var _original_pos := Vector2.ZERO
 
-# 外觀：進來時 authority 隨機擲一個角色 index，透過 synchronizer 同步（spawn=true → 晚進的人也對）。
-# moving 由 authority 依移動狀態設；每個 peer 依這兩者播 char_{appearance}_{idle|run}。
+# 外觀＝等級：appearance 就是玩家等級（0–6），決定青蛙顏色。authority 在 _ready() 從
+# Backend.level 帶入，透過 synchronizer 同步（spawn=true → 晚進的人也看到正確顏色）。
+# moving 由 authority 依移動狀態設；每個 peer 依這兩者播 lv{appearance}_{idle|run}。
+#
+# 等級來源是後端 GET /api/titles/me/ 的 level（累積完成對話場次換算，門檻見
+# backend/api/views.py::LEVEL_THRESHOLDS）；顏色對照見 scripts/recolor_frog.py。
+# 舊的 char_N_* 動畫還留在 SpriteFrames 裡但已不播——保留是為了隨時能退回隨機外觀。
 var appearance := 0
 var moving := false
 var _scaled_for := -1   # 已依哪個 appearance 套過縮放（避免每幀重算，也讓 scale 與動畫切換脫鉤）
@@ -76,16 +81,10 @@ func _ready():
 	var spawn = get_parent().get_node_or_null("SpawnPoint")
 	if spawn:
 		position = spawn.position
-	# 隨機外觀：數 SpriteFrames 裡有幾個 char_N_idle（加新角色不用改這裡），擲一個。
-	var count = 0
-	for n in $AnimatedSprite2D.sprite_frames.get_animation_names():
-		if n.begins_with("char_") and n.ends_with("_idle"):
-			count += 1
-	if count > 0:
-		# 混入 peer id：多開實例常同時啟動、randomize() 用時間當種子會撞在一起，
-		# 加上各自唯一的 id 就能岔開，不會前幾個都一樣。
-		appearance = (randi() + name.to_int()) % count
-		print("[外觀] 玩家 %s → appearance %d（共 %d 種）" % [name, appearance, count])
+	# 外觀＝等級，但先擲 1/10 的稀有款彩虹蛙（見 roll_appearance）。沒刷到就套等級色；
+	# 等級還沒抓回來時是 0（Lv0 白），game.gd 在 /titles/me/ 回來後會補設一次
+	# （見 _apply_level_to_local_player）。
+	roll_appearance()
 	# Only the locally controlled player needs proximity detection + UI.
 	_make_proximity_area()
 
@@ -489,17 +488,88 @@ func _process(_delta):
 		if f.size() > 0:
 			receive_voice.rpc_id(_voice_peer, f)
 
-# 每個 peer 都跑：依同步來的 appearance + moving 播對應動畫（idle/run）。
+# SpriteFrames 裡有幾個 lvN_idle＝支援幾個等級。加一個等級只要加兩個動畫，不用改程式。
+# 靜態的：每個 peer 的 SpriteFrames 都一樣，算一次就夠。
+static var _level_count := -1
+
+func level_count() -> int:
+	if _level_count < 0:
+		# 從 0 依序探測到缺號為止，而不是數所有 lv*_idle。SpriteFrames 裡有 lv777_idle
+		# （彩虹蛙彩蛋，掛著沒接系統），用 pattern match 會把它算成第 8 級，clampi 的上限
+		# 就變成 7，而 lv7_idle 並不存在。依序探測天然忽略這種非連號的額外動畫。
+		# 型別要明寫：$AnimatedSprite2D 是無型別的 Node，取出來的 sprite_frames 是
+		# Variant，用 := 推不出型別會 parse error。
+		var frames: SpriteFrames = $AnimatedSprite2D.sprite_frames
+		_level_count = 0
+		while frames.has_animation("lv%d_idle" % _level_count):
+			_level_count += 1
+	return _level_count
+
+# --- 稀有款彩虹蛙（Lv777 彩蛋）--------------------------------------------
+# 777 不是「第 777 級」，是刻意選來對上 SpriteFrames 裡 lv777_idle / lv777_run 的哨兵值：
+# _update_anim 用 "lv%d_%s" 組動畫名，所以 appearance = 777 就自然播到彩虹蛙，不需要
+# 任何對映程式碼，也照樣走 MultiplayerSynchronizer 同步 → 別人也看得到你刷到稀有款。
+# level_count() 是依序探測到缺號為止，所以 777 不會被算成一個等級（見上方註解）。
+const RAINBOW_APPEARANCE := 777
+const RAINBOW_DENOM := 10       # 1/10 機率
+
+# 每次進場擲一次，不持久化：這一場刷到就是彩虹蛙，下次進來重新擲，沒刷到就正常顯示等級色。
+func roll_appearance() -> void:
+	if not is_multiplayer_authority():
+		return
+	# 混入 peer id：多開實例常同時啟動，時間種子會撞在一起、前幾個都擲出同一個結果
+	# （沿用原本隨機外觀的做法）。
+	if (randi() + name.to_int()) % RAINBOW_DENOM == 0:
+		appearance = RAINBOW_APPEARANCE
+		print("[外觀] 玩家 %s 刷到稀有款彩虹蛙" % name)
+		_refresh_level_legend()
+		for ui in get_tree().get_nodes_in_group("issue_ui"):
+			ui.show_rare_popup(self)
+	else:
+		apply_level(Backend.level)
+
+func is_rare() -> bool:
+	return appearance == RAINBOW_APPEARANCE
+
+# 玩家在彈窗按「太閃了，我不要」：放棄這次的稀有款，換回自己的等級色。
+# 只影響這一場 —— 下次進場照樣有 1/10 機率再刷到，不做持久化的「拒絕」紀錄。
+# 不能重用 apply_level()：那支在 is_rare() 時會刻意不套色（防止 /titles/me/ 覆寫）。
+func decline_rare() -> void:
+	if not is_multiplayer_authority() or not is_rare():
+		return
+	appearance = clampi(Backend.level, 0, max(0, level_count() - 1))
+	_refresh_level_legend()
+
+# 只有 authority 該呼叫（appearance 是同步欄位）。夾在合法範圍內：後端等級數若比
+# 素材多（新增門檻但還沒畫圖），夾住比播不存在的動畫噴錯好。
+# 刷到稀有款的話不套等級色 —— 這支會在 /titles/me/ 回來後被 game.gd 再呼叫一次，
+# 沒有這個判斷就會把彩虹蛙覆寫掉。色表仍然要刷（要填場次門檻、要關掉箭頭）。
+func apply_level(level: int) -> void:
+	if not is_multiplayer_authority():
+		return
+	if is_rare():
+		_refresh_level_legend()   # 稀有款：只刷色表（填場次門檻、關箭頭），不套等級色
+		return
+	appearance = clampi(level, 0, max(0, level_count() - 1))
+	_refresh_level_legend()
+
+# 右上角色表：刷到稀有款就不標箭頭（玩家的青蛙不屬於任何一級）。
+# 由 player 呼叫 UI 是既有慣例（同 ui.refresh_menu()），UI 本身不含 RPC。
+func _refresh_level_legend() -> void:
+	for ui in get_tree().get_nodes_in_group("issue_ui"):
+		ui.refresh_level_legend(not is_rare())
+
+# 每個 peer 都跑：依同步來的 appearance（＝等級）+ moving 播對應動畫（idle/run）。
 func _update_anim():
 	var s = $AnimatedSprite2D
-	var want = "char_%d_%s" % [appearance, "run" if moving else "idle"]
+	var want = "lv%d_%s" % [appearance, "run" if moving else "idle"]
 	if s.animation != want:
 		s.play(want)
 	# 縮放依 appearance 設一次即可（與 idle/run 切換脫鉤，否則移動時才套用會「忽大忽小」）。
 	if _scaled_for != appearance:
 		_scaled_for = appearance
 		# 依格子高度正規化到 SPRITE_PX 高（統一 48px 素材 → scale 1 → 跟青蛙一樣大）。
-		var tex = s.sprite_frames.get_frame_texture("char_%d_idle" % appearance, 0)
+		var tex = s.sprite_frames.get_frame_texture("lv%d_idle" % appearance, 0)
 		if tex and tex.get_height() > 0:
 			var k = SPRITE_PX / float(tex.get_height())
 			s.scale = Vector2(k, k)

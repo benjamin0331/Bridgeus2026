@@ -58,12 +58,42 @@ func _ready():
 	if OS.has_feature("web"):
 		host_btn.hide()
 
+	# ⚠️ 先等主功能把 window.bridgeus_* 設好再讀。那些變數是在 iframe 的 load 事件裡設的
+	# （frontend GodotLobby.jsx::handleLoad），而 wasm/pck 被瀏覽器快取時 Godot 開機可能
+	# 更快，於是這裡有機會跑在設值之前。這就是「偶爾等級表沒有場次、偶爾又有」的原因：
+	# 搶輸 → 拿不到 token → 從不呼叫 /titles/me/ → 沒有門檻可顯示，等級也永遠是 0
+	# （白青蛙）。連線位址 bridgeus_ws_url 吃同一組變數，搶輸會連到本機預設位址，
+	# 症狀更嚴重，所以等完之後要重解析一次。
+	# handleLoad 是一支同步函式，四個變數同一個 tick 設完，所以只輪詢 token 就夠。
+	# 唯一等不到的是 Backend.gd 的 _ready()（autoload 先於場景初始化，來不及等）——
+	# 它讀的 bridgeus_api_base 搶輸時會退回 origin + "/api"，跟宿主頁給的值在同源
+	# 拓樸下相同，所以無害。
+	if OS.has_feature("web"):
+		await _await_host_handoff()
+		_resolve_connection_settings()
+
 	# 身份交接：主功能登入的 JWT（window.bridgeus_token）只給 client 自己打
 	# 議題/頭銜 API 用。對遊戲 server 的身份識別走一次性入場券（見 _on_join_pressed）。
 	# 拿不到 token（桌面開發、直開 export）就沒有後端持久化功能，純本地遊玩——
 	# 訪客登入已移除，不會再產生無主帳號。
 	if Backend.acquire_token_from_host():
 		_fetch_banner_options()   # 真登入才有頭銜；本地模式維持假頭銜
+
+# --- 等主功能交接 window.bridgeus_* ----------------------------------------
+# 輪詢到 window.bridgeus_token 有值就放行，逾時也放行（讓「直接開 build」或桌面測試
+# 照舊退回無後端的純本地遊玩，不要卡死在這裡）。UI 已經在上面接好了，等的期間畫面仍可操作。
+const HANDOFF_TIMEOUT_SEC := 2.0
+const HANDOFF_POLL_SEC := 0.05
+
+func _await_host_handoff() -> void:
+	var waited := 0.0
+	while waited < HANDOFF_TIMEOUT_SEC:
+		var t = JavaScriptBridge.eval("window.bridgeus_token || ''", true)
+		if typeof(t) == TYPE_STRING and t != "":
+			return
+		await get_tree().create_timer(HANDOFF_POLL_SEC).timeout
+		waited += HANDOFF_POLL_SEC
+	push_warning("等不到 window.bridgeus_token（%.1fs），改為無後端的本地遊玩" % HANDOFF_TIMEOUT_SEC)
 
 # --- 連線位址解析 -----------------------------------------------------------
 # 桌面開發固定連本機；Web 版優先讀主功能交接的 window.bridgeus_ws_url
@@ -406,7 +436,24 @@ func _fetch_banner_options() -> void:
 		var c = data.get("color")
 		if typeof(c) == TYPE_STRING and c != "":
 			color_btn.color = Color.html(c)
+		# 這支同時帶回等級（Backend.get_my_titles 已快取進 Backend.level）。等級決定
+		# 青蛙顏色，而這個 HTTP 回應跟玩家按 Host/Join 的時機無關，所以兩邊都要顧：
+		# 先生成的話這裡補設，後生成的話 player_00.gd::_ready 自己讀 Backend.level。
+		_apply_level_to_local_player()
 	)
+
+# 把 Backend.level 套到自己的青蛙上（appearance 是同步欄位，改了就會廣播出去）。
+# apply_level 內部會順便刷右上角色表（含「你在這一級」的箭頭與場次門檻），而且刷到
+# 稀有款彩虹蛙時會自己擋掉等級色的覆寫，所以這裡不需要判斷稀有與否。
+func _apply_level_to_local_player() -> void:
+	var p = _local_player()
+	if p:
+		p.apply_level(Backend.level)
+		return
+	# 玩家還沒生成（HTTP 比 Host/Join 先回來）：色表先把場次門檻填上，箭頭等
+	# player_00.gd::roll_appearance 擲完稀有款後自己刷。
+	for ui in get_tree().get_nodes_in_group("issue_ui"):
+		ui.refresh_level_legend(true)
 
 # 選了頭銜 → 用目前調色盤顏色貼到自己頭上（P2P 廣播）＋有真 id 才回寫後端。
 func _on_banner_selected(index: int) -> void:

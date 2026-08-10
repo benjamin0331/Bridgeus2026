@@ -16,6 +16,10 @@ var _playback: AudioStreamGeneratorPlayback = null
 func start() -> void:
 	if _bus_idx != -1:
 		return
+	# 通話時把 BGM 靜音。掛在這裡而不是 UI：start()/stop() 是語音唯一的開關點
+	# （player_00.gd 的 _start_voice/_stop_voice 都經過這裡），放這邊就不可能有
+	# 某條路徑忘記還原音量。
+	Bgm.set_muted(true)
 	# 動態建 VoiceMic bus
 	_bus_idx = AudioServer.bus_count
 	AudioServer.add_bus(_bus_idx)
@@ -78,6 +82,7 @@ func play_frames(frames: PackedVector2Array) -> void:
 		_playback.push_buffer(frames.slice(0, avail))
 
 func stop() -> void:
+	Bgm.set_muted(false)   # 見 start() 的說明
 	if _mic:
 		_mic.stop()
 		_mic.queue_free()

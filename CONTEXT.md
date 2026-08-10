@@ -11,6 +11,7 @@
 
 （目前無）
 
+
 _（未追蹤的資料/設定檔 `.claude/`、`chroma_data/`、`*.csv`、`0530…txt` 不納入 commit。）_
 
 ---
@@ -204,6 +205,8 @@ npm run dev      # Vite，port 5173
 - [ ] CCND 前端視覺化 / WebSocket 推送收尾
 - [ ] M6：立場偏移量化報告、觀點知識庫沉澱
 - [ ] 清理 `chat` app dead code（drift/session/stalemate/topic/ai_assist + 對應 tests）
+- [ ] 刪 `godot/Assets/GreenBlue/`（`Assets/ToxicFrog/GreenBlue/` 的整份重複、無人引用；併 feat/Ceeeuu 時帶進來的遺留）
+- [ ] `LevelSummaryCard`（成就頁等級卡）在 `/api/titles/me/` 取不到時會顯示「示意資料 · 後端尚未串接」；確認正式環境是否還會走到這個 fallback，見 `docs/0804.md` §2.1
 - [ ] `docs/BridgeUs_API_Spec.md` 更新（新增 `platform-feedback`、`post-questionnaire` 等）
 
 **基礎設施**

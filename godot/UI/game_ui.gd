@@ -59,6 +59,186 @@ func _ready():
 	_pitch_slider.value_changed.connect(_on_pitch)
 	_build_reaction_buttons()
 	_build_reaction_counts()
+	_build_level_legend()
+	_build_rare_popup()
+
+# --- 等級色表（畫面右上角）------------------------------------------------
+# 讓玩家看得懂「哪個顏色是哪一級」。圖示直接用青蛙 sprite 本身，不是色塊 ——
+# 這樣顏色只有 scripts/recolor_frog.py 一個來源，UI 不會抄一份 hex 出來跟素材走鐘。
+const LEGEND_SPRITE := "res://Assets/ToxicFrog/Level/Frog_Lv%d_Idle.png"
+const LEGEND_MAX := 16          # 上限保護：檔案是逐級探測的，避免哪天出錯就無限迴圈
+# 青蛙在 48×48 的格子裡只佔這一塊，其餘是透明空白（量測值：七個等級 × 全部 idle 幀的
+# 聯集，見 git 記錄的 bbox 量測）。直接用整格當圖示的話一半以上是空的，看起來就特別小。
+# 素材若重畫成別的尺寸，這個 region 要重量。
+const LEGEND_ICON_REGION := Rect2(11, 16, 22, 17)
+
+# 整個色表的縮放倍率——調這一個數字就等比放大／縮小（圖示、字、間距、內距全跟著走）。
+# 4/3 = 比基準大 1/3。基準（1.0）是 102×160，這裡是約 136×213。
+#
+# ⚠️ 非整數倍會讓像素畫的格子大小不均（有些原始像素佔 1px、有些佔 2px），青蛙輪廓
+# 會微微歪。1.0 / 2.0 這種整數倍才是 1:1 乾淨的。目前 4/3 是刻意換取尺寸剛好。
+#
+# 曾放大到 16/9（再大 1/3），面板太搶戲、壓到右上角的畫面，已退回 4/3。
+const LEGEND_ZOOM := 4.0 / 3.0
+
+const LEGEND_FONT_PX := 11      # 以下都是 ZOOM = 1.0 時的基準值
+const LEGEND_MARGIN := 8.0
+const LEGEND_PAD := 6.0         # 面板內距
+const LEGEND_ROW_SEP := 4.0     # 圖示與文字的水平間距
+const LEGEND_COL_SEP := 2.0     # 列與列的垂直間距
+
+var _legend_labels: Array[Label] = []   # index = 等級，用來標出「你在這一級」
+
+func _build_level_legend() -> void:
+	var panel := PanelContainer.new()
+	panel.name = "LevelLegend"
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE   # 純顯示，不吃點擊
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.15, 0.15, 0.15, 0.85)        # 同議題泡泡/頭銜底色
+	sb.set_corner_radius_all(4)
+	sb.set_content_margin_all(LEGEND_PAD * LEGEND_ZOOM)
+	panel.add_theme_stylebox_override("panel", sb)
+
+	var font_px := roundi(LEGEND_FONT_PX * LEGEND_ZOOM)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", roundi(LEGEND_COL_SEP * LEGEND_ZOOM))
+	# 沒有「等級」標題：每一列都寫著 Lv{n}，標題只是再說一次同一件事，白佔一行。
+
+	for lv in LEGEND_MAX:
+		var path: String = LEGEND_SPRITE % lv
+		if not ResourceLoader.exists(path):
+			break        # 等級數以素材為準，跟 player_00.gd::level_count() 同一個原則
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", roundi(LEGEND_ROW_SEP * LEGEND_ZOOM))
+		# 只取第一格裡青蛙本體那一塊。若整格 48×48 都取，會連帶一整條 8 格；
+		# 若取整格但不裁白邊，青蛙只佔一半、看起來很小。
+		var atlas := AtlasTexture.new()
+		atlas.atlas = load(path)
+		atlas.region = LEGEND_ICON_REGION
+		var icon := TextureRect.new()
+		icon.texture = atlas
+		icon.custom_minimum_size = LEGEND_ICON_REGION.size * LEGEND_ZOOM
+		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		icon.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST   # 像素畫不要模糊
+		row.add_child(icon)
+		var label := Label.new()
+		label.add_theme_font_size_override("font_size", font_px)
+		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		row.add_child(label)
+		_legend_labels.append(label)
+		col.add_child(row)
+
+	panel.add_child(col)
+	add_child(panel)
+	# 右上角。寬高都刻意設成 0（offset_left = offset_right、offset_bottom = offset_top）
+	# ——Control 會把自己的尺寸夾到 get_combined_minimum_size()，所以面板剛好貼合內容，
+	# 不會像給固定寬度那樣在文字右邊留一大片空灰底。grow 方向決定它往哪邊長：往左、往下。
+	# 別改成在這裡呼叫 get_combined_minimum_size()：add_child 當下 layout 還沒跑過，
+	# 那時候會拿到 0，面板就變成零尺寸、整個色表看不見。
+	panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	panel.grow_vertical = Control.GROW_DIRECTION_END
+	var margin := LEGEND_MARGIN * LEGEND_ZOOM
+	panel.offset_right = -margin
+	panel.offset_left = -margin
+	panel.offset_top = margin
+	panel.offset_bottom = margin
+	refresh_level_legend(true)   # 玩家還沒生成，先按「正常顯示等級」畫；擲完稀有款會再刷
+
+# 文字內容依後端資料變動（門檻、目前等級），所以跟建構分開；player_00.gd 在擲完稀有款
+# 之後、game.gd 在 /titles/me/ 回來後都會呼叫。後端沒開時只顯示 Lv 編號，不顯示場次。
+#
+# show_marker=false 用在玩家刷到稀有款彩虹蛙時：那隻不屬於任何一級，整欄都不該有箭頭，
+# 也不該把某一列高亮成「你在這」。下次進場沒刷到就會再傳 true 回來。
+func refresh_level_legend(show_marker: bool) -> void:
+	for lv in _legend_labels.size():
+		var text: String = "Lv%d" % lv
+		if lv < Backend.level_thresholds.size():
+			text += " · %d場" % int(Backend.level_thresholds[lv])
+		var here := show_marker and lv == Backend.level
+		# 「你在這一級」的箭頭用 ▶ (U+25B6) 而不是 ▸ (U+25B8)：後者不在
+		# Assets/fonts/NotoSansTC-Regular.otf 的 cmap 裡。桌面版看起來正常是因為 Godot
+		# 會退回 Windows 系統字型補字，Web 版沒有系統字型可退 → 直接畫成豆腐框。
+		# 要換別的符號先確認字型有收：uv run --with fonttools python -c "..." 查 cmap。
+		_legend_labels[lv].text = ("▶ " + text) if here else text
+		_legend_labels[lv].modulate = Color.WHITE if here else Color(1, 1, 1, 0.55)
+
+# --- 稀有款彈窗 ------------------------------------------------------------
+# 只有一種內容：刷到稀有款彩虹蛙的恭喜訊息。
+#
+# 曾經還有一個「首次解鎖某一級」的進度彈窗，已移除 —— 等級與已完成場次改成常駐顯示在
+# 主功能的成就頁最上面（frontend/src/pages/AchievementPage.jsx），玩家隨時看得到，
+# 不需要用彈窗打斷遊戲。順帶也免掉了「彈窗跳過了沒」那個 user:// 已讀狀態，
+# 那份本機紀錄換瀏覽器就會失效，本來是要請後端補欄位的（見 docs/0804.md）。
+# 版面刻意照抄 GameUI.tscn 裡的 Invite 面板：預設主題的 Panel、同樣 360×170 的框、
+# 18px 自動換行標籤、底部兩顆按鈕（左否定右肯定）。之前用自訂 StyleBoxFlat 做深色圓角
+# 框，跟遊戲裡其他面板不是同一套，看起來像外掛上去的。
+#
+# ⚠️ 位置用 anchor 算，**不要**像 Invite 那樣寫死 offset。專案的 stretch 是
+# canvas_items + expand（project.godot [display]），實際可見範圍會比 1280×720 更寬，
+# 寫死 (460, 280) 在寬螢幕上會明顯偏左 —— Invite 面板現在就有這個問題。
+const POPUP_SIZE := Vector2(360, 170)
+const POPUP_BOTTOM_MARGIN := 56.0   # 距畫面底部，放在中間下方避開頭頂的議題泡泡
+
+var _popup: Panel
+var _popup_label: Label
+var _rare_owner: Node = null   # 開這個彈窗的玩家，按「我不要」時要回頭叫它換色
+
+func _build_rare_popup() -> void:
+	_popup = Panel.new()        # 預設主題 = 跟 Menu / Read / Invite / Chat 同一個外觀
+	_popup.name = "RarePopup"
+	_popup.visible = false
+	# 底部置中：左右 anchor 都 0.5、上下都 1.0，offset 再從那個點往外推。
+	_popup.anchor_left = 0.5
+	_popup.anchor_right = 0.5
+	_popup.anchor_top = 1.0
+	_popup.anchor_bottom = 1.0
+	_popup.offset_left = -POPUP_SIZE.x / 2.0
+	_popup.offset_right = POPUP_SIZE.x / 2.0
+	_popup.offset_bottom = -POPUP_BOTTOM_MARGIN
+	_popup.offset_top = -POPUP_BOTTOM_MARGIN - POPUP_SIZE.y
+
+	_popup_label = Label.new()
+	_popup_label.add_theme_font_size_override("font_size", 18)
+	_popup_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_popup_label.offset_left = 20
+	_popup_label.offset_top = 24
+	_popup_label.offset_right = 340
+	_popup_label.offset_bottom = 96
+	_popup.add_child(_popup_label)
+
+	# 左：放棄稀有款，換回自己的等級色（只影響這一場）。右：留著。
+	var decline := Button.new()
+	decline.text = "太閃了，我不要"
+	decline.offset_left = 20
+	decline.offset_top = 112
+	decline.offset_right = 180
+	decline.offset_bottom = 148
+	decline.pressed.connect(func():
+		if _rare_owner != null and is_instance_valid(_rare_owner):
+			_rare_owner.decline_rare()
+		_popup.visible = false
+	)
+	_popup.add_child(decline)
+
+	var ok := Button.new()
+	ok.text = "確定"
+	ok.offset_left = 220
+	ok.offset_top = 112
+	ok.offset_right = 340
+	ok.offset_bottom = 148
+	ok.pressed.connect(func(): _popup.visible = false)
+	_popup.add_child(ok)
+
+	add_child(_popup)
+
+# 刷到稀有款彩虹蛙 —— 每次刷到都跳（就是要讓玩家知道自己中了）。
+# owner = 刷到稀有款的那個玩家節點；「太閃了，我不要」要回頭叫它換色，所以要留著。
+func show_rare_popup(owner: Node) -> void:
+	_rare_owner = owner
+	_popup_label.text = "恭喜你在本次探索中，獲得了稀有形態的炫彩青蛙！"
+	_popup.visible = true
 
 # Read 面板底部一排表情按鈕：按下 → 對正在讀的對方議題送出表情回復。
 # 一人對一議題只有一個表情，但可改選：目前選的那個底部顯示灰條，按別的就換過去。
@@ -189,8 +369,24 @@ func _update_menu():
 	_menu.visible = true
 
 # 讀議題面板開啟時鎖住移動，關掉才能動。
+# 有任何視窗開著就鎖住移動。player_00.gd 的 _physics_process 每幀問這支，所以這裡是
+# 「開著視窗不能走路」的唯一收斂點 —— 新增面板只要加進這個清單。
+#
+# ⚠️ Menu（走近別人時跳出的小面板）刻意**不**列入：那個面板是靠「走出範圍」自己消失的，
+# 鎖住移動會讓玩家永遠走不出去、面板永遠不關，直接卡死。
+#
+# NPC 對話框與提交議題表單不是這個節點的子節點，所以分別轉問：
+#   對話框在 "dialogue" group（UI/dialogue_box.gd::is_open）
+#   議題表單由 game.gd 開關時設 suppress_menu（見 game.gd::_set_menu_suppressed）
 func blocks_movement() -> bool:
-	return _read.visible
+	if _read.visible or _invite.visible or _chat.visible or _voice.visible:
+		return true
+	if _popup != null and _popup.visible:      # 稀有款彩虹蛙的恭喜視窗
+		return true
+	if suppress_menu:                          # 提交議題表單開著
+		return true
+	var dlg = get_tree().get_first_node_in_group("dialogue")
+	return dlg != null and dlg.is_open()
 
 func _open_read():
 	if _target == null:
