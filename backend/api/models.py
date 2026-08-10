@@ -1035,3 +1035,50 @@ class GodotEntryTicket(models.Model):
 
     def __str__(self):
         return f"ticket user={self.user_id} redeemed={self.redeemed_at is not None}"
+
+
+class Favorite(models.Model):
+    """使用者在觀點知識庫收藏的觀點 / 影片（星星）。
+
+    放在 api 而不是 apps.summary，理由跟 MessageReaction 一樣：這是「使用者對
+    某個東西做了什麼」的互動紀錄，不是知識庫本身的內容產物；而且它同時指向
+    apps.summary 底下兩個不同的 model，掛在任何一邊都會變成單向偏袒。欄位設計
+    也刻意跟 MessageReaction 對齊（target_type + target_id 的鬆散指向，而非兩個
+    可為 null 的 FK），兩張表之後要一起匯出分析時格式一致。
+
+    用鬆散指向的代價是沒有 FK 級聯：目標被刪掉（觀點被移除、影片被下架刪除）
+    之後這裡會留下孤兒列。讀取端一律 JOIN 回目標表且只收「可公開」的項目
+    （見 FavoriteView.get），所以孤兒列不會被看到，也不需要另外寫清理指令。
+    """
+
+    class TargetType(models.TextChoices):
+        VIEWPOINT = "viewpoint", "觀點"
+        VIDEO = "video", "影片"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="favorites",
+    )
+    target_type = models.CharField(max_length=16, choices=TargetType.choices)
+    # target_type=viewpoint -> apps.summary.ViewpointNode.id
+    # target_type=video     -> apps.summary.VideoRecommendation.id
+    target_id = models.BigIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "target_type", "target_id"],
+                name="uniq_favorite_user_target",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["user", "target_type", "created_at"],
+                name="favorite_user_type_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return f"user={self.user_id} {self.target_type}={self.target_id}"

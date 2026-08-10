@@ -38,6 +38,7 @@ from .models import (
     DialogueMatch,
     DialogueSessionRecord,
     DiscomfortReport,
+    Favorite,
     Issue,
     IssueReaction,
     MatchMessage,
@@ -85,6 +86,7 @@ from .serializers import (
     DialogueSurveySerializer,
     DialogueTopicSerializer,
     DialogueSessionCreateSerializer,
+    FavoriteToggleSerializer,
     GodotSurveySerializer,
     MatchMessageSerializer,
     MatchingJoinSerializer,
@@ -2596,6 +2598,120 @@ class KnowledgeBaseViewpointBrowseView(APIView):
         rows = _serialize_viewpoint_rows(page)
         serializer = ViewpointHighlightSerializer(rows, many=True)
         return paginator.get_paginated_response(serializer.data)
+
+
+class FavoriteView(APIView):
+    """觀點知識庫的「收藏」星星。
+
+    GET  /api/favorites/
+        → {"viewpoint": [...], "video": [...]}
+        兩個清單分別用跟知識庫首頁完全相同的序列化器（ViewpointHighlightSerializer
+        / VideoRecommendationSerializer），所以前端「我的收藏」頁可以直接重用
+        知識庫的卡片元件，不用為了補標題摘要再逐筆打一次 API。
+
+    POST /api/favorites/  body: {target_type, target_id}
+        → {"target_type", "target_id", "favorited": bool}
+        切換語意：已收藏就取消。
+
+    只收「目前可公開」的目標——觀點必須 review_status=approved、影片必須
+    is_published=True，跟 KnowledgeBaseHighlightsView / VideoRecommendationListView
+    同一道 gate。這件事在讀跟寫兩邊都要做：寫的時候擋住，才不會有人靠猜 id 去
+    收藏還沒過審的候選觀點（等於拿到一個「這筆存不存在」的探測器）；讀的時候
+    也要擋，因為觀點可能在收藏之後才被退回審核（ViewpointReviewDecisionView 的
+    reject/reset），那時候它就不該再出現在任何人的收藏頁上。
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        rows = Favorite.objects.filter(user=request.user).order_by("-created_at", "-id")
+        ids_by_type: dict[str, list[int]] = {
+            Favorite.TargetType.VIEWPOINT: [],
+            Favorite.TargetType.VIDEO: [],
+        }
+        for target_type, target_id in rows.values_list("target_type", "target_id"):
+            if target_type in ids_by_type:
+                ids_by_type[target_type].append(target_id)
+
+        viewpoint_ids = ids_by_type[Favorite.TargetType.VIEWPOINT]
+        nodes = {
+            node.id: node
+            for node in ViewpointNode.objects.filter(
+                id__in=viewpoint_ids,
+                review_status=ViewpointNode.ReviewStatus.APPROVED,
+            ).select_related("summary")
+        }
+        # 依收藏時間（rows 的順序）排列，而不是 DB 回來的順序——使用者對「我的
+        # 收藏」的預期是最近收藏的在最前面。查不到的 id（已被刪除或退回審核）
+        # 在這一步自然被略過。
+        ordered_nodes = [nodes[i] for i in viewpoint_ids if i in nodes]
+
+        video_ids = ids_by_type[Favorite.TargetType.VIDEO]
+        videos = {
+            video.id: video
+            for video in VideoRecommendation.objects.filter(
+                id__in=video_ids,
+                is_published=True,
+            )
+        }
+        ordered_videos = [videos[i] for i in video_ids if i in videos]
+
+        return Response(
+            {
+                "viewpoint": ViewpointHighlightSerializer(
+                    _serialize_viewpoint_rows(ordered_nodes), many=True
+                ).data,
+                "video": VideoRecommendationSerializer(ordered_videos, many=True).data,
+            }
+        )
+
+    def post(self, request):
+        serializer = FavoriteToggleSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        target_type = serializer.validated_data["target_type"]
+        target_id = serializer.validated_data["target_id"]
+
+        if not self._target_is_visible(target_type, target_id):
+            return Response(
+                {"detail": "找不到這個可收藏的項目。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        deleted, _ = Favorite.objects.filter(
+            user=request.user,
+            target_type=target_type,
+            target_id=target_id,
+        ).delete()
+        if deleted:
+            favorited = False
+        else:
+            # get_or_create 而不是 create：同一個人在兩個分頁同時按下星星時，
+            # 唯一鍵會讓其中一次 create 丟 IntegrityError 變成 500。
+            Favorite.objects.get_or_create(
+                user=request.user,
+                target_type=target_type,
+                target_id=target_id,
+            )
+            favorited = True
+
+        return Response(
+            {
+                "target_type": target_type,
+                "target_id": target_id,
+                "favorited": favorited,
+            }
+        )
+
+    @staticmethod
+    def _target_is_visible(target_type: str, target_id: int) -> bool:
+        if target_type == Favorite.TargetType.VIEWPOINT:
+            return ViewpointNode.objects.filter(
+                id=target_id,
+                review_status=ViewpointNode.ReviewStatus.APPROVED,
+            ).exists()
+        return VideoRecommendation.objects.filter(
+            id=target_id, is_published=True
+        ).exists()
 
 
 class VideoRecommendationListView(generics.ListAPIView):

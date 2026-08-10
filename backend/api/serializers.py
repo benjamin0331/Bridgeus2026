@@ -214,6 +214,15 @@ class MessageReactionSerializer(serializers.Serializer):
     value = serializers.ChoiceField(choices=[1, -1, 0])
 
 
+class FavoriteToggleSerializer(serializers.Serializer):
+    """POST /api/favorites/ 的輸入。切換語意：已收藏就取消，未收藏就收藏，
+    所以不收 value/active 之類的欄位——由後端讀目前狀態決定，前端連按兩次
+    也不會因為送出的狀態過期而卡在錯的一邊。"""
+
+    target_type = serializers.ChoiceField(choices=["viewpoint", "video"])
+    target_id = serializers.IntegerField(min_value=1)
+
+
 class DialogueSessionCreateSerializer(serializers.Serializer):
     topic_id = serializers.IntegerField()
     topic_title = serializers.CharField(max_length=255)

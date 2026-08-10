@@ -43,6 +43,8 @@ urlpatterns = [
         'summary/viewpoints/<int:pk>/conversation/',
         views.KnowledgeBaseConversationDetailView.as_view(),
     ),
+    # 知識庫收藏（星星）：觀點與影片共用一支，用 target_type 分辨
+    path('favorites/', views.FavoriteView.as_view()),
     path('summary/videos/', views.VideoRecommendationListView.as_view()),
     # 研究者專用：知識庫影片管理面板（前端設定頁）
     path(
