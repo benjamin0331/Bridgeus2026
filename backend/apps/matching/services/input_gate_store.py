@@ -26,7 +26,8 @@ def record_ai_attempt(session_id: str, *, blocked: bool, profanity: bool = False
     profanity=True → 這次攔截的原因是單字粗口，另外再 +1 到 profanity_only_total。
                      只在 blocked=True 時有意義。
     """
-    assert blocked or not profanity, "profanity 只在 blocked=True 時有意義"
+    if profanity and not blocked:
+        raise ValueError("profanity 只在 blocked=True 時有意義")
 
     from api.models import DialogueSessionRecord
 

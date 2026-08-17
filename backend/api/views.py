@@ -2477,6 +2477,12 @@ class KnowledgeBaseHighlightsView(APIView):
             limit = 5
         limit = max(1, min(limit, 20))
 
+        # 埋點放在參數驗證之後：400 的請求沒真的看到知識庫，不該給成就。
+        # 知識庫的「入口頁」打的是這支，browse/ 只有點進議題後的下一層才會用到，
+        # 所以兩支都要掛，成就文案（首次開啟觀點知識庫）才對得上實際行為。
+        # 第二次以後函式會直接短路 return，重複掛沒有額外成本。
+        _safe_unlock_knowledge_base_achievement(request.user)
+
         qs = _approved_viewpoints_queryset(topic_id)[:limit]
         rows = _serialize_viewpoint_rows(qs)
 
@@ -3951,9 +3957,10 @@ class PostDialogueResponseView(APIView):
             room_id=response_obj.room_id,
         )
 
-        # 排在 _finalize_input_gate_metrics 之後：P3 的品質類規則（clean_dialogue_*）
-        # 會讀那支函式落庫的指標，先把順序固定下來，免得之後加規則時才發現要調。
-        # 目前的 RULES 還沒有任何一條依賴它。
+        # 放在 _finalize_input_gate_metrics 之後單純是求穩：評估在所有落庫動作
+        # 都完成之後才跑，之後若有規則要讀那些指標也不必再調順序。目前沒有任何
+        # 規則依賴它 —— clean_dialogue_* 讀的是 profanity_only_total（由
+        # record_ai_attempt 即時累加）與 PostDialogueResponse。
         _safe_evaluate_achievements(request.user)
 
         out = PostDialogueResponseOutputSerializer(response_obj)

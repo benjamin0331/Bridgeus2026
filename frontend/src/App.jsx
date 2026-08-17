@@ -81,6 +81,10 @@ function App() {
   const [toastQueue, setToastQueue] = useState([]);
   const unlockedToast = toastQueue[0] ?? null;
 
+  // 依賴帶 location.pathname 而不只是 user：最主要的解鎖時機是送出後測，那發生在
+  // session 中間，而後測頁送完是 SPA 導頁（App 不會 remount）。只看 user 的話，
+  // 通知會晚整整一個 session 才跳，而且是在使用者早就從成就頁看到卡片解鎖之後 ——
+  // 等於通知永遠是舊聞。每次換頁多一支 GET（後端會順便結算），在這個規模可接受。
   useEffect(() => {
     if (!user) return undefined;
     let cancelled = false;
@@ -94,7 +98,7 @@ function App() {
         console.warn('成就通知讀取失敗：', err?.message ?? err);
       });
     return () => { cancelled = true; };
-  }, [user]);
+  }, [user, location.pathname]);
 
   // 副作用留在 updater 外：StrictMode 會把 setState 的 updater 跑兩次，ack 放進去
   // 就會送兩次。當前值改從閉包讀，所以依賴陣列要帶 toastQueue。

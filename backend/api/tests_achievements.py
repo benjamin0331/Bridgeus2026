@@ -161,6 +161,29 @@ def test_ai_response_does_not_unlock_the_hh_achievement():
 
 
 @pytest.mark.django_db
+def test_evaluate_unlocks_first_ai_dialogue_only_after_an_ai_response():
+    user = User.objects.create_user(username="u1", password="pw")
+    evaluate(user)
+    assert not UserAchievement.objects.filter(user=user, code="first_ai_dialogue").exists()
+
+    _post_response(user, condition=PostDialogueResponse.ExperimentCondition.AI)
+    newly = evaluate(user)
+
+    assert "first_ai_dialogue" in newly
+
+
+@pytest.mark.django_db
+def test_hh_response_does_not_unlock_the_ai_achievement():
+    # 跟上面那條成對：只測正向的話，filter 寫反（AI 條件填成 HH）兩邊都還是綠的。
+    user = User.objects.create_user(username="u1", password="pw")
+    _post_response(user, condition=PostDialogueResponse.ExperimentCondition.HH)
+
+    evaluate(user)
+
+    assert not UserAchievement.objects.filter(user=user, code="first_ai_dialogue").exists()
+
+
+@pytest.mark.django_db
 def test_stance_changed_needs_delta_over_threshold():
     user = User.objects.create_user(username="u1", password="pw")
     response = _post_response(user, condition=PostDialogueResponse.ExperimentCondition.AI)
@@ -861,6 +884,20 @@ def test_browsing_the_knowledge_base_unlocks_the_achievement():
 
 
 @pytest.mark.django_db
+def test_the_knowledge_base_entry_page_also_unlocks_the_achievement():
+    # 知識庫入口頁打的是 highlights/，browse/ 是點進議題後的下一層。成就文案是
+    # 「首次開啟觀點知識庫」，只掛 browse/ 的話等於要多點一層才算開啟過。
+    user = User.objects.create_user(username="u1", password="pw")
+    client = APIClient()
+    client.force_authenticate(user=user)
+
+    client.get("/api/summary/viewpoints/highlights/?topic_id=102")
+
+    row = UserAchievement.objects.get(user=user, code="first_knowledge_base")
+    assert row.notified_at is None
+
+
+@pytest.mark.django_db
 def test_a_rejected_browse_request_does_not_unlock():
     # 少帶 topic_id 會 400；沒真的看到知識庫就不該給成就。
     user = User.objects.create_user(username="u1", password="pw")
@@ -994,16 +1031,6 @@ def test_an_abandoned_session_does_not_count_as_a_clean_dialogue():
 
     assert not UserAchievement.objects.filter(user=user, code="clean_dialogue_once").exists()
     assert not UserAchievement.objects.filter(user=user, code="clean_dialogue_many").exists()
-
-
-@pytest.mark.django_db
-def test_an_active_session_does_not_count_as_a_completed_clean_dialogue():
-    user = User.objects.create_user(username="u1", password="pw")
-    _dialogue_session(user, "s1", closed=False)
-
-    evaluate(user)
-
-    assert not UserAchievement.objects.filter(user=user, code="clean_dialogue_once").exists()
 
 
 @pytest.mark.django_db

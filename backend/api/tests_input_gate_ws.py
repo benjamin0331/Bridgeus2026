@@ -852,7 +852,7 @@ def test_a_passing_message_does_not_touch_profanity_only_total():
 def test_profanity_is_only_flagged_for_blocked_attempts():
     from apps.matching.services.input_gate_store import record_ai_attempt
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         record_ai_attempt("store-s3", blocked=False, profanity=True)
 
 
@@ -901,3 +901,41 @@ def test_only_a_profanity_only_verdict_increments_profanity_only_total():
     record = DialogueSessionRecord.objects.get(session_id=session_id)
     assert record.invalid_input_total == 2
     assert record.profanity_only_total == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_ws_only_a_profanity_only_verdict_increments_profanity_only_total():
+    """上面那條的 WS 版：consumers._handle_blocked_input 是第二個呼叫端，
+    verdict → profanity 旗標那一行跟 REST 各寫一次，兩邊都要有護欄。
+    """
+    user = await create_user(username="gate_wiring_ws", password="secret123")
+    session_id = uuid4().hex
+    await _setup_ai_session(user, session_id)
+
+    agent = SpyDialogueAgent()
+    communicator = await _connect(user, session_id)
+    with patch("api.views.get_dialogue_agent", return_value=agent):
+        connected, _ = await communicator.connect()
+        assert connected
+
+        # NON_LINGUISTIC：一樣被攔，但不是攻擊性內容。
+        await communicator.send_json_to({"type": "user_message", "content": "6456"})
+        message = await communicator.receive_json_from(timeout=3)
+        assert message["reason"] == "non_linguistic"
+        record = await DialogueSessionRecord.objects.aget(session_id=session_id)
+        assert record.invalid_input_total == 1
+        assert record.profanity_only_total == 0
+
+        # PROFANITY_ONLY：才算一次。
+        await areset_rate_limit(user.id)
+        await communicator.send_json_to({"type": "user_message", "content": "幹"})
+        message = await communicator.receive_json_from(timeout=3)
+        assert message["reason"] == "profanity_only"
+        record = await DialogueSessionRecord.objects.aget(session_id=session_id)
+        assert record.invalid_input_total == 2
+        assert record.profanity_only_total == 1
+
+    assert agent.call_count == 0
+    await communicator.disconnect()
