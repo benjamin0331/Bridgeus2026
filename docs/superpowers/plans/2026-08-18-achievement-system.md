@@ -2015,6 +2015,37 @@ git add frontend/src/api/achievements.js frontend/src/pages/AchievementPage.jsx 
 git commit -m "feat(m6): wire achievement page and toast to the backend"
 ```
 
+### 實作後的修正（code review 發現，已納入出貨程式碼）
+
+上面的 Step 3 骨架有四個問題，實際出貨的版本已修正。新寫類似程式碼時照下面這版：
+
+**1. 登出必須清空 `toastQueue`（資料正確性）。** `useEffect([user])` 在 `!user` 時只 early return、不清狀態，所以佇列會跨使用者殘留。A 未點掉的 toast 會在 B 登入後、`fetchAchievements()` 回來前的空檔顯示給 B；B 點下去，ack 以 B 的身份送出，後端 queryset 鎖 `request.user`，於是把 **B 自己**同 code 的成就誤標成已通知。共用實驗室機器的部署下會真的發生。在 `handleLogout` 加 `setToastQueue([]);`。
+
+**2. 副作用不可放在 setState 的 updater 裡。** StrictMode 會把 updater 跑兩次，ack 就送兩次。當前值改從閉包讀，依賴陣列帶 `toastQueue`：
+
+```jsx
+  const dismissToast = useCallback(() => {
+    const shown = toastQueue[0];
+    if (shown) {
+      ackAchievements([shown.code])
+        .catch((err) => console.warn('成就通知標記已讀失敗：', err?.message ?? err));
+    }
+    setToastQueue((queue) => queue.slice(1));
+  }, [toastQueue]);
+```
+
+（空 `.catch(() => {})` 也一併改掉——ack 失敗的後果可觀察「下次登入同一則又跳」，但屆時沒線索可查。）
+
+**3. `<AchievementToast>` 要有 `key={unlockedToast?.code}`。** 元素樹位置固定又沒 key 時 React 重用同一個 DOM node，CSS 進場動畫不會重播，佇列前進只會「文字瞬間換掉」，使用者容易沒發現自己跳過一則。
+
+**4. `AchievementPage` 要有 loading 狀態。** 初次 render `categories` 是 `[]`，回來後 17 張卡一次塞入，版面明顯跳動；而且「載入中」與「API 回了空 categories」在畫面上無法區分。加 `loading` state、在 `.finally()` 裡關（記得先看 `cancelled`），用中性樣式 `.achievement-loading`（不要複用紅色的 `.achievement-error`）。
+
+另外 `ackAchievements` 的 guard 要寫 `if (!codes?.length)`——`codes` 為 `undefined` 時 `!codes.length` 會直接 TypeError。
+
+### 實機驗證結果（已完成）
+
+後端 sqlite + `npm run dev`，實際登入走過一遍：`GET /api/achievements/me/` 回 5 分類 17 卡（16 鎖 1 解），toast 跳出並顯示頭銜，點關閉送出**恰好一次** ack（確認第 2 點的修正生效），`notified_at` 落庫，重整後 toast 不再出現，console 無錯誤。未認證打端點回 401，畸形 `codes` 回 400，ack 重送回 `{"acknowledged": 0}`。
+
 ---
 
 # P2

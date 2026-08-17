@@ -16,7 +16,7 @@ import FavoritesPage from './pages/FavoritesPage'
 import HistoryPage from './pages/HistoryPage'
 import NotificationPage from './pages/NotificationPage'
 import AchievementPage from './pages/AchievementPage'
-import { findAchievement } from './pages/achievements.data'
+import { ackAchievements, fetchAchievements } from './api/achievements'
 import AchievementToast from './components/AchievementToast'
 import LoginPage from './pages/LoginPage'
 import PostQuestionnairePage from './pages/PostQuestionnairePage'
@@ -76,9 +76,36 @@ function App() {
   // 所以 null 只代表「還在等」，不會永久卡住。TopicChatRoute 靠這個分辨。
   const [entryMode, setEntryMode] = useState(null);
 
-  // 剛進入/刷新時跳出的成就通知。
-  // ponytail: 目前偵測未接後端，先預設「一路同行」；之後把這行換成後端回傳的解鎖成就名稱
-  const [unlockedToast, setUnlockedToast] = useState(() => findAchievement('一路同行'));
+  // 待跳的解鎖通知佇列。後端以 UserAchievement.notified_at 為準，跳完才 ack，
+  // 所以重整不會重跳，換瀏覽器也不會。
+  const [toastQueue, setToastQueue] = useState([]);
+  const unlockedToast = toastQueue[0] ?? null;
+
+  useEffect(() => {
+    if (!user) return undefined;
+    let cancelled = false;
+    fetchAchievements()
+      .then((data) => {
+        if (cancelled) return;
+        setToastQueue(data.newly_unlocked ?? []);
+      })
+      .catch((err) => {
+        // 通知拿不到不影響任何功能，記著就好。
+        console.warn('成就通知讀取失敗：', err?.message ?? err);
+      });
+    return () => { cancelled = true; };
+  }, [user]);
+
+  // 副作用留在 updater 外：StrictMode 會把 setState 的 updater 跑兩次，ack 放進去
+  // 就會送兩次。當前值改從閉包讀，所以依賴陣列要帶 toastQueue。
+  const dismissToast = useCallback(() => {
+    const shown = toastQueue[0];
+    if (shown) {
+      ackAchievements([shown.code])
+        .catch((err) => console.warn('成就通知標記已讀失敗：', err?.message ?? err));
+    }
+    setToastQueue((queue) => queue.slice(1));
+  }, [toastQueue]);
 
   const handleLogin = useCallback((nextUser) => {
     setAuthMessage('');
@@ -93,6 +120,10 @@ function App() {
     setUser(null);
     setIssues([]);
     setIssuesLoaded(false);
+    // 登出一定要清掉待跳的成就通知：留著的話下一位登入者會在 fetchAchievements()
+    // 回來前的空檔看到上一位的 toast，點下去還會以自己的身份 ack，把自己同 code
+    // 的成就誤標成已通知（共用機器的實驗環境下會真的發生）。
+    setToastQueue([]);
     setEntryMode('split');
     navigate('/', { replace: true });
   }, [navigate]);
@@ -249,10 +280,11 @@ function App() {
         </div>
 
         <AchievementToast
+          key={unlockedToast?.code}
           achievement={unlockedToast}
-          onClose={() => setUnlockedToast(null)}
+          onClose={dismissToast}
           onOpen={() => {
-            setUnlockedToast(null);
+            dismissToast();
             navigate('/achievement');
           }}
         />

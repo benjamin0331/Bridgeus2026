@@ -1,6 +1,7 @@
 import './AchievementToast.css';
 
-// achievement: { name, desc, title? }，由外部（之後接後端）傳入；null 時不顯示
+// achievement: { code, name, description, title? }，來自 GET /api/achievements/me/
+// 的 newly_unlocked；null 時不顯示
 function AchievementToast({ achievement, onClose, onOpen }) {
   if (!achievement) return null;
 
@@ -12,7 +13,7 @@ function AchievementToast({ achievement, onClose, onOpen }) {
         {achievement.title && (
           <span className="achievement-toast-title">獲得頭銜「{achievement.title}」</span>
         )}
-        <span className="achievement-toast-desc">{achievement.desc}</span>
+        <span className="achievement-toast-desc">{achievement.description}</span>
       </div>
       <span
         className="achievement-toast-close"

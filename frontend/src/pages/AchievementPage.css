@@ -338,3 +338,15 @@
   font-weight: 700;
   letter-spacing: 0.04em;
 }
+
+.achievement-error {
+  margin: 12px 0;
+  color: #b42318;
+  font-size: 14px;
+}
+
+.achievement-loading {
+  margin: 12px 0;
+  color: #8a7a6d;
+  font-size: 14px;
+}
