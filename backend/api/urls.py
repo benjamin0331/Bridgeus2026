@@ -136,6 +136,8 @@ urlpatterns = [
     path('issues/', views.IssueListCreateView.as_view()),
     path('me/', views.MeView.as_view()),
     path('titles/me/', views.TitleMeView.as_view()),
+    path('achievements/me/', views.AchievementMeView.as_view()),
+    path('achievements/ack/', views.AchievementAckView.as_view()),
     path(
         'issues/<int:issue_id>/reactions/',
         views.IssueReactionsView.as_view(),

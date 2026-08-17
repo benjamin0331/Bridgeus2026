@@ -50,9 +50,12 @@ from .models import (
     PostDialogueResponse,
     Title,
     TopicDisplayOverride,
+    UserAchievement,
     UserStanceProfile,
     UserTitle,
 )
+from .achievement_rules import evaluate as evaluate_achievements
+from .achievements import CATALOG, CATEGORY_TITLES
 from .dialogue_topics import (
     TOPIC_CONFIGS,
     get_dialogue_survey,
@@ -3839,6 +3842,21 @@ def _post_dialogue_stance_snapshot(*, user, validated: dict):
     return match.user_a_score if match.user_a_id == user.id else match.user_b_score
 
 
+def _safe_evaluate_achievements(user) -> list[str]:
+    """在既有流程裡結算成就，永遠不把例外往上丟。
+
+    成就是附加價值，不是那些流程的目的：一次評估失敗絕不該讓受試者的問卷答案
+    送不出去，或讓玩家進不了 Godot 大廳。漏掉的解鎖會在下次打開成就頁時由
+    AchievementMeView 的 evaluate 補上，所以吞掉例外沒有永久後果——
+    但要留 log，否則規則寫壞了沒人會發現。
+    """
+    try:
+        return evaluate_achievements(user)
+    except Exception:
+        logger.exception("Achievement evaluation failed for user=%s.", user.id)
+        return []
+
+
 class PostDialogueResponseView(APIView):
     """POST /api/post-questionnaire/ — submit post-dialogue questionnaire."""
 
@@ -3907,6 +3925,11 @@ class PostDialogueResponseView(APIView):
             session_id=response_obj.session_id,
             room_id=response_obj.room_id,
         )
+
+        # 排在 _finalize_input_gate_metrics 之後：P3 的品質類規則（clean_dialogue_*）
+        # 會讀那支函式落庫的指標，先把順序固定下來，免得之後加規則時才發現要調。
+        # 目前的 RULES 還沒有任何一條依賴它。
+        _safe_evaluate_achievements(request.user)
 
         out = PostDialogueResponseOutputSerializer(response_obj)
         return Response(out.data, status=status.HTTP_201_CREATED)
@@ -4136,6 +4159,103 @@ class TitleMeView(APIView):
         return self.get(request)
 
 
+def _achievement_item(definition, row):
+    """把目錄定義 + 解鎖紀錄（可能沒有）攤成前端要的一筆。"""
+    return {
+        "code": definition.code,
+        "name": definition.name,
+        "how": definition.how,
+        "description": definition.description,
+        "title": definition.title_name,
+        "unlocked": row is not None,
+        "unlocked_at": row.unlocked_at if row is not None else None,
+    }
+
+
+class AchievementMeView(APIView):
+    """GET /api/achievements/me/ — 成就頁的全部內容，外加還沒跳過通知的新解鎖。
+
+    這支 GET 有副作用（會呼叫 evaluate 落庫新解鎖），這是刻意的：它是規則的
+    最終安全網，玩家只要打開成就頁就會結算，不必依賴每一個觸發點都沒漏掉。
+
+    newly_unlocked 的判準是 notified_at IS NULL（資料庫），不是 evaluate() 的
+    回傳值——兩個併發請求可能都算出同一個新解鎖，但只有一列會真的被建立。
+    通知跳完之後由前端呼叫 POST /api/achievements/ack/ 標記。
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        # 這裡刻意不吞例外：成就頁是規則的最終安全網，規則壞掉要在這裡炸出來，
+        # 不然只會安靜地回一頁全部未解鎖，沒人會發現。另外兩個觸發點相反——
+        # 那裡的主線任務（送問卷、進大廳）比成就重要，所以走 _safe_ 包裝。
+        evaluate_achievements(request.user)
+        rows = {
+            row.code: row
+            for row in UserAchievement.objects.filter(user=request.user)
+        }
+
+        categories = []
+        for category_id, category_title in CATEGORY_TITLES.items():
+            categories.append(
+                {
+                    "id": category_id,
+                    "title": category_title,
+                    "items": [
+                        _achievement_item(d, rows.get(d.code))
+                        for d in CATALOG
+                        if d.category == category_id
+                    ],
+                }
+            )
+
+        # 帶完整文案而不只是 code：toast 要顯示名稱、描述與頭銜，讓前端再去
+        # categories 裡撈一次只是多一層可能對不上的查表。
+        newly_unlocked = [
+            _achievement_item(d, rows[d.code])
+            for d in CATALOG
+            if d.code in rows and rows[d.code].notified_at is None
+        ]
+
+        return Response(
+            {"categories": categories, "newly_unlocked": newly_unlocked}
+        )
+
+
+class AchievementAckView(APIView):
+    """POST /api/achievements/ack/ — 標記「這些解鎖通知已經跳過了」。
+
+    只更新 notified_at 還是 NULL 的列，所以重送不會累加、也不會把時間往後推。
+    queryset 一律鎖在 request.user 底下——code 是全域字串，不做這個限制就等於
+    讓任何登入者去標記別人的通知。
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        codes = request.data.get("codes")
+        if not isinstance(codes, list) or not all(
+            isinstance(code, str) for code in codes
+        ):
+            return Response(
+                {"detail": "codes 必須是字串陣列。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 合法呼叫端最多也只會送目錄裡有的那些 code，超過就是畸形請求。
+        if len(codes) > len(CATALOG):
+            return Response(
+                {"detail": "codes 數量超出上限。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        updated = UserAchievement.objects.filter(
+            user=request.user, code__in=codes, notified_at__isnull=True
+        ).update(notified_at=timezone.now())
+
+        return Response({"acknowledged": updated})
+
+
 class IssueReactionsView(APIView):
     """GET/POST /api/issues/<issue_id>/reactions/ — 議題表情回復（5 選 1）。
     upsert：同一 reactor 對同一 issue 再送 = 覆蓋，不是疊加。契約見
@@ -4233,6 +4353,9 @@ class GodotTicketRedeemView(APIView):
             return Response(
                 {"detail": "入場券無效。"}, status=status.HTTP_400_BAD_REQUEST
             )
+        # 兌換成功 = 這位玩家真的進了 Godot 世界。
+        _safe_evaluate_achievements(user)
+
         return Response({"user_id": user.id})
 
 

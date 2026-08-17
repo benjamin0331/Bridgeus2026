@@ -1082,3 +1082,45 @@ class Favorite(models.Model):
 
     def __str__(self):
         return f"user={self.user_id} {self.target_type}={self.target_id}"
+
+
+class UserAchievement(models.Model):
+    """使用者解鎖某個成就的紀錄。
+
+    `code` 存的是 api.achievements.CATALOG 的字串，不是 FK——成就目錄是程式碼
+    常數（同 dialogue_topics.TOPIC_CONFIGS），沒有對應的資料表可以指。目錄裡被
+    移除的 code 會在這裡留下孤兒列；讀取端一律以 CATALOG 為準做 JOIN，孤兒列
+    不會被看到，也就不需要清理指令（理由同 Favorite 的鬆散指向）。
+
+    code 一旦上線就不可更改：它是解鎖紀錄的唯一 key，中文名稱只是顯示層，改
+    文案不該讓任何人失去成就。
+
+    notified_at = 「這則解鎖通知已經跳過了」，NULL 表示還沒跳。刻意存在後端而不
+    是 localStorage——本機紀錄換瀏覽器就會失效，Godot 端已經為了同一個理由移除
+    過一個彈窗（見 godot/UI/game_ui.gd 的「首次解鎖某一級」註解）。
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="achievements",
+    )
+    code = models.CharField(max_length=64)
+    unlocked_at = models.DateTimeField(auto_now_add=True)
+    notified_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "code"], name="uniq_user_achievement"
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["user", "unlocked_at"], name="user_achievement_idx"
+            ),
+        ]
+        ordering = ["unlocked_at"]
+
+    def __str__(self):
+        return f"user={self.user_id} achievement={self.code}"
