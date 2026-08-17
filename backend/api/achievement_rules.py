@@ -22,6 +22,7 @@ from .achievements import (
     ACHIEVEMENT_TIMEZONE,
     ALL_ACHIEVEMENTS_CODE,
     CATALOG,
+    CLEAN_DIALOGUE_COUNT,
     COMPLETE_FLOW_COUNT,
     MULTI_CHANGE_COUNT,
     RETURNING_DAYS,
@@ -33,6 +34,7 @@ from .achievements import (
 )
 from .models import (
     AIConversation,
+    DialogueSessionRecord,
     GodotEntryTicket,
     MatchMessage,
     PostDialogueResponse,
@@ -235,6 +237,45 @@ def _first_knowledge_base(user) -> bool:
     ).exists()
 
 
+def _clean_dialogue_count(user) -> int:
+    """完成且零攻擊性內容的對話場數。
+
+    「完成」的定義跟 _completed_dialogue_count 一致：送出後測（有一筆對應的
+    PostDialogueResponse）。**不能只看 status=CLOSED**——
+    _close_superseded_dialogue_sessions() 會在使用者選「開始新對話」時把同 user+topic
+    的其他 ACTIVE session 批次標成 CLOSED（close_stale_dialogue_sessions 指令與
+    migration 0018 同理），而紀錄是 session 建立當下就寫的。於是一筆零訊息、被放棄
+    的 session 也會是 CLOSED + 零攻擊性，同一議題重開六次就白拿「有話好說」。
+    這個 join 順帶讓回溯授予的語意跟其他規則一致：既有紀錄的 profanity_only_total
+    都是預設 0，少了它，資料庫裡每一筆歷史 session 都會被算成乾淨對話。
+
+    ⚠️ 只看 H-AI。H-H 對話室（MatchRoomConsumer）目前根本沒有跑 input gate——
+    record_match_attempt() 沒有任何 production 呼叫端，MatchInputGateStat 的計數
+    永遠是 0，把它納進來只會讓每一場 H-H 都白白算成「零攻擊性」。等閘門真的接上
+    H-H 之後，這裡再加上 MatchInputGateStat.profanity_only_total 的條件。
+
+    ⚠️ 這個數字**不是**文明度或去極化指標，別這樣讀。閘門的規則 0 只在整則訊息都
+    是粗口時才觸發（「幹」擋，「幹，核電根本就是騙局」放行），而且 H-AI 這條路徑
+    根本沒接黑名單過濾（check_content_sync 只掛在 MatchRoomConsumer）。也就是說
+    每句話都夾著髒話，「理性交流」照樣拿得到。
+    """
+    return DialogueSessionRecord.objects.filter(
+        user=user,
+        profanity_only_total=0,
+        session_id__in=PostDialogueResponse.objects.filter(
+            user=user
+        ).values("session_id"),
+    ).count()
+
+
+def _clean_dialogue_once(user) -> bool:
+    return _clean_dialogue_count(user) >= 1
+
+
+def _clean_dialogue_many(user) -> bool:
+    return _clean_dialogue_count(user) >= CLEAN_DIALOGUE_COUNT
+
+
 RULES = {
     "first_login": _first_login,
     "first_hh_dialogue": _first_hh_dialogue,
@@ -250,6 +291,8 @@ RULES = {
     "veteran_dialogues": _veteran_dialogues,
     "first_godot_entry": _first_godot_entry,
     "first_knowledge_base": _first_knowledge_base,
+    "clean_dialogue_once": _clean_dialogue_once,
+    "clean_dialogue_many": _clean_dialogue_many,
 }
 
 

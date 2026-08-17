@@ -801,3 +801,103 @@ def test_finalize_ai_session_metrics_produces_exportable_fields():
     record = DialogueSessionRecord.objects.get(session_id=session_id)
     assert record.invalid_ratio == 0.3
     assert record.substantive_turn_count == 5
+
+
+@pytest.mark.django_db
+def test_record_ai_attempt_counts_profanity_only_separately():
+    from apps.matching.services.input_gate_store import record_ai_attempt
+
+    user = User.objects.create_user(username="gate_store_1", password="secret123")
+    DialogueSessionRecord.objects.create(
+        user=user,
+        session_id="store-s1",
+        topic_id=102,
+        topic_title="核能",
+        collection_name="nuclear_energy_all",
+        last_activity_at=timezone.now(),
+    )
+
+    record_ai_attempt("store-s1", blocked=True, profanity=False)
+    record_ai_attempt("store-s1", blocked=True, profanity=True)
+
+    record = DialogueSessionRecord.objects.get(session_id="store-s1")
+    assert record.invalid_input_total == 2
+    assert record.profanity_only_total == 1
+
+
+@pytest.mark.django_db
+def test_a_passing_message_does_not_touch_profanity_only_total():
+    # blocked=False 的分支只重置連續計數，不該碰任何累計欄位。
+    from apps.matching.services.input_gate_store import record_ai_attempt
+
+    user = User.objects.create_user(username="gate_store_2", password="secret123")
+    DialogueSessionRecord.objects.create(
+        user=user,
+        session_id="store-s2",
+        topic_id=102,
+        topic_title="核能",
+        collection_name="nuclear_energy_all",
+        last_activity_at=timezone.now(),
+        profanity_only_total=3,
+    )
+
+    record_ai_attempt("store-s2", blocked=False)
+
+    record = DialogueSessionRecord.objects.get(session_id="store-s2")
+    assert record.profanity_only_total == 3
+    assert record.invalid_input_total == 0
+
+
+@pytest.mark.django_db
+def test_profanity_is_only_flagged_for_blocked_attempts():
+    from apps.matching.services.input_gate_store import record_ai_attempt
+
+    with pytest.raises(AssertionError):
+        record_ai_attempt("store-s3", blocked=False, profanity=True)
+
+
+def _gated_reply(user, session_id, message):
+    from rest_framework.test import APIClient
+
+    # 連續兩次送出會撞上「送太快」的速率限制，那不是這裡要測的東西。
+    reset_rate_limit(user.id)
+    client = APIClient()
+    client.force_authenticate(user=user)
+    with patch("api.views.get_dialogue_agent") as get_agent:
+        response = client.post(
+            f"/api/dialogue/sessions/{session_id}/reply/",
+            {"message": message},
+            format="json",
+        )
+    assert get_agent.call_count == 0
+    return response
+
+
+@pytest.mark.django_db
+def test_only_a_profanity_only_verdict_increments_profanity_only_total():
+    """接線測試：兩個呼叫端把 verdict 轉成 profanity 旗標的那一行是這個功能唯一
+    會無聲壞掉的地方。store 層的測試直接傳 profanity=，抓不到接錯分支。
+    """
+    user = User.objects.create_user(username="gate_wiring", password="secret123")
+    session_id = uuid4().hex
+    DialogueSessionRecord.objects.create(
+        user=user,
+        session_id=session_id,
+        topic_id=102,
+        topic_title="核能",
+        collection_name="nuclear_energy_all",
+        session_state={"history": []},
+        last_activity_at=timezone.now(),
+    )
+
+    # NON_LINGUISTIC：一樣被攔，但不是攻擊性內容。
+    assert _gated_reply(user, session_id, "6456").data["reason"] == "non_linguistic"
+    record = DialogueSessionRecord.objects.get(session_id=session_id)
+    assert record.invalid_input_total == 1
+    assert record.profanity_only_total == 0
+
+    # PROFANITY_ONLY：才算一次。
+    assert _gated_reply(user, session_id, "幹").data["reason"] == "profanity_only"
+    record = DialogueSessionRecord.objects.get(session_id=session_id)
+    assert record.invalid_input_total == 2
+    assert record.profanity_only_total == 1

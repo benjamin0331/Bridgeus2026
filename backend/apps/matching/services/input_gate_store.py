@@ -18,21 +18,28 @@ from django.db.models import F
 # H-AI — DialogueSessionRecord
 # ═══════════════════════════════════════════════════════════
 
-def record_ai_attempt(session_id: str, *, blocked: bool) -> int:
+def record_ai_attempt(session_id: str, *, blocked: bool, profanity: bool = False) -> int:
     """記一次送出嘗試，回傳更新後的 `invalid_input_count`。
 
     blocked=True  → 攔截計數 +1（連續計數與累計數同時 +1）
     blocked=False → 連續計數歸零（累計數不動）
+    profanity=True → 這次攔截的原因是單字粗口，另外再 +1 到 profanity_only_total。
+                     只在 blocked=True 時有意義。
     """
+    assert blocked or not profanity, "profanity 只在 blocked=True 時有意義"
+
     from api.models import DialogueSessionRecord
 
     queryset = DialogueSessionRecord.objects.filter(session_id=session_id)
     if blocked:
-        queryset.update(
-            input_attempt_total=F("input_attempt_total") + 1,
-            invalid_input_total=F("invalid_input_total") + 1,
-            invalid_input_count=F("invalid_input_count") + 1,
-        )
+        updates = {
+            "input_attempt_total": F("input_attempt_total") + 1,
+            "invalid_input_total": F("invalid_input_total") + 1,
+            "invalid_input_count": F("invalid_input_count") + 1,
+        }
+        if profanity:
+            updates["profanity_only_total"] = F("profanity_only_total") + 1
+        queryset.update(**updates)
     else:
         queryset.update(
             input_attempt_total=F("input_attempt_total") + 1,

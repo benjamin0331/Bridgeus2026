@@ -2644,6 +2644,28 @@ git commit -m "feat(m6): add dialogue-quality achievement rules"
 
 ---
 
+## 收尾時發現的兩件事（需要人決定，不是程式碼問題）
+
+**1. 「一路同行」實際上幾乎不可能達成。** 它要求解鎖其他全部 16 個，其中包含：
+- `first_godot_entry` —— 只有在帶 `GODOT_SERVICE_TOKEN` 的 headless dedicated server 上兌換入場券才會解鎖，桌面／本機一律拿不到
+- `veteran_dialogues` —— 累積 10 場完成對話
+- `returning_days` —— 5 個不重複的對話日
+
+60 人、8 個月的研究期間，這組條件的實際解鎖數很可能是 0。當成「看得到但拿不到」的彩蛋是合理的設計，但這應該是個**決定**，不是分期上線的副作用。要讓它可達成的話，最直接的是降低 `VETERAN_COUNT` 與 `RETURNING_DAYS`，或把 `first_godot_entry` 排除在 meta 條件之外。
+
+**2.「對話品質」這一類量到的東西比名字承諾的少很多。** 判準是 input gate 的規則 0，只在**整則訊息都是單字粗口**時觸發：
+- 「幹，核電根本就是騙局」判為 VALID，不計入
+- H-AI 根本沒有黑名單過濾（`check_content_sync` 只接在 `MatchRoomConsumer`）
+- H-H 完全不算（`MatchRoomConsumer` 沒跑 input gate，見下）
+
+所以「理性交流」在每句話都罵髒話的情況下照樣拿得到。當成遊戲化的鼓勵沒問題，但**不可以**在研究報告裡被當成文明度或去極化指標使用。`_clean_dialogue_count` 的 docstring 已寫明這個上限。
+
+## 範圍外但已知的既有缺陷
+
+**H-H 對話室沒有跑 input gate。** `apps/matching/services/input_gate_store.record_match_attempt()` 有實作、有測試，但**沒有任何 production 程式碼呼叫它**——`api/consumers.py` 的 `MatchRoomConsumer` 從頭到尾沒有 gate。因此 `MatchInputGateStat` 的計數永遠是 0，而 `_finalize_input_gate_metrics` 照樣會呼叫 `finalize_match_metrics`，用全 0 的計數算出 `invalid_ratio`。
+
+這影響的不只是成就（兩個品質成就因此只看 H-AI），還有 H-H 那一半的實驗資料完整性指標。修它需要把 gate 接進 `MatchRoomConsumer`，是獨立議題，不在本 plan 範圍。
+
 ## 部署備註
 
 1. 套 migration：`uv run python manage.py migrate`

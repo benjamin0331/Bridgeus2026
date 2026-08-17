@@ -60,6 +60,7 @@ class DialogueSessionRecordAdmin(admin.ModelAdmin):
         "status",
         "invalid_input_count",
         "invalid_input_total",
+        "profanity_only_total",
         "input_attempt_total",
         "invalid_ratio",
         "substantive_turn_count",

@@ -1815,7 +1815,11 @@ def _apply_reply_input_gate(*, session_id: str, user, user_message: str):
         record_ai_attempt(session_id, blocked=False)
         return None
 
-    count = record_ai_attempt(session_id, blocked=True)
+    count = record_ai_attempt(
+        session_id,
+        blocked=True,
+        profanity=verdict is InputVerdict.PROFANITY_ONLY,
+    )
     tier = throttle_tier(count)
     if tier == "cooldown":
         seconds = start_cooldown(scope)

@@ -228,7 +228,11 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
         return False
 
     async def _handle_blocked_input(self, verdict: InputVerdict):
-        count = await arecord_ai_attempt(self.session_id, blocked=True)
+        count = await arecord_ai_attempt(
+            self.session_id,
+            blocked=True,
+            profanity=verdict is InputVerdict.PROFANITY_ONLY,
+        )
         tier = throttle_tier(count)
 
         if tier == "cooldown":

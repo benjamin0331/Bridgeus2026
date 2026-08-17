@@ -83,6 +83,13 @@ class DialogueSessionRecord(models.Model):
     # 系統本身不自動排除任何樣本。
     invalid_input_total = models.IntegerField(default=0)
     input_attempt_total = models.IntegerField(default=0)
+    # 被攔下的訊息裡有幾則是「整則只有單字粗口」（InputVerdict.PROFANITY_ONLY）。
+    # 從 invalid_input_total 拆出來單獨計數的理由：那個欄位混合了「亂敲鍵盤」與
+    # 「罵髒話」，兩者在研究上是不同的訊號，成就系統的「未偵測到攻擊性內容」
+    # 也只認後者。同樣永不歸零。
+    # 命名刻意帶 _only_：它**不是**「所有含粗口的訊息數」——夾在正常句子裡的髒話
+    # 是 VALID、不會計入。匯出成研究 CSV 時別把它讀成文明度指標。
+    profanity_only_total = models.IntegerField(default=0)
     # 對話結束時（後測問卷送出）計算並落庫；未結束的 session 為 NULL。
     invalid_ratio = models.FloatField(null=True, blank=True)
     substantive_turn_count = models.IntegerField(null=True, blank=True)

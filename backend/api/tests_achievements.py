@@ -22,6 +22,7 @@ from api.achievements import (
     CATALOG,
     CATALOG_BY_CODE,
     CATEGORY_TITLES,
+    CLEAN_DIALOGUE_COUNT,
     COMPLETE_FLOW_COUNT,
     MULTI_CHANGE_COUNT,
     RETURNING_DAYS,
@@ -478,11 +479,9 @@ def test_meta_achievement_needs_every_other_achievement():
     assert ALL_ACHIEVEMENTS_CODE in newly
 
 
-# P1 尚未實作規則的成就。每完成一期就從這裡拿掉對應的 code。
-PENDING_RULES = {
-    "clean_dialogue_once",    # P3：攻擊性計數落庫
-    "clean_dialogue_many",    # P3
-}
+# 全部成就都有規則了。這個集合留著，是為了讓下一個「先加目錄、規則晚一期才做」
+# 的成就有地方登記，而不必動守門測試本身。
+PENDING_RULES: set[str] = set()
 
 
 def test_every_catalog_entry_has_a_rule_or_is_explicitly_pending():
@@ -928,3 +927,95 @@ def test_backfill_does_not_auto_select_or_duplicate():
 
     assert UserTitle.objects.filter(user=user, title__name="築橋新手").count() == 1
     assert not UserTitle.objects.filter(user=user, is_selected=True).exists()
+
+
+# ═══════════════════════════════════════════════════════════
+# P3：對話品質成就
+#
+# record_ai_attempt 本身的計數行為（含 verdict → profanity 的接線）測在
+# api/tests_input_gate_ws.py，跟其他 gate-store 測試放同一家。
+# ═══════════════════════════════════════════════════════════
+
+def _dialogue_session(user, session_id, *, profanity_only_total=0, closed=True):
+    return DialogueSessionRecord.objects.create(
+        user=user,
+        session_id=session_id,
+        topic_id=102,
+        topic_title="測試議題",
+        collection_name="test",
+        last_activity_at=timezone.now(),
+        status=(
+            DialogueSessionRecord.Status.CLOSED
+            if closed
+            else DialogueSessionRecord.Status.ACTIVE
+        ),
+        profanity_only_total=profanity_only_total,
+    )
+
+
+def _finished_session(user, session_id, *, profanity_only_total=0):
+    """一場真的走完的對話：session 紀錄 + 對應的後測。"""
+    record = _dialogue_session(
+        user, session_id, profanity_only_total=profanity_only_total
+    )
+    _post_response(
+        user,
+        condition=PostDialogueResponse.ExperimentCondition.AI,
+        session_id=session_id,
+    )
+    return record
+
+
+@pytest.mark.django_db
+def test_clean_dialogue_once_needs_a_finished_session_with_no_profanity():
+    user = User.objects.create_user(username="u1", password="pw")
+    _finished_session(user, "s1", profanity_only_total=1)
+    evaluate(user)
+    assert not UserAchievement.objects.filter(user=user, code="clean_dialogue_once").exists()
+
+    _finished_session(user, "s2", profanity_only_total=0)
+    evaluate(user)
+
+    assert UserAchievement.objects.filter(user=user, code="clean_dialogue_once").exists()
+
+
+@pytest.mark.django_db
+def test_an_abandoned_session_does_not_count_as_a_clean_dialogue():
+    """「開始新對話」會把舊的 ACTIVE session 批次標成 CLOSED（見
+    views._close_superseded_dialogue_sessions）。那筆零訊息的殘骸也是零攻擊性，
+    只看 status=CLOSED 的話，同一議題重開幾次就能白拿這兩個成就。
+    """
+    user = User.objects.create_user(username="u1", password="pw")
+    # CLOSED、零攻擊性，但沒有後測——沒走完的對話。
+    for i in range(CLEAN_DIALOGUE_COUNT + 1):
+        _dialogue_session(user, f"abandoned{i}")
+
+    evaluate(user)
+
+    assert not UserAchievement.objects.filter(user=user, code="clean_dialogue_once").exists()
+    assert not UserAchievement.objects.filter(user=user, code="clean_dialogue_many").exists()
+
+
+@pytest.mark.django_db
+def test_an_active_session_does_not_count_as_a_completed_clean_dialogue():
+    user = User.objects.create_user(username="u1", password="pw")
+    _dialogue_session(user, "s1", closed=False)
+
+    evaluate(user)
+
+    assert not UserAchievement.objects.filter(user=user, code="clean_dialogue_once").exists()
+
+
+@pytest.mark.django_db
+def test_clean_dialogue_many_needs_the_full_count():
+    user = User.objects.create_user(username="u1", password="pw")
+    for i in range(CLEAN_DIALOGUE_COUNT - 1):
+        _finished_session(user, f"s{i}")
+
+    evaluate(user)
+    assert not UserAchievement.objects.filter(user=user, code="clean_dialogue_many").exists()
+
+    _finished_session(user, "s-last")
+    evaluate(user)
+
+    assert UserAchievement.objects.filter(user=user, code="clean_dialogue_many").exists()
