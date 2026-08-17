@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone as dt_timezone
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.db import IntegrityError
 from django.test import override_settings
 from django.utils import timezone
@@ -37,7 +38,9 @@ from api.models import (
     GodotEntryTicket,
     MatchMessage,
     PostDialogueResponse,
+    Title,
     UserAchievement,
+    UserTitle,
 )
 
 User = get_user_model()
@@ -477,7 +480,6 @@ def test_meta_achievement_needs_every_other_achievement():
 
 # P1 尚未實作規則的成就。每完成一期就從這裡拿掉對應的 code。
 PENDING_RULES = {
-    "first_knowledge_base",   # P2：知識庫瀏覽埋點
     "clean_dialogue_once",    # P3：攻擊性計數落庫
     "clean_dialogue_many",    # P3
 }
@@ -796,3 +798,133 @@ def test_evaluate_failure_does_not_break_the_caller(monkeypatch):
 
     assert response.status_code == 201, response.data
     assert PostDialogueResponse.objects.filter(user=user).exists()
+
+
+@pytest.mark.django_db
+def test_unlocking_grants_the_mapped_title():
+    call_command("seed_achievement_titles")
+    user = User.objects.create_user(username="u1", password="pw")
+
+    evaluate(user)
+
+    assert UserTitle.objects.filter(user=user, title__name="築橋新手").exists()
+
+
+@pytest.mark.django_db
+def test_granted_titles_are_not_auto_selected():
+    # UserTitle 有「一位使用者最多一個 is_selected」的 partial unique index。
+    # 自動選取會在第二個頭銜到手時炸掉，而且也該由玩家自己決定要掛哪一個。
+    call_command("seed_achievement_titles")
+    user = User.objects.create_user(username="u1", password="pw")
+    _post_response(user, condition=PostDialogueResponse.ExperimentCondition.HH)
+    _post_response(user, condition=PostDialogueResponse.ExperimentCondition.AI)
+
+    evaluate(user)
+
+    owned = set(
+        UserTitle.objects.filter(user=user).values_list("title__name", flat=True)
+    )
+    assert {"築橋新手", "上橋新人", "智橋行者"} <= owned
+    assert not UserTitle.objects.filter(user=user, is_selected=True).exists()
+
+
+@pytest.mark.django_db
+def test_unlocking_without_seeded_titles_still_works():
+    # 沒跑過 seed 指令的環境（例如剛建好的測試庫）不該讓解鎖整個失敗。
+    user = User.objects.create_user(username="u1", password="pw")
+
+    newly = evaluate(user)
+
+    assert "first_login" in newly
+    assert not UserTitle.objects.filter(user=user).exists()
+
+
+@pytest.mark.django_db
+def test_seed_command_is_idempotent():
+    call_command("seed_achievement_titles")
+    call_command("seed_achievement_titles")
+
+    assert Title.objects.filter(name="築橋新手").count() == 1
+
+
+@pytest.mark.django_db
+def test_browsing_the_knowledge_base_unlocks_the_achievement():
+    user = User.objects.create_user(username="u1", password="pw")
+    client = APIClient()
+    client.force_authenticate(user=user)
+
+    client.get("/api/summary/viewpoints/browse/?topic_id=102")
+
+    row = UserAchievement.objects.get(user=user, code="first_knowledge_base")
+    # notified_at 必須是 NULL，否則這個成就永遠不會跳解鎖 toast——埋點走的是
+    # 跟 evaluate() 不同的寫入路徑，這條斷言就是用來鎖住兩邊行為一致。
+    assert row.notified_at is None
+
+
+@pytest.mark.django_db
+def test_a_rejected_browse_request_does_not_unlock():
+    # 少帶 topic_id 會 400；沒真的看到知識庫就不該給成就。
+    user = User.objects.create_user(username="u1", password="pw")
+    client = APIClient()
+    client.force_authenticate(user=user)
+
+    response = client.get("/api/summary/viewpoints/browse/")
+
+    assert response.status_code == 400
+    assert not UserAchievement.objects.filter(
+        user=user, code="first_knowledge_base"
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_browsing_again_does_not_resurface_the_notification():
+    # 知識庫翻頁會一直打同一支端點；重複瀏覽不該重建列，也不該讓已經 ack 過的
+    # 通知又冒出來（那會讓玩家每翻一頁就看一次同樣的 toast）。
+    user = User.objects.create_user(username="u1", password="pw")
+    client = APIClient()
+    client.force_authenticate(user=user)
+
+    client.get("/api/summary/viewpoints/browse/?topic_id=102")
+    client.get("/api/summary/viewpoints/browse/?topic_id=102")
+
+    assert (
+        UserAchievement.objects.filter(
+            user=user, code="first_knowledge_base"
+        ).count()
+        == 1
+    )
+
+    client.post(
+        "/api/achievements/ack/", {"codes": ["first_knowledge_base"]}, format="json"
+    )
+    client.get("/api/summary/viewpoints/browse/?topic_id=102")
+
+    response = client.get("/api/achievements/me/")
+    assert response.status_code == 200
+    assert "first_knowledge_base" not in response.data["newly_unlocked"]
+
+
+@pytest.mark.django_db
+def test_seed_command_backfills_titles_for_already_unlocked_achievements():
+    # evaluate() 會跳過已解鎖的成就，所以 _grant_titles 不會對它再跑一次——
+    # 在 Title 建好之前解鎖的人，頭銜只能靠 seed 指令回填。
+    user = User.objects.create_user(username="u1", password="pw")
+    evaluate(user)
+    assert UserAchievement.objects.filter(user=user, code="first_login").exists()
+    assert not UserTitle.objects.filter(user=user).exists()
+
+    call_command("seed_achievement_titles")
+
+    assert UserTitle.objects.filter(user=user, title__name="築橋新手").exists()
+
+
+@pytest.mark.django_db
+def test_backfill_does_not_auto_select_or_duplicate():
+    user = User.objects.create_user(username="u1", password="pw")
+    evaluate(user)
+
+    call_command("seed_achievement_titles")
+    call_command("seed_achievement_titles")
+
+    assert UserTitle.objects.filter(user=user, title__name="築橋新手").count() == 1
+    assert not UserTitle.objects.filter(user=user, is_selected=True).exists()

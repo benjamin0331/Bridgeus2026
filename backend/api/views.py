@@ -55,6 +55,7 @@ from .models import (
     UserTitle,
 )
 from .achievement_rules import evaluate as evaluate_achievements
+from .achievement_rules import unlock_knowledge_base_achievement
 from .achievements import CATALOG, CATEGORY_TITLES
 from .dialogue_topics import (
     TOPIC_CONFIGS,
@@ -2594,6 +2595,9 @@ class KnowledgeBaseViewpointBrowseView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # 埋點放在參數驗證之後：400 的請求沒真的看到知識庫，不該給成就。
+        _safe_unlock_knowledge_base_achievement(request.user)
+
         qs = _approved_viewpoints_queryset(topic_id)
 
         paginator = self.pagination_class()
@@ -3854,6 +3858,23 @@ def _safe_evaluate_achievements(user) -> list[str]:
         return evaluate_achievements(user)
     except Exception:
         logger.exception("Achievement evaluation failed for user=%s.", user.id)
+        return []
+
+
+def _safe_unlock_knowledge_base_achievement(user) -> list[str]:
+    """在知識庫瀏覽流程裡解鎖「求知若渴」，永遠不把例外往上丟。
+
+    理由同 _safe_evaluate_achievements：成就壞掉不該讓知識庫這個主要功能一起
+    404/500。這個埋點漏掉的代價比其他觸發點高一點（AchievementMeView 的評估補
+    不回來——那條規則只回報 UserAchievement 的既有狀態），但下次瀏覽就會再試一
+    次，所以仍然不值得為它犧牲知識庫本身。
+    """
+    try:
+        return unlock_knowledge_base_achievement(user)
+    except Exception:
+        logger.exception(
+            "Knowledge base achievement unlock failed for user=%s.", user.id
+        )
         return []
 
 

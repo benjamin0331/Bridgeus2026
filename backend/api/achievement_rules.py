@@ -13,6 +13,8 @@
 一個同 code 的 predicate。兩邊不一致會被 tests_achievements.py 擋下來。
 """
 
+import logging
+
 from django.db.models import Count, Q
 from django.db.models.functions import TruncDate
 
@@ -34,8 +36,12 @@ from .models import (
     GodotEntryTicket,
     MatchMessage,
     PostDialogueResponse,
+    Title,
     UserAchievement,
+    UserTitle,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -216,6 +222,19 @@ def _first_godot_entry(user) -> bool:
     ).exists()
 
 
+def _first_knowledge_base(user) -> bool:
+    """「打開過知識庫」沒有其他資料來源可查——UserAchievement 本身就是那筆紀錄。
+
+    所以這條規則只回報既有狀態，真正的解鎖動作發生在
+    views.KnowledgeBaseViewpointBrowseView 呼叫 unlock_knowledge_base_achievement()
+    的時候。
+    寫成 predicate 是為了讓它跟其他 16 個走同一套流程（含「一路同行」的判定）。
+    """
+    return UserAchievement.objects.filter(
+        user=user, code="first_knowledge_base"
+    ).exists()
+
+
 RULES = {
     "first_login": _first_login,
     "first_hh_dialogue": _first_hh_dialogue,
@@ -230,6 +249,7 @@ RULES = {
     "returning_days": _returning_days,
     "veteran_dialogues": _veteran_dialogues,
     "first_godot_entry": _first_godot_entry,
+    "first_knowledge_base": _first_knowledge_base,
 }
 
 
@@ -277,7 +297,7 @@ def evaluate(user) -> list[str]:
 
 
 def _persist(user, codes: list[str]) -> None:
-    """把新解鎖寫進 UserAchievement。
+    """把新解鎖寫進 UserAchievement，並授予對應頭銜。
 
     ignore_conflicts=True：兩個併發請求可能同時算出同一組新解鎖，unique
     constraint 會擋掉後到的那一列，這裡不該因此丟 500。
@@ -286,3 +306,66 @@ def _persist(user, codes: list[str]) -> None:
         [UserAchievement(user=user, code=code) for code in codes],
         ignore_conflicts=True,
     )
+    _grant_titles(user, codes)
+
+
+def _grant_titles(user, codes: list[str]) -> None:
+    """成就 → 頭銜。
+
+    刻意**不**設 is_selected：UserTitle 有「一位使用者最多一個 is_selected」的
+    partial unique index，自動選取會在第二個頭銜到手時直接違反約束；而且掛哪一
+    個頭銜本來就該由玩家在 Godot 大廳自己決定（POST /api/titles/me/）。
+
+    Title 不存在時跳過而不是建立：頭銜表由 seed_achievement_titles 管理，在這裡
+    順手建會讓「哪些頭銜存在」變成兩個地方說了算。也不讓它讓成就解鎖失敗。
+
+    ⚠️ 但漏掉的頭銜**不會**自動補回來：evaluate() 會跳過已解鎖的成就，
+    _grant_titles 不會對它再跑一次。補完 Title 之後要再執行一次
+    seed_achievement_titles，它會回填既有 UserAchievement 缺的頭銜。
+    """
+    wanted = {
+        d.title_name
+        for d in CATALOG
+        if d.code in codes and d.title_name
+    }
+    if not wanted:
+        return
+
+    titles = {t.name: t for t in Title.objects.filter(name__in=wanted)}
+    for name in wanted:
+        title = titles.get(name)
+        if title is None:
+            logger.warning(
+                "Title %s 不存在，user=%s 的成就頭銜未授予；"
+                "請執行 seed_achievement_titles 建立並回填。",
+                name,
+                user.id,
+            )
+            continue
+        UserTitle.objects.get_or_create(user=user, title=title)
+
+
+# ═══════════════════════════════════════════════════════════
+# 埋點（有副作用，不是 predicate）
+#
+# 這些函式會寫入 UserAchievement，供沒有其他資料來源可查的成就使用。
+# ═══════════════════════════════════════════════════════════
+
+def unlock_knowledge_base_achievement(user) -> list[str]:
+    """埋點：使用者真的打開了知識庫。
+
+    第一次以外的呼叫直接回傳空清單：知識庫翻頁會一直打同一支端點，已經解鎖之後
+    再跑一輪十幾個 query 的完整評估是純粹的浪費，而且那次瀏覽也沒有帶來任何新
+    資訊。安全網不會因此變弱——AchievementMeView 每次都會結算。
+
+    第一次解鎖時明確走 _grant_titles：這條路徑繞過 _persist()，不在這裡補一次的
+    話，日後在 achievements.CATALOG 幫「求知若渴」補上 title_name，頭銜會安靜地
+    永遠不授予。evaluate() 放在後面，這樣「一路同行」能在同一次呼叫裡一起結算。
+    """
+    _, created = UserAchievement.objects.get_or_create(
+        user=user, code="first_knowledge_base"
+    )
+    if not created:
+        return []
+    _grant_titles(user, ["first_knowledge_base"])
+    return evaluate(user)
