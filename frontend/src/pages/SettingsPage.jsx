@@ -21,6 +21,15 @@ const TABS = [
   { id: 'accounts', label: '帳號管理' },
 ];
 
+// 對應 apps.summary.models.VideoRecommendation.StanceDirection。後期影片
+// 推薦演算法（VideoRecommendationListView）靠這個欄位判斷「跟使用者立場
+// 相反的影片」是哪些，研究者上傳/編輯影片時要標記。
+const VIDEO_STANCE_OPTIONS = [
+  { value: 'support', label: '支持' },
+  { value: 'neutral', label: '中立' },
+  { value: 'oppose', label: '反對' },
+];
+
 function SettingsPage({ user }) {
   const isResearcher = Boolean(user?.isResearcher);
   const [activeTab, setActiveTab] = useState('display');
@@ -66,6 +75,7 @@ function SettingsPage({ user }) {
   const [newVideoThumbnail, setNewVideoThumbnail] = useState('');
   const [newVideoDescription, setNewVideoDescription] = useState('');
   const [newVideoTopicId, setNewVideoTopicId] = useState('');
+  const [newVideoStance, setNewVideoStance] = useState('neutral');
   const [isCreatingVideo, setIsCreatingVideo] = useState(false);
   // <input type="file"> 是 uncontrolled，選完檔案後要手動清空 value 才能
   // 重選同一個檔案再觸發一次 onChange；用 key 強制重新掛載最單純。
@@ -231,6 +241,7 @@ function SettingsPage({ user }) {
       formData.append('thumbnail_url', newVideoThumbnail);
       formData.append('description', newVideoDescription);
       if (newVideoTopicId !== '') formData.append('topic_id', newVideoTopicId);
+      formData.append('stance_direction', newVideoStance);
       await api.post('/api/summary/videos/admin/', formData);
       setNewVideoTitle('');
       setNewVideoFile(null);
@@ -238,6 +249,7 @@ function SettingsPage({ user }) {
       setNewVideoThumbnail('');
       setNewVideoDescription('');
       setNewVideoTopicId('');
+      setNewVideoStance('neutral');
       refreshVideos();
     } catch (requestError) {
       setVideoActionError(extractError(requestError, '新增影片失敗，請再試一次。'));
@@ -255,6 +267,18 @@ function SettingsPage({ user }) {
       refreshVideos();
     } catch (requestError) {
       setVideoActionError(extractError(requestError, '更新發布狀態失敗。'));
+    }
+  };
+
+  const handleChangeVideoStance = async (video, stanceDirection) => {
+    setVideoActionError('');
+    try {
+      await api.patch(`/api/summary/videos/admin/${video.id}/`, {
+        stance_direction: stanceDirection,
+      });
+      refreshVideos();
+    } catch (requestError) {
+      setVideoActionError(extractError(requestError, '更新立場標記失敗。'));
     }
   };
 
@@ -514,6 +538,17 @@ function SettingsPage({ user }) {
               </option>
             ))}
           </select>
+          <select
+            value={newVideoStance}
+            onChange={(e) => setNewVideoStance(e.target.value)}
+            title="這部影片代表的立場，後期影片推薦演算法會用來找「跟使用者立場相反」的影片"
+          >
+            {VIDEO_STANCE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
           <button type="submit" disabled={isCreatingVideo}>
             {isCreatingVideo ? '上傳中…' : '上傳'}
           </button>
@@ -543,6 +578,7 @@ function SettingsPage({ user }) {
               <tr>
                 <th>標題</th>
                 <th>議題</th>
+                <th>立場</th>
                 <th>狀態</th>
                 <th>操作</th>
               </tr>
@@ -560,6 +596,18 @@ function SettingsPage({ user }) {
                       ? '不限議題'
                       : displaySettings?.topics?.find((t) => t.topic_id === video.topic_id)
                           ?.title || `議題 ${video.topic_id}`}
+                  </td>
+                  <td>
+                    <select
+                      value={video.stance_direction || 'neutral'}
+                      onChange={(e) => handleChangeVideoStance(video, e.target.value)}
+                    >
+                      {VIDEO_STANCE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
                   </td>
                   <td>{video.is_published ? '已發布' : '未發布'}</td>
                   <td className="settings-actions">

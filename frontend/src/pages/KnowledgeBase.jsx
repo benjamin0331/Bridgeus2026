@@ -175,6 +175,16 @@ const KnowledgeBase = () => {
     setSelectedTopicId(topic.id);
   };
 
+  // 記一筆觀看紀錄給後端的影片推薦演算法用（初期熱門排序／後期相反立場
+  // 推薦都要靠這份紀錄才能算比例，見 VideoRecommendationListView）。播放
+  // 是本地互動，不因為記錄失敗就卡住，所以不 await、失敗也不特別處理。
+  const openVideo = (video) => {
+    setPlayingVideo(video);
+    if (selectedTopicId) {
+      api.post(`/api/summary/videos/${video.id}/watch/`, { topic_id: selectedTopicId }).catch(() => {});
+    }
+  };
+
   // stopPropagation：箭頭包在會導到對話詳情頁的卡片裡，點箭頭只該展開/
   // 收合，不該連帶觸發卡片本身的導頁。
   const toggleGroupExpanded = (event, summaryId) => {
@@ -346,7 +356,7 @@ const KnowledgeBase = () => {
                   key={video.id}
                   type="button"
                   className="kb-video-card"
-                  onClick={() => setPlayingVideo(video)}
+                  onClick={() => openVideo(video)}
                 >
                   <div
                     className="kb-video-thumb"

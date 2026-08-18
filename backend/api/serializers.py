@@ -189,6 +189,7 @@ class VideoRecommendationAdminSerializer(serializers.ModelSerializer):
             "thumbnail_url",
             "description",
             "topic_id",
+            "stance_direction",
             "is_published",
             "display_order",
             "created_at",

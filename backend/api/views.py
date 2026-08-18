@@ -11,7 +11,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.cache import cache
 from django.db import IntegrityError, transaction
-from django.db.models import FloatField, Q, Value
+from django.db.models import Count, FloatField, Q, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework import exceptions, generics, permissions, status
@@ -25,7 +25,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from apps.matching.services.anonymity import assign_anonymous_ids
 from apps.matching.services.semantic import build_q9_embedding
 from apps.matching.services.semantic_tree import get_topic_anchors
-from apps.summary.models import VideoRecommendation, ViewpointNode
+from apps.summary.models import VideoRecommendation, VideoWatchEvent, ViewpointNode
 
 from .permissions import (
     IsGodotServiceToken,
@@ -2752,21 +2752,129 @@ class VideoRecommendationListView(generics.ListAPIView):
     知識庫首頁「影片推薦」區塊。內容由 Django admin 後台人工維護
     （apps.summary.admin.VideoRecommendationAdmin），這裡只回傳
     is_published=True 的項目；topic_id 沒帶就回傳所有已發布項目（含不限
-    議題的推薦）。
+    議題的推薦），這種情況沒有單一議題可以判斷立場，一律走熱門排序。
+
+    影片推薦演算法：
+    - 初期（這個議題底下還沒有這位使用者的後測問卷 PostDialogueResponse，
+      也就是還沒進行過對話）：依全部影片被觀看的次數（VideoWatchEvent，
+      點擊率的代理指標）由高到低排序，取前 10 部。
+    - 後期（已經填過這個議題的後測問卷）：用後測問卷算出的目前立場
+      （resolve_stance_category）鎖定「跟使用者立場相反」的影片（研究者在
+      影片管理面板標記的 stance_direction）優先推薦；同時持續統計這位使用者
+      在這個議題底下已觀看的支持／反對影片比例，一旦落在 4:6～6:4 之間
+      （含 5:5）就視為曝光已經均衡，改回跟初期一樣的熱門排序，不再單向推播。
+      spec 說「每觀看 10 部影片為基準去判斷」——這裡改成每次請求都即時算
+      比例，效果等價（達到均衡的當下就會反映在下一次請求），不需要另外
+      排程一個「第 10 部」的檢查點。
     """
 
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = VideoRecommendationSerializer
 
+    POPULAR_LIMIT = 10
+    # 「6:4／4:6／5:5」= 少數方佔比至少 40%。
+    RATIO_BALANCE_THRESHOLD = 0.4
+
     def get_queryset(self):
-        qs = VideoRecommendation.objects.filter(is_published=True)
         try:
             topic_id = _parse_topic_id(self.request.query_params.get("topic_id"))
         except ValueError:
             raise exceptions.ValidationError({"topic_id": "topic_id 必須是整數。"})
+
+        qs = VideoRecommendation.objects.filter(is_published=True)
         if topic_id is not None:
             qs = qs.filter(topic_id=topic_id)
-        return qs
+
+        if topic_id is None:
+            return self._order_by_popularity(qs)
+
+        target_stance = self._opposite_stance_for(self.request.user, topic_id)
+        if target_stance is None or self._is_exposure_balanced(self.request.user, topic_id):
+            return self._order_by_popularity(qs)
+
+        return self._order_by_popularity(qs.filter(stance_direction=target_stance))
+
+    def _order_by_popularity(self, qs):
+        return (
+            qs.annotate(watch_count=Count("watch_events"))
+            .order_by("-watch_count", "display_order", "-created_at")[: self.POPULAR_LIMIT]
+        )
+
+    @staticmethod
+    def _opposite_stance_for(user, topic_id):
+        """使用者在這個議題的「相反立場」。還沒進入後期（沒有後測問卷）或
+        立場中立時回傳 None（= 不特別過濾，走熱門排序）。"""
+        response = (
+            PostDialogueResponse.objects.filter(user=user, topic_id=topic_id)
+            .order_by("-created_at")
+            .first()
+        )
+        if response is None:
+            return None
+
+        category = resolve_stance_category(
+            topic_id=topic_id, user_stance_score=response.s_post()
+        )
+        if category == UserStanceProfile.StanceCategory.SUPPORT:
+            return VideoRecommendation.StanceDirection.OPPOSE
+        if category == UserStanceProfile.StanceCategory.OPPOSE:
+            return VideoRecommendation.StanceDirection.SUPPORT
+        return None
+
+    @classmethod
+    def _is_exposure_balanced(cls, user, topic_id):
+        counts = (
+            VideoWatchEvent.objects.filter(user=user, topic_id=topic_id)
+            .exclude(stance_direction=VideoRecommendation.StanceDirection.NEUTRAL)
+            .values("stance_direction")
+            .annotate(total=Count("id"))
+        )
+        by_stance = {row["stance_direction"]: row["total"] for row in counts}
+        support = by_stance.get(VideoRecommendation.StanceDirection.SUPPORT, 0)
+        oppose = by_stance.get(VideoRecommendation.StanceDirection.OPPOSE, 0)
+        total = support + oppose
+        if total == 0:
+            return False
+        return min(support, oppose) / total >= cls.RATIO_BALANCE_THRESHOLD
+
+
+class VideoWatchEventCreateView(APIView):
+    """POST /api/summary/videos/<pk>/watch/  body: {"topic_id": <id>}
+
+    使用者在知識庫點開一部推薦影片播放時打這支 API，記一筆觀看紀錄——
+    VideoRecommendationListView 的後期演算法需要這份紀錄才能算「支持／反對
+    影片各看了幾部」的曝光比例。topic_id 必填且來自請求（不是
+    video.topic_id）：影片本身可能是「不限議題」的共用推薦，但使用者一定是
+    在某個特定議題頁面底下看的，比例要算在那個議題上。
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        try:
+            topic_id = _parse_topic_id(str(request.data.get("topic_id", "")))
+        except ValueError:
+            topic_id = None
+        if topic_id is None:
+            return Response(
+                {"detail": "topic_id 為必填，且必須是整數。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            video = VideoRecommendation.objects.get(pk=pk, is_published=True)
+        except VideoRecommendation.DoesNotExist:
+            return Response(
+                {"detail": "找不到這部影片。"}, status=status.HTTP_404_NOT_FOUND
+            )
+
+        VideoWatchEvent.objects.create(
+            user=request.user,
+            video=video,
+            topic_id=topic_id,
+            stance_direction=video.stance_direction,
+        )
+        return Response(status=status.HTTP_201_CREATED)
 
 
 def _fill_video_url_from_file(instance, request):
