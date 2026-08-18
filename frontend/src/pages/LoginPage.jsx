@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import './LoginPage.css';
-import api, { getAccessTokenPayload } from '../api/client';
+import { login } from '../api/auth';
 
 function LoginPage({ setUser, authMessage = '' }) {
   const navigate = useNavigate();
@@ -16,26 +16,7 @@ function LoginPage({ setUser, authMessage = '' }) {
     setErrorMessage(''); // 每次按下登入先清空錯誤訊息
 
     try {
-      const response = await api.post('/api/token/', {
-        username: userId, // Django 預設要找 'username' 這個欄位，我們把 userId 塞給它
-        password: password
-      });
-
-      localStorage.setItem('access', response.data.access);
-      localStorage.setItem('refresh', response.data.refresh);
-
-      const tokenPayload = getAccessTokenPayload();
-      const nextUser = {
-        name: userId,
-        username: userId,
-        id: tokenPayload?.user_id ?? userId,
-        // 只用來決定前端要不要顯示研究者專用連結（例如 /viewpoint-review）；
-        // 實際的存取控制一律由後端 IsResearcher（「研究者」Django Group）把關，
-        // 這裡不是安全邊界。
-        isResearcher: Boolean(tokenPayload?.is_researcher)
-      };
-
-      localStorage.setItem('bridgeus_user', JSON.stringify(nextUser));
+      const nextUser = await login({ username: userId, password });
       setUser(nextUser);
       navigate('/', { replace: true });
 
@@ -112,6 +93,10 @@ function LoginPage({ setUser, authMessage = '' }) {
         {/* 底部輔助說明 */}
         <div className="login-footer">
           <p>請使用管理員帳號登入</p>
+        </div>
+
+        <div className="login-register-link">
+          還沒有帳號？<Link to="/register">立即註冊</Link>
         </div>
       </div>
 

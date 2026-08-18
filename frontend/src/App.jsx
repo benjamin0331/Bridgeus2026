@@ -19,6 +19,8 @@ import AchievementPage from './pages/AchievementPage'
 import { ackAchievements, fetchAchievements } from './api/achievements'
 import AchievementToast from './components/AchievementToast'
 import LoginPage from './pages/LoginPage'
+import RegisterPage from './pages/RegisterPage'
+import ConsentPage from './pages/ConsentPage'
 import PostQuestionnairePage from './pages/PostQuestionnairePage'
 import DebriefingPage from './pages/DebriefingPage'
 import PlatformFeedbackPage from './pages/PlatformFeedbackPage'
@@ -232,6 +234,9 @@ function App() {
   if (!user) {
     return (
       <Routes>
+        {/* 這兩條必須排在 catch-all 之前，否則 path="*" 會把它們吃掉。 */}
+        <Route path="/register" element={<RegisterPage setUser={handleLogin} />} />
+        <Route path="/consent" element={<ConsentPage />} />
         <Route path="*" element={<LoginPage setUser={handleLogin} authMessage={authMessage} />} />
       </Routes>
     );

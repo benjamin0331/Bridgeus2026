@@ -1,0 +1,84 @@
+.register-page-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.register-card {
+  width: 100%;
+  max-width: 420px;
+  padding: 32px;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+}
+
+.register-header {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.register-field {
+  margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+}
+
+.register-field label {
+  margin-bottom: 6px;
+  font-size: 14px;
+}
+
+.register-field input[type='text'],
+.register-field input[type='email'],
+.register-field input[type='password'] {
+  padding: 10px 12px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  font-size: 15px;
+}
+
+.register-field-error {
+  margin-top: 6px;
+  color: #c0392b;
+  font-size: 13px;
+}
+
+.register-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 20px 0;
+  font-size: 14px;
+}
+
+.register-submit {
+  width: 100%;
+  padding: 12px;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.register-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.register-error {
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fdecea;
+  color: #c0392b;
+  font-size: 14px;
+}
+
+.register-footer {
+  margin-top: 20px;
+  text-align: center;
+  font-size: 14px;
+}
