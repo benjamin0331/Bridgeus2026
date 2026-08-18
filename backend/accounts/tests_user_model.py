@@ -83,3 +83,10 @@ class RegistrationFieldTests(TestCase):
         self.assertIsNone(user.email_verified_at)
         self.assertFalse(user.is_research_subject)
         self.assertEqual(user.display_name, "")
+
+    def test_consent_version_defaults_to_empty_string(self):
+        """空字串 = 沒有同意紀錄。研究者代開的帳號與遷移前的既有帳號都是這一類，
+        它們本來就不該進入分析樣本。
+        """
+        user = User.objects.create_user(username="c1", password="Xk9$mVpq2Lz")
+        self.assertEqual(user.consent_version, "")

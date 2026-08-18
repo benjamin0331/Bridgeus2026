@@ -1696,6 +1696,7 @@ class MeView(APIView):
             {
                 "id": request.user.id,
                 "username": request.user.username,
+                "display_name": request.user.display_name,
                 "is_researcher": is_researcher,
                 "entry_mode": get_entry_mode(is_researcher=is_researcher),
             }

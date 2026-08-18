@@ -278,7 +278,11 @@ REST_FRAMEWORK = {
     # ScopedRateThrottle + throttle_scope），不全域套用。
     'DEFAULT_THROTTLE_RATES': {
         'login': os.getenv('THROTTLE_LOGIN', '10/min'),
-        'register': os.getenv('THROTTLE_REGISTER', '5/hour'),
+        # 60 而非個位數：DRF 對未認證請求依 IP 計數，而受試者會在同一個場地
+        # 集體註冊、共用 NAT 出口 IP。5/hour 會讓第 6 位受試者開始就註冊失敗，
+        # 直接毀掉一次資料收集。本平台不是公開商業服務、URL 未對外宣傳，要防的
+        # 是隨機掃描而非有組織的濫用；真的遇到濫用可用環境變數即時調低。
+        'register': os.getenv('THROTTLE_REGISTER', '60/hour'),
     },
 }
 

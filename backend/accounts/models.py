@@ -24,6 +24,11 @@ class User(AbstractUser):
     # 見 spec 第 7 節與 tests_display_name_boundary.py。
     display_name = models.CharField(max_length=50, blank=True)
 
+    # 使用者註冊時同意的研究說明版本（accounts.consent.CONSENT_VERSION）。
+    # 空字串 = 沒有同意紀錄——研究者代開的帳號與遷移前的既有帳號都是這一類。
+    # 存的是簽署當下的版本字串，日後改版不會動到既有紀錄。
+    consent_version = models.CharField(max_length=32, blank=True)
+
     class Meta(AbstractUser.Meta):
         db_table = "auth_user"
 

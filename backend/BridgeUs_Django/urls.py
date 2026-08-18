@@ -25,6 +25,7 @@ from .media_views import serve_media
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('api.urls')),  # 引入 api 部門網址
+    path('api/', include('accounts.urls')),  # 自助註冊
 
     # JWT 通行證發放網址（BridgeUsTokenObtainPairView 在 access token 裡多帶 is_researcher claim）
     path('api/token/', BridgeUsTokenObtainPairView.as_view(), name='token_obtain_pair'),
