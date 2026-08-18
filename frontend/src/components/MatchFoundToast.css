@@ -1,0 +1,94 @@
+.match-found-toast {
+  /* 預設跟 AchievementToast 同一個位置；只有底下真的有成就卡片在佔位時
+     （見 .match-found-toast--stacked）才疊到它上方，避免兩個 toast 同時
+     彈出時互相蓋住。 */
+  position: fixed;
+  right: 60px;
+  bottom: 25px;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  padding: 14px 16px 14px 18px;
+  border: 1px solid rgba(117, 96, 78, 0.18);
+  border-radius: 14px;
+  background: rgba(255, 251, 246, 0.98);
+  box-shadow: 0 14px 34px rgba(83, 62, 44, 0.18);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  animation: match-found-toast-in 0.28s ease;
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
+}
+
+.match-found-toast--stacked {
+  bottom: 105px;
+}
+
+.match-found-toast:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 18px 40px rgba(83, 62, 44, 0.24);
+}
+
+.match-found-toast-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.match-found-toast-kicker {
+  color: #8d7058;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.match-found-toast-name {
+  color: #2f2722;
+  font-size: 17px;
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.match-found-toast-desc {
+  margin-top: 2px;
+  color: #5d4c3e;
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.match-found-toast-close {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  color: #a79c90;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.match-found-toast-close:hover {
+  background: rgba(117, 96, 78, 0.12);
+  color: #5d4128;
+}
+
+@keyframes match-found-toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}

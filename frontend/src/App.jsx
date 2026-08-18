@@ -3,8 +3,9 @@ import { Routes, Route, useNavigate, useParams, useLocation } from 'react-router
 import './App.css'
 
 import api, { AUTH_LOGOUT_EVENT, clearAuthStorage } from './api/client'
+import { resetFavoritesStore } from './hooks/useFavorites'
 import { NotificationsProvider } from './context/NotificationsContext'
-import { MatchingHeartbeatProvider } from './context/MatchingHeartbeatContext'
+import { MatchingHeartbeatProvider, useMatchingHeartbeat } from './context/MatchingHeartbeatContext'
 import Navbar from './components/Navbar'
 import Sidebar from './components/Sidebar'
 import HomePage from './pages/HomePage'
@@ -18,6 +19,7 @@ import NotificationPage from './pages/NotificationPage'
 import AchievementPage from './pages/AchievementPage'
 import { findAchievement } from './pages/achievements.data'
 import AchievementToast from './components/AchievementToast'
+import MatchFoundToast from './components/MatchFoundToast'
 import LoginPage from './pages/LoginPage'
 import PostQuestionnairePage from './pages/PostQuestionnairePage'
 import DebriefingPage from './pages/DebriefingPage'
@@ -36,6 +38,28 @@ function TopicChatRoute({ user, issues, issuesLoaded }) {
       user={user}
       issues={issues}
       issuesLoaded={issuesLoaded}
+    />
+  );
+}
+
+// 配對成功彈出提醒：讀 MatchingHeartbeatContext 的通知佇列，只顯示最舊的
+// 一筆（多筆同時配對的情況很少見，先進先出即可）。獨立成元件是因為它要用
+// useMatchingHeartbeat()，而 App() 本身在 MatchingHeartbeatProvider 外層，
+// 沒辦法直接呼叫這個 hook。
+function MatchFoundToastContainer({ navigate, stacked }) {
+  const { matchAlerts, dismissMatchAlert } = useMatchingHeartbeat();
+  const alert = matchAlerts[0] ?? null;
+
+  return (
+    <MatchFoundToast
+      alert={alert}
+      stacked={stacked}
+      onClose={() => alert && dismissMatchAlert(alert.roomId)}
+      onOpen={() => {
+        if (!alert) return;
+        dismissMatchAlert(alert.roomId);
+        navigate(`/topic/${alert.topicId}?mode=match`);
+      }}
     />
   );
 }
@@ -77,6 +101,7 @@ function App() {
 
   const handleLogout = useCallback((message = '') => {
     clearAuthStorage();
+    resetFavoritesStore();
     setAuthMessage(message);
     setUser(null);
     setIssues([]);
@@ -243,6 +268,7 @@ function App() {
             navigate('/achievement');
           }}
         />
+        <MatchFoundToastContainer navigate={navigate} stacked={!!unlockedToast} />
       </div>
       </MatchingHeartbeatProvider>
     </NotificationsProvider>

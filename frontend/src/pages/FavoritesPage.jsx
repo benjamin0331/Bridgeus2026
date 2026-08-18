@@ -19,10 +19,18 @@ const SPEAKER_SIDE_LABELS = { a: 'A方', b: 'B方' };
 const FavoritesPage = () => {
   const navigate = useNavigate();
 
-  const { favoriteItems: favoriteViewpoints, isFavorited: isViewpointFavorited, toggleFavorite: toggleViewpointFavorite } =
-    useFavorites('viewpoint');
-  const { favoriteItems: favoriteVideos, isFavorited: isVideoFavorited, toggleFavorite: toggleVideoFavorite } =
-    useFavorites('video');
+  const {
+    favoriteItems: favoriteViewpoints,
+    isFavorited: isViewpointFavorited,
+    toggleFavorite: toggleViewpointFavorite,
+    isLoading: viewpointsLoading,
+  } = useFavorites('viewpoint');
+  const {
+    favoriteItems: favoriteVideos,
+    isFavorited: isVideoFavorited,
+    toggleFavorite: toggleVideoFavorite,
+    isLoading: videosLoading,
+  } = useFavorites('video');
 
   const goToConversation = (viewpoint) => {
     navigate(`/kb/conversations/${viewpoint.id}`);
@@ -35,7 +43,9 @@ const FavoritesPage = () => {
       <section className="kb-highlights-section">
         <div className="kb-section-title">收藏的觀點</div>
 
-        {favoriteViewpoints.length === 0 ? (
+        {viewpointsLoading ? (
+          <div className="kb-empty-hint">載入中…</div>
+        ) : favoriteViewpoints.length === 0 ? (
           <div className="kb-empty-hint">還沒有收藏任何觀點，去觀點知識庫逛逛吧。</div>
         ) : (
           <div className="kb-highlights-grid">
@@ -80,7 +90,9 @@ const FavoritesPage = () => {
       <section className="kb-video-section">
         <div className="kb-section-title">收藏的影片</div>
 
-        {favoriteVideos.length === 0 ? (
+        {videosLoading ? (
+          <div className="kb-empty-hint">載入中…</div>
+        ) : favoriteVideos.length === 0 ? (
           <div className="kb-empty-hint">還沒有收藏任何影片。</div>
         ) : (
           <div className="kb-video-grid">

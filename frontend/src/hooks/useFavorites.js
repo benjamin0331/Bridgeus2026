@@ -1,62 +1,121 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
+import api from '../api/client';
 
-const STORAGE_KEY = 'bridgeus_favorites_v1';
+// 收藏狀態現在由後端 /api/favorites/ 存放（跨裝置同步），這裡只是一個小型
+// module-level store：同一頁常常會有兩個 useFavorites('viewpoint') /
+// useFavorites('video') 實例（見 KnowledgeBase.jsx、FavoritesPage.jsx），
+// 用共享 store 讓它們共用同一次 GET，並且互相看得到彼此的樂觀更新。
+let state = {
+  viewpoint: new Map(),
+  video: new Map(),
+  status: 'idle', // idle | loading | loaded | error
+};
+let listeners = new Set();
+let inFlightFetch = null;
 
-function readFavorites() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : {};
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
+function emitChange() {
+  listeners.forEach((listener) => listener());
 }
 
-function writeFavorites(map) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
-  } catch {
-    // localStorage 不可用（例如無痕模式滿了）時，收藏狀態只留在當次畫面，不影響主要功能。
-  }
+function setState(partial) {
+  state = { ...state, ...partial };
+  emitChange();
 }
 
-// 收藏狀態目前只存在瀏覽器本機（後端尚未有收藏 model/endpoint），所以連同
-// 卡片顯示用的欄位（摘要、標題…）一起存起來，收藏頁才不用額外打 API 把資料
-// 撈回來。之後要接後端時，把 toggleFavorite 內部換成呼叫 API、favoriteItems
-// 改讀後端回傳的清單即可，呼叫端（isFavorited/toggleFavorite/favoriteItems
-// 介面）不用變。
+function subscribe(listener) {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+function getSnapshot() {
+  return state;
+}
+
+// 登出時呼叫，避免下一個在同一頁面登入的使用者看到前一個人的收藏。
+export function resetFavoritesStore() {
+  inFlightFetch = null;
+  setState({ viewpoint: new Map(), video: new Map(), status: 'idle' });
+}
+
+function ensureLoaded() {
+  if (state.status === 'loaded' || state.status === 'loading') {
+    return inFlightFetch ?? Promise.resolve();
+  }
+
+  setState({ status: 'loading' });
+  inFlightFetch = api
+    .get('/api/favorites/')
+    .then((response) => {
+      const data = response.data || {};
+      const viewpointMap = new Map((data.viewpoint || []).map((item) => [String(item.id), item]));
+      const videoMap = new Map((data.video || []).map((item) => [String(item.id), item]));
+      setState({ viewpoint: viewpointMap, video: videoMap, status: 'loaded' });
+    })
+    .catch(() => {
+      setState({ status: 'error' });
+    })
+    .finally(() => {
+      inFlightFetch = null;
+    });
+
+  return inFlightFetch;
+}
+
+// item 需要有 id 欄位；已收藏時傳入任何帶正確 id 的物件即可移除收藏。
 export function useFavorites(kind) {
-  const [favoritesByKind, setFavoritesByKind] = useState(() => readFavorites());
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot);
 
-  const favoriteMap = useMemo(() => {
-    const raw = favoritesByKind[kind];
-    // 舊格式（純 id 陣列）沒有卡片資料可用，視同尚未收藏。
-    return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
-  }, [favoritesByKind, kind]);
+  useEffect(() => {
+    ensureLoaded();
+  }, []);
 
-  const favoriteItems = useMemo(() => Object.values(favoriteMap), [favoriteMap]);
+  const favoriteMap = snapshot[kind];
+
+  const favoriteItems = useMemo(() => Array.from(favoriteMap.values()), [favoriteMap]);
 
   const isFavorited = useCallback(
-    (id) => Object.prototype.hasOwnProperty.call(favoriteMap, String(id)),
+    (id) => favoriteMap.has(String(id)),
     [favoriteMap],
   );
 
-  // item 需要有 id 欄位；已收藏時傳入任何帶正確 id 的物件即可移除收藏。
   const toggleFavorite = useCallback((item) => {
     const key = String(item.id);
-    setFavoritesByKind((current) => {
-      const currentMap = current[kind] ?? {};
-      const nextMap = { ...currentMap };
-      if (Object.prototype.hasOwnProperty.call(nextMap, key)) {
-        delete nextMap[key];
-      } else {
-        nextMap[key] = item;
-      }
-      const next = { ...current, [kind]: nextMap };
-      writeFavorites(next);
-      return next;
-    });
+    const beforeMap = state[kind];
+    const wasFavorited = beforeMap.has(key);
+
+    // 樂觀更新：先切星星，API 回來再用實際結果校正，避免點擊到 API 回應
+    // 之間的空檔感覺卡頓。
+    const optimisticMap = new Map(beforeMap);
+    if (wasFavorited) {
+      optimisticMap.delete(key);
+    } else {
+      optimisticMap.set(key, item);
+    }
+    setState({ [kind]: optimisticMap });
+
+    api
+      .post('/api/favorites/', { target_type: kind, target_id: item.id })
+      .then((response) => {
+        const favorited = Boolean(response.data?.favorited);
+        const nextMap = new Map(state[kind]);
+        if (favorited) {
+          nextMap.set(key, item);
+        } else {
+          nextMap.delete(key);
+        }
+        setState({ [kind]: nextMap });
+      })
+      .catch(() => {
+        // 失敗就退回切換前的狀態。
+        const revertMap = new Map(state[kind]);
+        if (wasFavorited) {
+          revertMap.set(key, item);
+        } else {
+          revertMap.delete(key);
+        }
+        setState({ [kind]: revertMap });
+      });
   }, [kind]);
 
-  return { isFavorited, toggleFavorite, favoriteItems };
+  return { isFavorited, toggleFavorite, favoriteItems, isLoading: snapshot.status === 'loading' };
 }

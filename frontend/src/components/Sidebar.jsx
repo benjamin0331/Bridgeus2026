@@ -1,9 +1,12 @@
 import React, { useState } from 'react';
 import { useNotifications } from '../context/NotificationsContext';
+import { useMatchingHeartbeat } from '../context/MatchingHeartbeatContext';
 
 function Sidebar({ navigate, isTopicPage = false }) {
   const [isOpen, setIsOpen] = useState(false);
   const { hasUnread } = useNotifications();
+  const { hasMatchAlert } = useMatchingHeartbeat();
+  const showBellDot = hasUnread || hasMatchAlert;
   const handleNavigate = (path) => {
     navigate(path);
     setIsOpen(false);
@@ -61,7 +64,7 @@ function Sidebar({ navigate, isTopicPage = false }) {
             title="消息通知"
           >
             <img src="/bell.png" alt="" className="utility-icon" />
-            {hasUnread && <span className="sidebar-notification-dot" aria-hidden="true" />}
+            {showBellDot && <span className="sidebar-notification-dot" aria-hidden="true" />}
           </button>
           <button
             className="sidebar-icon-btn"

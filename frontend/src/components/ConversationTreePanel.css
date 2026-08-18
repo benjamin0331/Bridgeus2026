@@ -215,10 +215,47 @@
   fill: #4a3728;
 }
 
+/* Breathing intro: a node that has just been assigned a stance flashes
+   between its stance color and the resting brown/cream fill for 3 cycles
+   (2s each = 6s total) before settling back on the resting fill that the
+   stance stroke rules above already use. `is-breathing` is only ever
+   applied once per node id (see lit-tracking in ConversationTreePanel.jsx),
+   so re-renders (resize, etc.) don't replay it. */
+@keyframes node-breathe-support {
+  0%, 100% { fill: #f0e8dc; }
+  50% { fill: #2f9e58; }
+}
+
+@keyframes node-breathe-oppose {
+  0%, 100% { fill: #f0e8dc; }
+  50% { fill: #d64545; }
+}
+
+.node-point.stance-support.is-breathing .conversation-tree-node-shape {
+  animation: node-breathe-support 2s ease-in-out 3;
+}
+
+.node-point.stance-oppose.is-breathing .conversation-tree-node-shape {
+  animation: node-breathe-oppose 2s ease-in-out 3;
+}
+
 .conversation-tree-node.is-selected .conversation-tree-node-shape {
   stroke: #9b6f47;
   stroke-width: 2.5px;
-  filter: drop-shadow(0 0 5px rgba(155, 111, 71, 0.45));
+  filter: drop-shadow(0 0 3px rgba(155, 111, 71, 0.35));
+}
+
+/* Selected + stance nodes keep their stance color in the click glow instead
+   of being overridden to brown; blur/opacity kept low so it reads as a thin
+   halo rather than a bloom. */
+.conversation-tree-node.stance-support.is-selected .conversation-tree-node-shape {
+  stroke: #2f9e58;
+  filter: drop-shadow(0 0 3px rgba(47, 158, 88, 0.4));
+}
+
+.conversation-tree-node.stance-oppose.is-selected .conversation-tree-node-shape {
+  stroke: #d64545;
+  filter: drop-shadow(0 0 3px rgba(214, 69, 69, 0.4));
 }
 
 .conversation-tree-node-label {
