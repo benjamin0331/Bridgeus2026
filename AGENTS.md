@@ -71,7 +71,9 @@
 - Backend smoke checks:
   - `uv run python manage.py check`
   - `DB_ENGINE=sqlite uv run python manage.py test api --keepdb --noinput`
-  - `DB_ENGINE=sqlite uv run pytest api/tests_websocket.py chat/tests*.py`
+  - `DB_ENGINE=sqlite uv run pytest api/tests_websocket.py api/tests_achievements.py api/tests_input_gate_ws.py chat/tests_embedding.py chat/tests_emotion.py chat/tests_filter.py chat/tests_warm_nlp_models.py`
+    - 這些檔案是 pytest 風格（模組層級函式 + `@pytest.mark.django_db`），`manage.py test` 找不到它們（會回報 `Found 0 test(s)`）。新增 pytest 風格的測試檔時記得一併加進這一行，否則它靜默地不會被執行。
+    - 刻意逐檔列出而不用 `chat/tests*.py`：`chat/tests_{ai_assist,consumer,drift,session,stalemate,topic}.py` 自 2026-06-03（commit `e69184b` 移除 legacy chat models）起就無法匯入，而 pytest 遇到 collection error 會中止整輪，用 glob 會連同上面所有檔案一起拖垮。那 6 個檔案待清理。
 - Frontend smoke checks:
   - `npm run lint`
   - `npm run build`

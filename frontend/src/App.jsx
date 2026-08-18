@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Routes, Route, useNavigate, useParams, useLocation } from 'react-router-dom'
 import './App.css'
 
@@ -81,6 +81,17 @@ function App() {
   const [toastQueue, setToastQueue] = useState([]);
   const unlockedToast = toastQueue[0] ?? null;
 
+  // 本次登入期間已經跳過、且已送出 ack 的 code。
+  //
+  // 為什麼需要它：ack 是非同步的，而下面那個 effect 依賴 location.pathname，
+  // 換頁就會立刻重新 fetch。點 toast 的「查看」時 dismissToast() 之後緊接著
+  // navigate('/achievement')，ack 幾乎不可能在那之前落庫，於是後端仍會把同一筆
+  // 算進 newly_unlocked，通知就在成就頁上又跳一次。
+  //
+  // 不用「await ack 再導頁」的原因：那會讓每次點「查看」都多等一個網路來回，
+  // 而且 ack 失敗時還是會重跳。本地清單兩種情況都擋得住。
+  const acknowledgedRef = useRef(new Set());
+
   // 依賴帶 location.pathname 而不只是 user：最主要的解鎖時機是送出後測，那發生在
   // session 中間，而後測頁送完是 SPA 導頁（App 不會 remount）。只看 user 的話，
   // 通知會晚整整一個 session 才跳，而且是在使用者早就從成就頁看到卡片解鎖之後 ——
@@ -91,7 +102,10 @@ function App() {
     fetchAchievements()
       .then((data) => {
         if (cancelled) return;
-        setToastQueue(data.newly_unlocked ?? []);
+        const pending = (data.newly_unlocked ?? []).filter(
+          (item) => !acknowledgedRef.current.has(item.code),
+        );
+        setToastQueue(pending);
       })
       .catch((err) => {
         // 通知拿不到不影響任何功能，記著就好。
@@ -105,6 +119,7 @@ function App() {
   const dismissToast = useCallback(() => {
     const shown = toastQueue[0];
     if (shown) {
+      acknowledgedRef.current.add(shown.code);
       ackAchievements([shown.code])
         .catch((err) => console.warn('成就通知標記已讀失敗：', err?.message ?? err));
     }
@@ -128,6 +143,9 @@ function App() {
     // 回來前的空檔看到上一位的 toast，點下去還會以自己的身份 ack，把自己同 code
     // 的成就誤標成已通知（共用機器的實驗環境下會真的發生）。
     setToastQueue([]);
+    // 本地已 ack 清單也要清：它是以 code 為 key 的，留著會讓下一位登入者
+    // 同 code 的新解鎖被誤判成「已經跳過了」而永遠不顯示。
+    acknowledgedRef.current = new Set();
     setEntryMode('split');
     navigate('/', { replace: true });
   }, [navigate]);
