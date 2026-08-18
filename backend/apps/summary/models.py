@@ -116,6 +116,11 @@ class VideoRecommendation(models.Model):
     網址——其餘讀取路徑（公開清單、前端 <a href>）全部只認 url，不需要
     知道背後究竟是本地上傳檔案還是外部連結。"""
 
+    class StanceDirection(models.TextChoices):
+        SUPPORT = "support", "支持"
+        NEUTRAL = "neutral", "中立"
+        OPPOSE = "oppose", "反對"
+
     title = models.CharField(max_length=255)
     url = models.URLField(blank=True)
     video_file = models.FileField(upload_to="kb_videos/%Y/%m/", blank=True, null=True)
@@ -123,6 +128,14 @@ class VideoRecommendation(models.Model):
     description = models.TextField(blank=True)
     # 對應 api.dialogue_topics.TOPIC_CONFIGS 的 key；留空 = 不限議題的推薦。
     topic_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    # 這部影片代表哪一種立場——後期影片推薦演算法要靠這個欄位判斷「跟使用者
+    # 立場相反的影片」是哪些，只有研究者在影片管理面板能設定。預設 neutral
+    # （不特別偏向任一方），對舊資料相容。
+    stance_direction = models.CharField(
+        max_length=16,
+        choices=StanceDirection.choices,
+        default=StanceDirection.NEUTRAL,
+    )
     is_published = models.BooleanField(default=True)
     display_order = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -132,3 +145,45 @@ class VideoRecommendation(models.Model):
 
     def __str__(self):
         return self.title
+
+
+class VideoWatchEvent(models.Model):
+    """使用者每次點開一部推薦影片就記一筆，供影片推薦演算法使用：
+
+    - 初期（使用者在這個議題還沒有後測問卷）：依全部影片被記錄的次數
+      （= 點擊率）排序，取熱門前 10 部。
+    - 後期（已有後測問卷）：依使用者立場的「相反立場」影片優先推薦，並用
+      這裡累積的 stance_direction 分布持續檢查是否已經達到 4:6～6:4 之間
+      的均衡曝光比例（見 api.views.VideoRecommendationListView）。
+
+    stance_direction 是「該次觀看當下」影片被標記的立場快照（不是外鍵指過
+    去現查），研究者事後改動影片標記不會回頭改寫已經發生的觀看紀錄，
+    ratio 判斷才會穩定。topic_id 存的是使用者觀看當下所在的議題（來自前端
+    請求，不是 video.topic_id）——影片可能是「不限議題」（topic_id=None）的
+    共用推薦，但看的人一定是在某個特定議題頁面底下看的，比例要算在那個
+    議題上。
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="video_watch_events",
+    )
+    video = models.ForeignKey(
+        VideoRecommendation,
+        on_delete=models.CASCADE,
+        related_name="watch_events",
+    )
+    topic_id = models.PositiveIntegerField(db_index=True)
+    stance_direction = models.CharField(
+        max_length=16, choices=VideoRecommendation.StanceDirection.choices
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "topic_id"]),
+        ]
+
+    def __str__(self):
+        return f"user={self.user_id} video={self.video_id} stance={self.stance_direction}"

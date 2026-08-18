@@ -44,6 +44,10 @@ urlpatterns = [
         views.KnowledgeBaseConversationDetailView.as_view(),
     ),
     path('summary/videos/', views.VideoRecommendationListView.as_view()),
+    path(
+        'summary/videos/<int:pk>/watch/',
+        views.VideoWatchEventCreateView.as_view(),
+    ),
     # 研究者專用：知識庫影片管理面板（前端設定頁）
     path(
         'summary/videos/admin/',
