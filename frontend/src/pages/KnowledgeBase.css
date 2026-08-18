@@ -266,15 +266,17 @@
   letter-spacing: 0.04em;
 }
 
+/* 「使用者發言」「對方回應」這兩項各自獨立捲動：原本用
+   -webkit-line-clamp 硬截斷成 3 行，長內容會被吃掉且沒有辦法看完整；
+   改成固定高度＋各自 overflow-y:auto，兩項互不影響、也不會把整張卡片撐高。 */
 .kb-highlight-quote-text {
   margin: 4px 0 0;
   color: #555;
   font-size: 13px;
   line-height: 1.55;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  max-height: 4.65em;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .kb-view-more-btn {
@@ -301,17 +303,30 @@
   align-items: center;
   gap: 6px;
   border: none;
-  background: transparent;
-  color: #3b587a;
+  border-radius: 16px;
+  /* 跟站內其他強調色一致：kb-tag-active／kb-view-more-btn hover 都用
+     這個深藍 #3b587a，不再用另外配的漸層色。 */
+  background: #3b587a;
+  color: #fff;
   font-size: 14px;
   font-weight: bold;
   cursor: pointer;
-  padding: 0;
+  padding: 10px 18px;
+  box-shadow: 0 6px 16px rgba(59, 88, 122, 0.35);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.kb-back-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px rgba(59, 88, 122, 0.45);
 }
 
 .kb-back-icon {
   width: 14px;
   height: 14px;
+  /* icon 原本是深藍色線條（back-arrow.svg 的 stroke="#3b587a"），
+     按鈕改成漸層底色後直接濾成白色，跟徽章上的白字同色系。 */
+  filter: brightness(0) invert(1);
 }
 
 .kb-browse-count {
@@ -454,17 +469,24 @@
 
 /* 對話詳情頁（KnowledgeBaseConversationPage）：左邊訊息串＋右邊 CCND
    樹狀圖，跟 HistoryPage 的「訊息串＋CCND」佈局同一套邏輯，只是沒有最左邊
-   的清單欄——這裡是從單一「熱門對話」卡片點進來，不需要再切換對話。 */
+   的清單欄——這裡是從單一「熱門對話」卡片點進來，不需要再切換對話。
+   flex:1 + min-height:0 讓這個區塊吃滿 .kb-page 扣掉返回鈕之後的剩餘高度，
+   兩欄各自 overflow-y:auto（見下方），滑動其中一欄不會影響另一欄，也不會
+   把 .kb-page 撐到需要整頁捲動。 */
 .kb-conversation-layout {
   display: grid;
   grid-template-columns: minmax(360px, 1.2fr) minmax(340px, 1fr);
   gap: 18px;
-  align-items: start;
+  align-items: stretch;
+  flex: 1;
+  min-height: 0;
 }
 
 .kb-conversation-message-panel,
 .kb-conversation-tree-panel {
   min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid rgba(117, 96, 78, 0.12);
   border-radius: 28px;
   background: rgba(255, 251, 246, 0.72);
@@ -625,8 +647,18 @@
     grid-template-columns: 1fr;
   }
 
+  /* 手機版改回自然堆疊＋整頁捲動：桌機版兩欄各自 overflow-y:auto 需要
+     靠 flex:1 撐出固定高度才有意義，窄螢幕單欄排版下沒有「兩欄各自捲動」
+     的需求，維持跟其他手機版區塊一致的行為即可。 */
   .kb-conversation-layout {
     grid-template-columns: 1fr;
+    flex: none;
+    min-height: 0;
+  }
+
+  .kb-conversation-message-panel,
+  .kb-conversation-tree-panel {
+    overflow-y: visible;
   }
 
   .kb-conversation-message-row {
