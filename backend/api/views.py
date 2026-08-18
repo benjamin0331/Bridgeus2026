@@ -17,6 +17,7 @@ from django.utils import timezone
 from rest_framework import exceptions, generics, permissions, status
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.authentication import JWTStatelessUserAuthentication
@@ -131,12 +132,23 @@ ANONYMOUS_MATCH_USER_NAME = "匿名對話者"
 
 
 class BridgeUsTokenObtainPairView(TokenObtainPairView):
-    """跟 SimpleJWT 內建的 TokenObtainPairView 唯一差別是 access token payload
-    多帶一個 is_researcher claim（見 BridgeUsTokenObtainPairSerializer）。
-    掛在 BridgeUs_Django/urls.py 的 /api/token/，取代原本的 TokenObtainPairView。
+    """跟 SimpleJWT 內建的 TokenObtainPairView 唯二差別：access token payload
+    多帶一個 is_researcher claim（見 BridgeUsTokenObtainPairSerializer），
+    以及加了速率限制。掛在 BridgeUs_Django/urls.py 的 /api/token/，取代原本的
+    TokenObtainPairView。
+
+    限流用 ScopedRateThrottle 而不是 AnonRateThrottle：後者是一個全域的匿名
+    預算，會把登入跟其他未認證端點綁在一起；scope 讓登入（與日後的註冊）各自
+    有獨立額度。
+
+    ⚠️ 計數走 Django cache。多 worker 部署若沒開 Redis（USE_REDIS_CACHE=1），
+    每個 worker 各自計數，實際上限會變成 N 倍——同 apps/matching/services/
+    rate_limit.py 記載過的坑。
     """
 
     serializer_class = BridgeUsTokenObtainPairSerializer
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "login"
 
 
 def _session_cache_key(session_id: str) -> str:
@@ -2901,7 +2913,9 @@ class AccountPasswordResetView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        serializer = PasswordResetSerializer(data=request.data)
+        serializer = PasswordResetSerializer(
+            data=request.data, context={"target": target}
+        )
         serializer.is_valid(raise_exception=True)
         target.set_password(serializer.validated_data["password"])
         target.save(update_fields=["password"])

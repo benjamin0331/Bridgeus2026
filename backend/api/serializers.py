@@ -6,6 +6,7 @@ from django.contrib.auth.models import Group
 from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.contrib.auth.password_validation import validate_password as dj_validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import IntegrityError, transaction
 
 from apps.summary.models import VideoRecommendation, ViewpointNode
 
@@ -700,23 +701,45 @@ class AccountCreateSerializer(serializers.Serializer):
     is_researcher = serializers.BooleanField(required=False, default=False)
 
     def validate_username(self, value):
-        if User.objects.filter(username=value).exists():
+        # iexact 而非精確比對：Django 的登入是大小寫敏感的，若允許 Alice 與
+        # alice 並存，使用者會穩定產生「我明明註冊過卻登不進去」的困惑。
+        # 這裡擋掉只差大小寫的重複，登入本身維持原本的精確比對語意。
+        if User.objects.filter(username__iexact=value).exists():
             raise serializers.ValidationError("這個帳號名稱已經有人用了。")
         return value
 
-    def validate_password(self, value):
+    def validate(self, attrs):
+        # 密碼驗證放在 validate() 而不是 validate_password()：
+        # UserAttributeSimilarityValidator 在 user=None 時會直接 return，
+        # 而單欄位的 validate_password() 拿不到 username。少了這個 user 參數，
+        # settings.AUTH_PASSWORD_VALIDATORS 的第一個 validator 等於從未生效
+        # ——密碼可以直接等於帳號名稱。
         try:
-            dj_validate_password(value)
+            dj_validate_password(
+                attrs["password"], user=User(username=attrs["username"])
+            )
         except DjangoValidationError as exc:
-            raise serializers.ValidationError(list(exc.messages))
-        return value
+            raise serializers.ValidationError({"password": list(exc.messages)})
+        return attrs
 
     def create(self, validated_data):
         is_researcher = validated_data.pop("is_researcher", False)
-        user = User.objects.create_user(
-            username=validated_data["username"],
-            password=validated_data["password"],
-        )
+        try:
+            # savepoint：Postgres 在 IntegrityError 之後會讓當前交易進入
+            # aborted 狀態，沒有 atomic 包住的話，後續任何查詢都會拋
+            # TransactionManagementError 而不是我們想回的 400。
+            with transaction.atomic():
+                user = User.objects.create_user(
+                    username=validated_data["username"],
+                    password=validated_data["password"],
+                )
+        except IntegrityError:
+            # validate_username 的 exists() 與這裡之間有空窗。研究者手動開帳號
+            # 撞不到；公開註冊兩人同時送出相同 username 就會，而未捕捉的
+            # IntegrityError 會變成 500 而不是 400。
+            raise serializers.ValidationError(
+                {"username": ["這個帳號名稱已經有人用了。"]}
+            )
         if is_researcher:
             group, _ = Group.objects.get_or_create(name=RESEARCHER_GROUP_NAME)
             user.groups.add(group)  # signal 會把 is_staff 設成 True
@@ -729,11 +752,18 @@ class AccountUpdateSerializer(serializers.Serializer):
 
 
 class PasswordResetSerializer(serializers.Serializer):
+    """重設某帳號的密碼。
+
+    呼叫端必須用 context 傳入 target（被重設的那個 User），
+    UserAttributeSimilarityValidator 才比對得到「密碼與帳號名稱太像」。
+    見 AccountPasswordResetView。
+    """
+
     password = serializers.CharField(write_only=True)
 
     def validate_password(self, value):
         try:
-            dj_validate_password(value)
+            dj_validate_password(value, user=self.context.get("target"))
         except DjangoValidationError as exc:
             raise serializers.ValidationError(list(exc.messages))
         return value

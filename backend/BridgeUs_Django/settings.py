@@ -264,7 +264,22 @@ MEDIA_ROOT = BASE_DIR / 'media'
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
-    )
+    ),
+    # fail-closed：忘了寫 permission_classes 的 view 會是「需要登入」而不是
+    # 「完全公開」。DRF 未設定時的預設是 AllowAny——目前每個 view 都有手動
+    # 指定，但那是靠紀律維持的，開放註冊會一次新增數個 view。
+    #
+    # /api/token/ 與 /api/token/refresh/ 不受影響：simplejwt 的 TokenViewBase
+    # 明確設了 permission_classes = ()，會壓過這裡的預設。
+    'DEFAULT_PERMISSION_CLASSES': (
+        'rest_framework.permissions.IsAuthenticated',
+    ),
+    # 不設 DEFAULT_THROTTLE_CLASSES：限流只掛在需要的 view 上（用
+    # ScopedRateThrottle + throttle_scope），不全域套用。
+    'DEFAULT_THROTTLE_RATES': {
+        'login': os.getenv('THROTTLE_LOGIN', '10/min'),
+        'register': os.getenv('THROTTLE_REGISTER', '5/hour'),
+    },
 }
 
 SIMPLE_JWT = {
