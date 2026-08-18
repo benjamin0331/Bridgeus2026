@@ -284,6 +284,12 @@ REST_FRAMEWORK = {
 
 SIMPLE_JWT = {
     'SIGNING_KEY': JWT_SIGNING_KEY,
+    # simplejwt 預設 False，因此 /api/token/ 登入永遠不會更新 User.last_login，
+    # 只有 Django Admin 的 session 登入才會。而研究者的帳號管理面板與 admin
+    # 列表都在顯示這一欄——不開的話，他們看到的是永遠不動的舊值，比沒有這一欄
+    # 更糟（看起來像有效資訊）。實測：2026-08-18 研究者帳號登入並操作平台，
+    # 但 max(last_login) 仍停在 2026-06-03。
+    'UPDATE_LAST_LOGIN': True,
     'ACCESS_TOKEN_LIFETIME': timedelta(
         minutes=int(os.getenv("JWT_ACCESS_TOKEN_LIFETIME_MINUTES", "60"))
     ),

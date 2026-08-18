@@ -45,6 +45,11 @@ function LoginPage({ setUser, authMessage = '' }) {
 
       if (status === 401) {
         setErrorMessage('帳號或密碼錯誤，請重新輸入！');
+      } else if (status === 429) {
+        // 後端對 /api/token/ 掛了 ScopedRateThrottle（預設 10/min）。
+        // 不轉述後端的秒數：DRF 的 Retry-After 是以整個時間窗計算的，
+        // 對使用者來說「還要等 47 秒」跟事實不一定相符，講模糊一點反而誠實。
+        setErrorMessage('登入嘗試過於頻繁，請稍候一分鐘再試。');
       } else if (status && status >= 500) {
         setErrorMessage('登入服務暫時無法使用，請稍後再試。');
       } else {

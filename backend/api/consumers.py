@@ -115,9 +115,18 @@ async def _authenticate_access_token(token: str | None):
 
         access_token = await sync_to_async(AccessToken)(token)
         user_id = access_token["user_id"]
-        return await User.objects.aget(id=user_id)
+        user = await User.objects.aget(id=user_id)
     except Exception:
         return None
+
+    # 停用帳號一律拒絕。REST 由 JWTAuthentication.get_user 擋、
+    # /api/token/refresh/ 由 TokenRefreshSerializer 擋，唯獨這條自寫的驗證
+    # 沒擋——被停用者手上的 access token 最長還能開對話室 60 分鐘。專案刻意
+    # 不開放刪除帳號、改用停用（見 supervisor 帳號管理 spec），停用就該在
+    # 所有入口一致生效。
+    if not user.is_active:
+        return None
+    return user
 
 
 class DialogueStreamConsumer(AsyncWebsocketConsumer):

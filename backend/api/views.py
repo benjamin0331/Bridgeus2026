@@ -20,7 +20,6 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework_simplejwt.authentication import JWTStatelessUserAuthentication
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from apps.matching.services.semantic import build_q9_embedding
@@ -1252,7 +1251,9 @@ class DialogueTopicTrendingView(APIView):
 
 class DialogueSurveyView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-    authentication_classes = [JWTStatelessUserAuthentication]
+    # 不用 JWTStatelessUserAuthentication：它回傳的 TokenUser 把 is_active
+    # 寫死成 True，且 groups 是 EmptyManager（見 api/permissions.py 的說明）。
+    # 省下一次 DB 查詢換來兩個安靜的錯誤行為，在這個規模不划算。
 
     def get(self, request, topic_id: int):
         survey = get_dialogue_survey(topic_id)
@@ -1275,7 +1276,9 @@ class DialogueStanceProfileView(APIView):
     """
 
     permission_classes = [permissions.IsAuthenticated]
-    authentication_classes = [JWTStatelessUserAuthentication]
+    # 不用 JWTStatelessUserAuthentication：它回傳的 TokenUser 把 is_active
+    # 寫死成 True，且 groups 是 EmptyManager（見 api/permissions.py 的說明）。
+    # 省下一次 DB 查詢換來兩個安靜的錯誤行為，在這個規模不划算。
 
     def get(self, request, topic_id: int):
         if not get_dialogue_survey(topic_id):

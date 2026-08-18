@@ -228,3 +228,87 @@ class DefaultPermissionIsFailClosedTests(TestCase):
                 if "permission_classes" not in vars(cls):
                     missing.append(f"{cls.__module__}.{cls.__name__}")
         self.assertEqual(missing, [], f"這些 api view 沒有自己宣告權限：{missing}")
+
+
+# ═══════════════════════════════════════════════════════════
+# 3.1 / 3.2 停用帳號要在所有入口一致失效
+# ═══════════════════════════════════════════════════════════
+
+class DeactivatedAccountTests(TestCase):
+    """專案刻意不開放刪除帳號、改用停用（見 supervisor 帳號管理 spec），
+    所以停用是唯一的處置手段——它必須在每一個入口都生效，而不是只有 REST。
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="banned", password=STRONG_PASSWORD)
+        self.client = APIClient()
+        obtained = self.client.post(
+            "/api/token/",
+            {"username": "banned", "password": STRONG_PASSWORD},
+            format="json",
+        )
+        self.access = obtained.data["access"]
+        # 先拿到 token 才停用——模擬「token 已簽發、事後才被停用」。
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+
+    def test_rest_rejects_token_of_deactivated_user(self):
+        """基準行為，由 simplejwt 的 JWTAuthentication.get_user 提供。"""
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {self.access}")
+        self.assertEqual(self.client.get("/api/me/").status_code, 401)
+
+    def test_survey_view_rejects_token_of_deactivated_user(self):
+        """DialogueSurveyView 原本用 JWTStatelessUserAuthentication，
+        而 TokenUser.is_active 是寫死的 True——停用者在 token 有效期內照樣進得來。
+        """
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {self.access}")
+        response = self.client.get("/api/dialogue/topics/102/survey/")
+        self.assertEqual(response.status_code, 401)
+
+    def test_stance_profile_view_rejects_token_of_deactivated_user(self):
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {self.access}")
+        response = self.client.get("/api/dialogue/topics/102/stance-profile/")
+        self.assertEqual(response.status_code, 401)
+
+    def test_websocket_authenticate_rejects_deactivated_user(self):
+        """WebSocket 走自寫的 _authenticate_access_token，不經過 DRF，
+        所以 simplejwt 的檢查幫不上忙——必須自己擋。
+        """
+        from asgiref.sync import async_to_sync
+
+        from api.consumers import _authenticate_access_token
+
+        self.assertIsNone(async_to_sync(_authenticate_access_token)(self.access))
+
+    def test_websocket_authenticate_still_accepts_active_user(self):
+        """確認上一個測試不是因為 token 本身壞掉才回 None。"""
+        from asgiref.sync import async_to_sync
+
+        from api.consumers import _authenticate_access_token
+
+        self.user.is_active = True
+        self.user.save(update_fields=["is_active"])
+        resolved = async_to_sync(_authenticate_access_token)(self.access)
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved.pk, self.user.pk)
+
+
+class UpdateLastLoginTests(TestCase):
+    """3.5：/api/token/ 登入要真的更新 last_login。
+
+    simplejwt 預設 UPDATE_LAST_LOGIN=False，而帳號管理面板與 admin 列表都在
+    顯示這一欄——不開的話研究者看到的是永遠不動的舊值。
+    """
+
+    def test_token_obtain_updates_last_login(self):
+        user = User.objects.create_user(username="tracked", password=STRONG_PASSWORD)
+        self.assertIsNone(user.last_login)
+
+        APIClient().post(
+            "/api/token/",
+            {"username": "tracked", "password": STRONG_PASSWORD},
+            format="json",
+        )
+
+        user.refresh_from_db()
+        self.assertIsNotNone(user.last_login)
