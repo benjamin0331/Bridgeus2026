@@ -1,5 +1,4 @@
 from django.conf import settings
-from django.contrib.auth.models import User
 from django.db import models
 from django.db.models import F, Q
 from pgvector.django import VectorField
@@ -751,7 +750,9 @@ class PlatformFeedback(models.Model):
 
 
 class Issue(models.Model):
-    author = models.ForeignKey(User, on_delete=models.CASCADE, related_name="issues")
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="issues"
+    )
     title = models.CharField(max_length=255)
     body = models.TextField(blank=True)
     stance = models.CharField(max_length=20, null=True, blank=True)
@@ -783,7 +784,11 @@ class UserTitle(models.Model):
     一個使用者同時只能選一個頭銜——用 partial unique index 在 DB 層擋住
     （SQLite 3.8+ 與 PostgreSQL 都支援），不只靠 view 端的寫入順序保證。
     view 端仍要「先清掉舊選擇、再設新的」，否則會撞到這個 constraint。"""
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="owned_titles")
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="owned_titles",
+    )
     title = models.ForeignKey(Title, on_delete=models.CASCADE, related_name="holders")
     unlocked_at = models.DateTimeField(auto_now_add=True)
     is_selected = models.BooleanField(default=False)
@@ -808,7 +813,11 @@ class IssueReaction(models.Model):
     """一位讀者對一則議題的表情回復（5 選 1，emoji 圖在 Godot 端，這裡只存
     int index）。一人一議題一個，重送 = 覆蓋（見 views.IssueReactionsView）。"""
     issue = models.ForeignKey(Issue, on_delete=models.CASCADE, related_name="reactions")
-    reactor = models.ForeignKey(User, on_delete=models.CASCADE, related_name="issue_reactions")
+    reactor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="issue_reactions",
+    )
     emoji_index = models.PositiveSmallIntegerField()
     created_at = models.DateTimeField(auto_now_add=True)
 

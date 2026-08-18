@@ -5,7 +5,7 @@ quality_filter.py module docstring) from the CCND semantic tree.
 
 from copy import deepcopy
 
-from django.contrib.auth.models import User
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
 
@@ -20,6 +20,8 @@ from apps.matching.services.semantic_tree import (
     create_owner_tree_state,
     get_lit_node_count,
 )
+
+User = get_user_model()
 
 
 def _item(claim_text, point_name, stance, anchor_id):

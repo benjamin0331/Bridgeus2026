@@ -7,7 +7,8 @@ from difflib import SequenceMatcher
 from functools import lru_cache
 from uuid import uuid4
 
-from django.contrib.auth.models import Group, User
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.core.cache import cache
 from django.db import transaction
 from django.db.models import FloatField, Q, Value
@@ -117,6 +118,8 @@ from .serializers import (
     ViewpointNodeReviewDecisionSerializer,
     ViewpointNodeReviewSerializer,
 )
+
+User = get_user_model()
 
 SESSION_TTL_SECONDS = 60 * 60 * 12
 logger = logging.getLogger(__name__)

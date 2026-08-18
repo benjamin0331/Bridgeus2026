@@ -5,7 +5,7 @@ that a pipeline failure never blocks the match from closing.
 
 from unittest import mock
 
-from django.contrib.auth.models import User
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
 
@@ -17,6 +17,8 @@ from apps.matching.services.semantic_tree import (
     create_owner_tree_state,
 )
 from apps.summary.models import DialogueSummary, ViewpointNode
+
+User = get_user_model()
 
 # ccnd_semantic_dist is the cosine distance between a message's own embedding
 # and the same speaker's previous message (see assemble.py module docstring).

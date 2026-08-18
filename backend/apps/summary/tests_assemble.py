@@ -4,7 +4,7 @@ both per-speaker deltas (see apps.summary.pipeline.assemble module docstring for
 why they're deltas and not cumulative values) -- these tests pin that behavior down.
 """
 
-from django.contrib.auth.models import User
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
 
@@ -16,6 +16,8 @@ from apps.matching.services.semantic_tree import (
 )
 from apps.summary.pipeline.assemble import MAX_LIT_NODES, build_messages_for_match
 from apps.summary.pipeline.quality_filter import run_pipeline
+
+User = get_user_model()
 
 # Orthogonal unit vectors -> cosine_distance(EMB_X, EMB_Y) == 1.0, a clean
 # deterministic value for assertions without needing the real embedding model.

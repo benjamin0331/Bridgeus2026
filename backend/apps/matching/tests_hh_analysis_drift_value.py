@@ -3,12 +3,14 @@ quality_filter.py uses to source ccnd_semantic_dist from hh_analysis.py's
 already-persisted MatchStanceDrift records (see hh_analysis.py docstring).
 """
 
-from django.contrib.auth.models import User
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
 
 from api.models import DialogueMatch, MatchStanceDrift
 from apps.matching.services.hh_analysis import get_message_drift_value
+
+User = get_user_model()
 
 
 class GetMessageDriftValueTests(TestCase):

@@ -93,10 +93,15 @@ INSTALLED_APPS = [
     'channels',
     'rest_framework',
     'rest_framework_simplejwt',
+    'accounts',
     'api',
     'chat',
     'apps.summary',
 ]
+
+# User model 由 accounts app 提供，接管既有 auth_user 資料表。
+# 見 docs/superpowers/specs/2026-08-18-custom-user-model-design.md
+AUTH_USER_MODEL = "accounts.User"
 
 USE_REDIS_CHANNEL = _env_bool("USE_REDIS_CHANNEL", False)
 

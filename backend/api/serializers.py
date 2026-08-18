@@ -1,7 +1,8 @@
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from django.contrib.auth.models import Group, User
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.contrib.auth.password_validation import validate_password as dj_validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -18,6 +19,8 @@ from .models import (
     PostDialogueResponse,
 )
 from .permissions import RESEARCHER_GROUP_NAME
+
+User = get_user_model()
 
 
 class BridgeUsTokenObtainPairSerializer(TokenObtainPairSerializer):

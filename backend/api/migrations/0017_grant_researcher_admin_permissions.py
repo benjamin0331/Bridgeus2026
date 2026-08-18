@@ -5,6 +5,7 @@
 # and is intentionally not exposed to Supervisors. See
 # docs/superpowers/specs/2026-07-21-supervisor-account-management-design.md
 
+from django.conf import settings
 from django.contrib.auth.management import create_permissions
 from django.db import migrations
 
@@ -14,25 +15,43 @@ USER_CODENAMES = ["add_user", "change_user", "view_user"]
 GROUP_CODENAMES = ["view_group"]
 
 
-def _ensure_auth_permissions(apps, using):
-    # 全新的 migrate：auth/User 的預設權限由 post_migrate 建立，而 post_migrate
-    # 要等所有 migration 跑完才觸發——此刻權限可能還不存在。手動先補建，確保
-    # 下面 filter 抓得到。既有 DB 已有這些權限時，create_permissions 是 no-op。
+def _user_content_type_key():
+    """從 AUTH_USER_MODEL 推出 user 的 (app_label, model)。
+
+    寫死 "auth"/"user" 在 AUTH_USER_MODEL 換成 accounts.User 之後會失效：
+    AppConfig.get_models() 預設排除 swapped model，因此 auth/user 這個
+    ContentType 在全新資料庫上根本不會被建立。
+    """
+    app_label, model_name = settings.AUTH_USER_MODEL.split(".")
+    return app_label.lower(), model_name.lower()
+
+
+def _ensure_permissions(apps, using):
+    # 全新的 migrate：預設權限由 post_migrate 建立，而 post_migrate 要等所有
+    # migration 跑完才觸發——此刻權限可能還不存在。手動先補建，確保下面
+    # filter 抓得到。既有 DB 已有這些權限時，create_permissions 是 no-op。
+    #
+    # 除了 auth（Group 的權限來源）之外，還要補 user model 所在的 app，
+    # 因為 User 已經不屬於 auth 了。
     from django.apps import apps as global_apps
 
-    auth_config = global_apps.get_app_config("auth")
-    create_permissions(auth_config, apps=apps, using=using, verbosity=0)
+    user_app_label, _ = _user_content_type_key()
+    for label in dict.fromkeys(["auth", user_app_label]):
+        create_permissions(
+            global_apps.get_app_config(label), apps=apps, using=using, verbosity=0
+        )
 
 
 def grant_permissions(apps, schema_editor):
-    _ensure_auth_permissions(apps, schema_editor.connection.alias)
+    _ensure_permissions(apps, schema_editor.connection.alias)
 
     Group = apps.get_model("auth", "Group")
     Permission = apps.get_model("auth", "Permission")
     ContentType = apps.get_model("contenttypes", "ContentType")
 
     group, _ = Group.objects.get_or_create(name=RESEARCHER_GROUP_NAME)
-    user_ct = ContentType.objects.get(app_label="auth", model="user")
+    user_app_label, user_model_name = _user_content_type_key()
+    user_ct = ContentType.objects.get(app_label=user_app_label, model=user_model_name)
     group_ct = ContentType.objects.get(app_label="auth", model="group")
 
     perms = list(
@@ -53,7 +72,10 @@ def revoke_permissions(apps, schema_editor):
     except Group.DoesNotExist:
         return
 
-    user_ct = ContentType.objects.filter(app_label="auth", model="user").first()
+    user_app_label, user_model_name = _user_content_type_key()
+    user_ct = ContentType.objects.filter(
+        app_label=user_app_label, model=user_model_name
+    ).first()
     group_ct = ContentType.objects.filter(app_label="auth", model="group").first()
     perms = []
     if user_ct:
@@ -73,6 +95,7 @@ class Migration(migrations.Migration):
         ("api", "0016_issuereaction"),
         ("auth", "__first__"),
         ("contenttypes", "__first__"),
+        migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
