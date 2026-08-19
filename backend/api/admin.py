@@ -162,6 +162,10 @@ class MatchStanceDriftAdmin(admin.ModelAdmin):
 
 @admin.register(PostDialogueResponse)
 class PostDialogueResponseAdmin(admin.ModelAdmin):
+    """走 all_objects 而不是預設 manager：後台是研究端查歷史資料的地方，
+    is_superseded 的舊重複列不該對它隱形，只是要讓研究者自己看得出哪筆是
+    現役、哪筆是被取代的重複紀錄。"""
+
     list_display = (
         "id",
         "user",
@@ -172,10 +176,19 @@ class PostDialogueResponseAdmin(admin.ModelAdmin):
         "delta_s_value",
         "stance_centrism_value",
         "consent_confirmed",
+        "is_superseded",
         "created_at",
     )
-    list_filter = ("topic_id", "experiment_condition", "consent_confirmed")
+    list_filter = (
+        "topic_id",
+        "experiment_condition",
+        "consent_confirmed",
+        "is_superseded",
+    )
     search_fields = ("user__username", "session_id", "room_id")
+
+    def get_queryset(self, request):
+        return PostDialogueResponse.all_objects.all()
 
     @admin.display(description="s_post")
     def s_post_display(self, obj):

@@ -322,6 +322,27 @@ def test_complete_flows_counts_post_responses():
 
 
 @pytest.mark.django_db
+def test_complete_flows_ignores_superseded_post_responses():
+    """歷史重複資料被標成 is_superseded 之後，不該再被算進「完成場次」——
+    否則舊 bug 留下的重複列還是能免費解成就。"""
+    user = User.objects.create_user(username="u1", password="pw")
+    for _ in range(COMPLETE_FLOW_COUNT - 1):
+        _post_response(user, condition=PostDialogueResponse.ExperimentCondition.AI)
+    superseded = _post_response(
+        user, condition=PostDialogueResponse.ExperimentCondition.AI
+    )
+    PostDialogueResponse.all_objects.filter(id=superseded.id).update(
+        is_superseded=True
+    )
+
+    evaluate(user)
+
+    assert not UserAchievement.objects.filter(
+        user=user, code="complete_flows"
+    ).exists()
+
+
+@pytest.mark.django_db
 def test_same_day_dialogues_needs_multiple_on_one_day():
     user = User.objects.create_user(username="u1", password="pw")
     for _ in range(SAME_DAY_COUNT):

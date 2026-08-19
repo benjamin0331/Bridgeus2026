@@ -514,10 +514,27 @@ def _likert_field(verbose_name):
     )
 
 
+class ActivePostDialogueResponseManager(models.Manager):
+    """預設 manager：濾掉被標記為 is_superseded 的歷史重複列。
+
+    重複資料（同一使用者對同一場對話送出不只一次後測——修 bug 前的殘留，或
+    未來罕見的競態）不刪除，只標記，好讓研究端要查歷史時仍找得到；但等級、
+    成就、s_pre/s_post 分析這些「現況」查詢都該透過這個 manager，否則被取代
+    的舊列還是會被算進「完成場次」。要看完整歷史（含被取代的列）用
+    PostDialogueResponse.all_objects。
+    """
+
+    def get_queryset(self):
+        return super().get_queryset().filter(is_superseded=False)
+
+
 class PostDialogueResponse(models.Model):
     class ExperimentCondition(models.TextChoices):
         AI = "ai", "H-AI"
         HH = "hh", "H-H"
+
+    objects = ActivePostDialogueResponseManager()
+    all_objects = models.Manager()
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -580,6 +597,10 @@ class PostDialogueResponse(models.Model):
     # Debriefing consent: NULL=pending, True=consent, False=withdrawn
     consent_confirmed = models.BooleanField(null=True, blank=True)
 
+    # 標記「這筆被同一場對話的後來一筆取代了」——只用在修 bug 前留下的歷史
+    # 重複資料。不刪除，只標記：資料不消失，但等級/成就/預設查詢都看不到它。
+    is_superseded = models.BooleanField(default=False)
+
     # --- Derived stance metrics (snapshot, filled at submission) -----------
     # s_pre = the participant's pre-dialogue stance score (UserStanceProfile
     # .stance_score at submission time). NULL when no pre-survey profile exists.
@@ -608,6 +629,22 @@ class PostDialogueResponse(models.Model):
                 condition=Q(opponent_judgment__isnull=True)
                 | Q(opponent_judgment__in=[1, 2, 3]),
                 name="post_opponent_judgment_valid",
+            ),
+            # 一場對話只能送一次後測：room_id 是配對房，H-H 兩位參與者各自
+            # 用同一個 room_id 送出自己的問卷，所以要連 user 一起限制，不能
+            # 直接對 room_id/session_id 做全域唯一（那會擋住對方的合法提交）。
+            # is_superseded=False 排除在外：歷史重複資料標記後就不受這個限制
+            # 管了（它已經不是「現役」紀錄），否則沒辦法在不刪資料的前提下
+            # 把這個限制套到已經有重複列的既有資料上。
+            models.UniqueConstraint(
+                fields=["user", "session_id"],
+                condition=Q(session_id__isnull=False, is_superseded=False),
+                name="post_response_user_session_unique",
+            ),
+            models.UniqueConstraint(
+                fields=["user", "room_id"],
+                condition=Q(room_id__isnull=False, is_superseded=False),
+                name="post_response_user_room_unique",
             ),
         ]
         indexes = [

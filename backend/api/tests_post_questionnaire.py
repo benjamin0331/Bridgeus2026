@@ -159,7 +159,7 @@ class TestPostQuestionnaire:
 
     def test_reverse_scoring(self, auth_client):
         """C1-2, C1-6, C1-7, C1-8 做 8-raw；s_post = Σadjusted / 8 計算正確。"""
-        client, _ = auth_client
+        client, user = auth_client
         # Use controlled values: all raw=4 (non-reverse stays 4, reverse → 8-4=4)
         all_four = {f"post_likert_{i}": 4 for i in range(1, 9)}
         payload = _make_ai_payload(**all_four)
@@ -168,7 +168,10 @@ class TestPostQuestionnaire:
         # All items: raw=4, reversed: 8-4=4 → s_post = 4.0
         assert float(response.data["s_post"]) == pytest.approx(4.0)
 
-        # Verify asymmetric case from BASE_C1:
+        # Verify asymmetric case from BASE_C1, against a *second* dialogue —
+        # one session can only carry one post-questionnaire submission now
+        # (see TestPostQuestionnaireRejectsDuplicateSubmission), so this can't
+        # reuse the session above just to exercise the scoring math again.
         # post_likert_1=6 (no rev) → 6
         # post_likert_2=3 (rev)    → 5
         # post_likert_3=4 (no rev) → 4
@@ -178,7 +181,16 @@ class TestPostQuestionnaire:
         # post_likert_7=3 (rev)    → 5
         # post_likert_8=4 (rev)    → 4
         # Σ = 6+5+4+5+6+6+5+4 = 41 → s_post = 41/8 = 5.125
-        payload2 = _make_ai_payload(**BASE_C1)
+        DialogueSessionRecord.objects.create(
+            user=user,
+            session_id="testsessionid456",
+            topic_id=102,
+            topic_title="測試議題",
+            collection_name="nuclear_energy_all",
+            session_state={"user_stance_score": 6.0, "history": []},
+            last_activity_at=timezone.now(),
+        )
+        payload2 = _make_ai_payload(session_id="testsessionid456", **BASE_C1)
         response2 = client.post("/api/post-questionnaire/", payload2, format="json")
         assert response2.status_code == 201, response2.data
         assert float(response2.data["s_post"]) == pytest.approx(41 / 8)
@@ -346,6 +358,90 @@ class TestPostQuestionnaireClosesSession:
             "/api/post-questionnaire/", _make_hh_payload(), format="json"
         )
         assert response.status_code == 201, response.data
+
+
+@pytest.mark.django_db
+class TestPostQuestionnaireRejectsDuplicateSubmission:
+    """同一場對話（同 session_id 或同 room_id）只能送出一次後測——
+    重送不該再新增一筆 PostDialogueResponse，否則等級/成就會被灌水，
+    研究資料也會被同一場對話的重複列汙染。"""
+
+    def test_resubmitting_same_ai_session_is_rejected(self, auth_client):
+        from api.models import PostDialogueResponse
+
+        client, _ = auth_client
+        first = client.post(
+            "/api/post-questionnaire/", _make_ai_payload(), format="json"
+        )
+        assert first.status_code == 201, first.data
+
+        second = client.post(
+            "/api/post-questionnaire/", _make_ai_payload(), format="json"
+        )
+        assert second.status_code == 409
+        assert (
+            PostDialogueResponse.objects.filter(
+                session_id="testsessionid123"
+            ).count()
+            == 1
+        )
+
+    def test_resubmitting_same_hh_room_is_rejected(self, auth_client):
+        from api.models import PostDialogueResponse
+
+        client, _ = auth_client
+        first = client.post(
+            "/api/post-questionnaire/", _make_hh_payload(), format="json"
+        )
+        assert first.status_code == 201, first.data
+
+        second = client.post(
+            "/api/post-questionnaire/", _make_hh_payload(), format="json"
+        )
+        assert second.status_code == 409
+        assert (
+            PostDialogueResponse.objects.filter(room_id="testroomid456").count()
+            == 1
+        )
+
+
+@pytest.mark.django_db
+class TestPostDialogueResponseSupersededVisibility:
+    """歷史上已知有重複資料（bug 修好前留下的）：不能刪，但也不能讓它們繼續
+    被算進等級/成就。用 is_superseded 標記舊資料，預設 manager 濾掉它們，
+    all_objects 才看得到完整歷史。"""
+
+    def test_default_manager_excludes_superseded_rows(self, auth_client):
+        from api.models import PostDialogueResponse
+
+        client, user = auth_client
+        first = client.post(
+            "/api/post-questionnaire/", _make_ai_payload(), format="json"
+        )
+        assert first.status_code == 201, first.data
+        response_id = first.data["id"]
+
+        PostDialogueResponse.all_objects.filter(id=response_id).update(
+            is_superseded=True
+        )
+
+        assert PostDialogueResponse.objects.filter(user=user).count() == 0
+        assert PostDialogueResponse.all_objects.filter(user=user).count() == 1
+
+    def test_superseding_a_row_does_not_delete_it(self, auth_client):
+        from api.models import PostDialogueResponse
+
+        client, user = auth_client
+        first = client.post(
+            "/api/post-questionnaire/", _make_ai_payload(), format="json"
+        )
+        response_id = first.data["id"]
+
+        PostDialogueResponse.all_objects.filter(id=response_id).update(
+            is_superseded=True
+        )
+
+        assert PostDialogueResponse.all_objects.filter(id=response_id).exists()
 
 
 @pytest.mark.django_db

@@ -10,7 +10,7 @@ from uuid import uuid4
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.cache import cache
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import FloatField, Q, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
@@ -3956,19 +3956,29 @@ class PostDialogueResponseView(APIView):
         )
         response_obj.fill_stance_metrics(s_pre)
 
-        with transaction.atomic():
-            response_obj.save()
-            if response_obj.session_id:
-                _close_dialogue_session_record(
-                    session_id=response_obj.session_id,
-                    user_id=request.user.id,
-                )
+        try:
+            with transaction.atomic():
+                response_obj.save()
+                if response_obj.session_id:
+                    _close_dialogue_session_record(
+                        session_id=response_obj.session_id,
+                        user_id=request.user.id,
+                    )
 
-            if response_obj.discomfort_flag and discomfort_detail.strip():
-                DiscomfortReport.objects.create(
-                    response=response_obj,
-                    detail=discomfort_detail.strip(),
-                )
+                if response_obj.discomfort_flag and discomfort_detail.strip():
+                    DiscomfortReport.objects.create(
+                        response=response_obj,
+                        detail=discomfort_detail.strip(),
+                    )
+        except IntegrityError:
+            # post_response_user_session_unique / post_response_user_room_unique
+            # 撞到：這場對話已經送過後測了。不能讓它變成第二筆紀錄——等級/成就
+            # 是直接數 PostDialogueResponse 筆數，多一筆就等於免費多算一場；
+            # 同一場對話多一列也會汙染研究資料的立場位移統計。
+            return Response(
+                {"detail": "這場對話已經送出過後測問卷了，不能重複提交。"},
+                status=status.HTTP_409_CONFLICT,
+            )
 
         # 對話結束點：把 input gate 的完整性指標算出來落庫。
         # 只產生欄位，**不**在這裡排除任何樣本——排除規則由研究端另行決定。
