@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useRef } from 'react';
+import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
 import api from '../api/client';
 
 const MatchingHeartbeatContext = createContext(null);
@@ -16,6 +16,9 @@ const POLL_INTERVAL_MS = 3000;
 // 後端輪詢發現狀態已經不是 matching（配對成功 / 已被取消）時自行停止。
 export function MatchingHeartbeatProvider({ children }) {
   const trackersRef = useRef(new Map()); // topicId(string) -> intervalId
+  // 配對成功但使用者還沒點開查看的通知佇列（觸發彈出提醒 + 鈴鐺紅點）。
+  // 只存在記憶體裡，跟這個 provider 本身一樣是 SPA session 範圍。
+  const [matchAlerts, setMatchAlerts] = useState([]);
 
   const release = useCallback((topicId) => {
     const key = String(topicId);
@@ -35,7 +38,20 @@ export function MatchingHeartbeatProvider({ children }) {
     const poll = async () => {
       try {
         const response = await api.get(`/api/matching/status/?topic_id=${key}`);
-        if (response.data?.status !== 'matching') {
+        const data = response.data;
+        if (data?.status === 'matched' && data?.room_id) {
+          setMatchAlerts((current) => {
+            if (current.some((alert) => alert.roomId === data.room_id)) {
+              return current;
+            }
+            return [...current, {
+              topicId: key,
+              roomId: data.room_id,
+              matchedAt: data.matched_at ?? null,
+            }];
+          });
+        }
+        if (data?.status !== 'matching') {
           release(key);
         }
       } catch (error) {
@@ -50,8 +66,20 @@ export function MatchingHeartbeatProvider({ children }) {
     poll();
   }, [release]);
 
+  const dismissMatchAlert = useCallback((roomId) => {
+    setMatchAlerts((current) => current.filter((alert) => alert.roomId !== roomId));
+  }, []);
+
+  const value = useMemo(() => ({
+    keepAlive,
+    release,
+    matchAlerts,
+    dismissMatchAlert,
+    hasMatchAlert: matchAlerts.length > 0,
+  }), [keepAlive, release, matchAlerts, dismissMatchAlert]);
+
   return (
-    <MatchingHeartbeatContext.Provider value={{ keepAlive, release }}>
+    <MatchingHeartbeatContext.Provider value={value}>
       {children}
     </MatchingHeartbeatContext.Provider>
   );

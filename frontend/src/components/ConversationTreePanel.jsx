@@ -546,6 +546,7 @@ function ConversationTreePanel({
   const shellRef = useRef(null);
   const svgRef = useRef(null);
   const zoomTransformRef = useRef(null);
+  const litNodeStanceRef = useRef(new Map());
   const treeEntries = useMemo(
     () => normalizeTreeEntries(trees, treeData, topicTitle),
     [topicTitle, treeData, trees],
@@ -666,6 +667,22 @@ function ConversationTreePanel({
           setSelectedNodeId(item.data.id);
         });
 
+      // A node only breathes the first time it is seen carrying a given
+      // stance; the map is keyed per tree entry so switching between "my"
+      // and "their" tabs can't cross-contaminate the lit-state tracking.
+      const breathingIds = new Set();
+      root.descendants().forEach((item) => {
+        if (item.data.type !== 'point') return;
+        const stanceClass = stanceClassForNode(item.data);
+        if (!stanceClass) return;
+        const litKey = `${activeOwnerKey}:${item.data.id}`;
+        if (litNodeStanceRef.current.get(litKey) !== stanceClass) {
+          breathingIds.add(item.data.id);
+        }
+        litNodeStanceRef.current.set(litKey, stanceClass);
+      });
+      node.classed('is-breathing', (item) => breathingIds.has(item.data.id));
+
       appendNodeShape(node);
 
       node
@@ -727,7 +744,7 @@ function ConversationTreePanel({
       svg.on('.zoom', null);
       svg.on('click', null);
     };
-  }, [isActive, visibleTreeData]);
+  }, [isActive, visibleTreeData, activeOwnerKey]);
 
   useEffect(() => {
     const svgNode = svgRef.current;
