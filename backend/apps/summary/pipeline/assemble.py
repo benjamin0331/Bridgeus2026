@@ -103,7 +103,16 @@ def _stance_for_score(topic_id: int, stance_score) -> str:
     配對之後又被使用者填了新的問卷、跟這場對話當時的立場對不上），並且套用
     api.display_settings.resolve_stance_category() 同一套 topic 門檻，跟問卷
     結果頁、配對演算法用同一套判定標準，不再自己另立一份。
+
+    ⚠️ user_a_score / user_b_score 是 null=True（見 api.models.DialogueMatch），
+    沒有分數就回傳空字串——side_a_stance / side_b_stance 本來就是 blank=True，
+    空字串正是「不知道這一側的立場」的既有表示法。不能直接 float(None)：那會
+    丟 TypeError，而 run_pipeline_for_match() 的呼叫端把整支包在 try/except
+    裡（見該函式 docstring），結果會是整場對話的 DialogueSummary 與底下所有
+    ViewpointNode 靜默不寫入，沒有任何錯誤浮上來。
     """
+    if stance_score is None:
+        return ""
     return resolve_stance_category(topic_id=topic_id, user_stance_score=float(stance_score))
 
 

@@ -14,7 +14,11 @@ from apps.matching.services.semantic_tree import (
     apply_analysis_items_to_tree,
     create_owner_tree_state,
 )
-from apps.summary.pipeline.assemble import MAX_LIT_NODES, build_messages_for_match
+from apps.summary.pipeline.assemble import (
+    MAX_LIT_NODES,
+    _stance_for_score,
+    build_messages_for_match,
+)
 from apps.summary.pipeline.quality_filter import run_pipeline
 
 User = get_user_model()
@@ -143,3 +147,20 @@ class BuildMessagesForMatchTests(TestCase):
         # 3 則短訊息一樣過不了 Step 1 的最低輪數門檻，重點是 dict 形狀能被
         # run_pipeline() 吃下去，不會 KeyError/crash。
         self.assertEqual(run_pipeline(messages), [])
+
+
+class StanceForScoreTests(TestCase):
+    """DialogueMatch.user_a_score / user_b_score 是 null=True 的欄位（見
+    api.models.DialogueMatch），所以 _stance_for_score 一定要能吃 None。
+
+    這條路徑在 run_pipeline_for_match() 裡，而呼叫端把整支包在 try/except，
+    一旦 TypeError 就會讓整場對話的 DialogueSummary/ViewpointNode 靜默不寫入
+    ——沒有測試的話這種失敗完全看不出來。
+    """
+
+    def test_returns_blank_for_missing_score(self):
+        self.assertEqual(_stance_for_score(102, None), "")
+
+    def test_still_resolves_a_real_score(self):
+        # 只斷言「有拿到一個非空字串」，不綁定 topic 102 的門檻設定。
+        self.assertTrue(_stance_for_score(102, 6.0))

@@ -11,7 +11,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.cache import cache
 from django.db import IntegrityError, transaction
-from django.db.models import Count, FloatField, Q, Value
+from django.db.models import Case, Count, FloatField, IntegerField, Q, Value, When
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework import exceptions, generics, permissions, status
@@ -2759,13 +2759,20 @@ class VideoRecommendationListView(generics.ListAPIView):
       也就是還沒進行過對話）：依全部影片被觀看的次數（VideoWatchEvent，
       點擊率的代理指標）由高到低排序，取前 10 部。
     - 後期（已經填過這個議題的後測問卷）：用後測問卷算出的目前立場
-      （resolve_stance_category）鎖定「跟使用者立場相反」的影片（研究者在
-      影片管理面板標記的 stance_direction）優先推薦；同時持續統計這位使用者
-      在這個議題底下已觀看的支持／反對影片比例，一旦落在 4:6～6:4 之間
+      （resolve_stance_category）把「跟使用者立場相反」的影片（研究者在影片
+      管理面板標記的 stance_direction）排到最前面優先推薦；同時持續統計這位
+      使用者在這個議題底下已觀看的支持／反對影片比例，一旦落在 4:6～6:4 之間
       （含 5:5）就視為曝光已經均衡，改回跟初期一樣的熱門排序，不再單向推播。
       spec 說「每觀看 10 部影片為基準去判斷」——這裡改成每次請求都即時算
       比例，效果等價（達到均衡的當下就會反映在下一次請求），不需要另外
       排程一個「第 10 部」的檢查點。
+
+    ⚠️ 後期是「相反立場排前面」而不是「只給相反立場」。曾經是用
+    filter(stance_direction=...) 硬篩，那會造成死結：使用者看不到另一側的
+    影片 → 另一側的 VideoWatchEvent 永遠是 0 → _is_exposure_balanced() 算出
+    的比例永遠是 0 → 永遠達不到均衡、再也回不到熱門排序，上面那句「一旦落在
+    4:6～6:4 就改回熱門排序」等於是死的。硬篩另外還有一個副作用：該議題底下
+    如果根本沒有相反立場的影片，整個推薦區塊會變成空的。
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -2792,13 +2799,26 @@ class VideoRecommendationListView(generics.ListAPIView):
         if target_stance is None or self._is_exposure_balanced(self.request.user, topic_id):
             return self._order_by_popularity(qs)
 
-        return self._order_by_popularity(qs.filter(stance_direction=target_stance))
+        return self._order_by_popularity(qs, prioritized_stance=target_stance)
 
-    def _order_by_popularity(self, qs):
-        return (
-            qs.annotate(watch_count=Count("watch_events"))
-            .order_by("-watch_count", "display_order", "-created_at")[: self.POPULAR_LIMIT]
-        )
+    def _order_by_popularity(self, qs, *, prioritized_stance=None):
+        """熱門排序（觀看次數 → display_order → 新到舊）。
+
+        prioritized_stance 有值時，先照「是不是這個立場」分成兩群、該立場排在
+        前面，群內仍然是熱門排序。用排序而不是過濾的理由見 class docstring。
+        """
+        qs = qs.annotate(watch_count=Count("watch_events"))
+        ordering = ["-watch_count", "display_order", "-created_at"]
+        if prioritized_stance is not None:
+            qs = qs.annotate(
+                stance_rank=Case(
+                    When(stance_direction=prioritized_stance, then=Value(0)),
+                    default=Value(1),
+                    output_field=IntegerField(),
+                )
+            )
+            ordering.insert(0, "stance_rank")
+        return qs.order_by(*ordering)[: self.POPULAR_LIMIT]
 
     @staticmethod
     def _opposite_stance_for(user, topic_id):
