@@ -733,6 +733,11 @@ class DialogueAgent:
         for key, value in prompt_vars.items():
             system_text = system_text.replace("{" + key + "}", value)
 
+        # ponytail: 用 env 開關直接 dump 組好的 system prompt，不要問模型要——
+        # 模型背誦會截斷也會編。要在瀏覽器看就把 system_text 當一個 WS frame 送出去。
+        if os.getenv("DUMP_SYSTEM_PROMPT"):
+            print(f"\n===== SYSTEM PROMPT (turn {session.turn_count}) =====\n{system_text}\n=====\n")
+
         client = anthropic.AsyncAnthropic()
         # NOTE: assistant prefill (a trailing {"role": "assistant", "content":
         # "<judgment>"}) is NOT available here. claude-sonnet-4-6 rejects it:

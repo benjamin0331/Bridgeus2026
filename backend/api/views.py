@@ -604,13 +604,6 @@ def _build_topic_config(
         except Exception:
             logger.exception("Failed to build AI session Q9 embedding.")
 
-    from apps.matching.services.ai_agent import infer_reasoning_mode
-    user_reasoning_mode = infer_reasoning_mode(
-        user_stance_score=user_stance_score,
-        user_initial_argument=resolved_initial_argument,
-        opponent_view_text=resolved_open_answers.get("Q10", ""),
-    )
-
     return {
         "topic": topic_meta.get("title", topic_title),
         "topic_description": (
