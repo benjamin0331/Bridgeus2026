@@ -848,13 +848,15 @@
     z-index: 320;
   }
 
+  /* 田按鈕移到輸入列上方（原本三按鈕的位置）。
+     absolute 掛在 .chat-fixed-footer 上，輸入框變高時間距自動跟著走。 */
   .panel-toggle-btn {
     display: flex;
     align-items: center;
     justify-content: center;
-    position: fixed;
-    top: 60px;
-    right: 14px;
+    position: absolute;
+    bottom: calc(100% + var(--chat-fab-gap));
+    right: 16px;
     z-index: 201;
     width: 40px;
     height: 40px;

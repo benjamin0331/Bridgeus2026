@@ -2980,16 +2980,6 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
         )
       )}
 
-      {!isRightPanelOpen && (
-        <button
-          className="panel-toggle-btn"
-          onClick={() => setIsRightPanelOpen(true)}
-          aria-label="展開功能面板"
-        >
-          ⊞
-        </button>
-      )}
-
       {isRightPanelOpen && (
         <div className="panel-backdrop" onClick={() => setIsRightPanelOpen(false)} />
       )}
@@ -3105,6 +3095,16 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
         )}
 
         <div className="chat-fixed-footer">
+          {!isRightPanelOpen && (
+            <button
+              className="panel-toggle-btn"
+              onClick={() => setIsRightPanelOpen(true)}
+              aria-label="展開功能面板"
+            >
+              ⊞
+            </button>
+          )}
+
           {!isMatchingMode && sessionId && messages.length > 0 && (
             <div className="ai-end-dialogue-bar">
               <button
