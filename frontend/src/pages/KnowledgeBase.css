@@ -9,7 +9,7 @@
   overflow-y: auto;
 }
 
-/* 知識庫主容器佈局：左欄（議題選擇＋熱門對話＋影片推薦）＋ 右欄（近期熱門）。
+/* 知識庫主容器佈局：單欄（議題選擇＋熱門對話＋影片推薦）吃滿整個寬度。
    同樣是頁面最外層，負責自己的捲動（理由同上）。 */
 .kb-container {
   display: flex;
@@ -20,9 +20,10 @@
   overflow-y: auto;
 }
 
-/* 左欄：議題選擇、熱門對話、影片推薦依序往下堆疊 */
+/* 主欄：議題選擇、熱門對話、影片推薦依序往下堆疊，佔滿整個容器寬度 */
 .kb-left-section {
-  flex: 2;
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 36px;
@@ -59,48 +60,8 @@
   color: #fff;
 }
 
-/* 右欄：近期熱門，跨議題整體活動量統計 */
-.kb-right-section {
-  flex: 1.2;
-  position: sticky;
-  top: 10px;
-}
-
-/* 藍色資訊卡片主體 */
-.kb-blue-card {
-  background-color: #d8e4f2;
-  border-radius: 40px;
-  padding: 35px;
-  display: flex;
-  flex-direction: column;
-}
-
-.kb-blue-card h3 {
-  font-size: 26px;
-  margin-bottom: 25px;
-}
-
-/* 熱門趨勢清單項目 */
-.kb-trending-list {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
-
-.kb-trending-item {
-  display: flex;
-  justify-content: space-between;
-  font-weight: bold;
-  cursor: pointer;
-}
-
-.kb-trending-item-active {
-  color: #3b587a;
-}
-
-/* 空狀態提示（無議題可搜／無搜尋紀錄／無活動資料） */
-.kb-empty-hint,
-.kb-history-empty {
+/* 空狀態提示（無議題可搜／無搜尋紀錄） */
+.kb-empty-hint {
   color: #999;
   font-size: 14px;
   cursor: default;
@@ -111,7 +72,8 @@
    ============================ */
 .kb-highlights-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  /* auto-fit（非 auto-fill）：卡片不足一整排時，空軌道會收合，剩下的卡片撐滿整個寬度 */
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 20px;
 }
 
@@ -627,21 +589,6 @@
     gap: 24px;
   }
 
-  .kb-right-section {
-    flex: none;
-    position: static;
-  }
-
-  .kb-blue-card {
-    padding: 24px;
-    border-radius: 28px;
-  }
-
-  .kb-blue-card h3 {
-    font-size: 20px;
-    margin-bottom: 16px;
-  }
-
   .kb-page {
     gap: 24px;
   }
@@ -668,4 +615,21 @@
   .kb-conversation-message-row {
     max-width: 92%;
   }
+}
+
+/* 觀點知識庫的捲軸統一成一條灰色細線（跟首頁「開放中主題」清單同一組值）：
+   外層頁面容器＋裡面所有會捲動的區塊（觀點引文、對話面板、影片彈窗）。 */
+.kb-page::-webkit-scrollbar,
+.kb-container::-webkit-scrollbar,
+.kb-page *::-webkit-scrollbar,
+.kb-container *::-webkit-scrollbar {
+  width: 8px;
+}
+
+.kb-page::-webkit-scrollbar-thumb,
+.kb-container::-webkit-scrollbar-thumb,
+.kb-page *::-webkit-scrollbar-thumb,
+.kb-container *::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 4px;
 }
