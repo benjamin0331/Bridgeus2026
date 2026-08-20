@@ -1170,7 +1170,16 @@ LOCAL_CLASSIFIER_TOPIC_IDS = frozenset(_LOCAL_CLASSIFIER_MODULES)
 LOCAL_CLASSIFIER_MIN_CONFIDENCE = 0.35
 
 
+# 本機沒有權重檔時的逃生門：權重未進版控（每個約 391MB），沒有從共用空間複製
+# 進來的機器把這個開關打開，102/103 就跟其他議題一樣走 analyze_with_openai。
+# 只擋在這個 helper，因為 dispatch 和兩處 OPENAI_API_KEY 前置檢查都問它。
+def force_ai_node_analysis() -> bool:
+    return os.getenv("SEMANTIC_TREE_FORCE_AI", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def uses_local_classifier(topic_id: int | None) -> bool:
+    if force_ai_node_analysis():
+        return False
     return topic_id in LOCAL_CLASSIFIER_TOPIC_IDS
 
 

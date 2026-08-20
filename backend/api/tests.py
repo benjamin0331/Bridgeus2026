@@ -1,3 +1,4 @@
+import os
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -371,6 +372,13 @@ class LocalClassifierDispatchTests(SimpleTestCase):
     each) and absent on most machines, so everything here mocks at the
     `build_candidate_items` / `classify` seam.
     """
+
+    def setUp(self):
+        # 這裡驗的是 topic -> 本機分類器的路由本身，不該被開發機上
+        # SEMANTIC_TREE_FORCE_AI（缺權重時整批退回 OpenAI 版）的設定影響。
+        patcher = patch.dict(os.environ, {"SEMANTIC_TREE_FORCE_AI": "false"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_topic_id_set_is_derived_from_the_module_table(self):
         # Two hand-maintained lists would drift: a topic in the set but not
