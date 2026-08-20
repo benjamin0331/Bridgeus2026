@@ -50,26 +50,27 @@ function nodeShape(type) {
 
 function nodeSize(type) {
   if (type === 'root') {
-    return { radius: 46, width: 92, height: 92 };
+    return { radius: 70, width: 140, height: 140 };
   }
 
+  // 長方形是等比放大（寬 +10px，高跟著同比例），不然圓角框會被拉扁。
   if (type === 'anchor') {
-    return { radius: 0, width: 76, height: 42 };
+    return { radius: 0, width: 112, height: 62 };
   }
 
-  return { radius: 30, width: 60, height: 60 };
+  return { radius: 54, width: 108, height: 108 };
 }
 
 function labelWidth(type) {
   if (type === 'root') {
-    return 72;
+    return 104;
   }
 
   if (type === 'anchor') {
-    return 62;
+    return 96;
   }
 
-  return 48;
+  return 88;
 }
 
 function labelLineLimit(type) {
@@ -81,19 +82,19 @@ function labelLineLimit(type) {
     return 2;
   }
 
-  return 3;
+  return 2;
 }
 
 function labelMaxLength(type) {
   if (type === 'root') {
-    return 18;
+    return 15;
   }
 
   if (type === 'anchor') {
     return 10;
   }
 
-  return 16;
+  return 10;
 }
 
 function normalizeTreeNode(node, depth = 0) {
@@ -235,10 +236,10 @@ function nodeMessages(node) {
 function nodeCollisionRadius(type) {
   const size = nodeSize(type);
   if (type === 'anchor') {
-    return Math.hypot(size.width / 2, size.height / 2) + 12;
+    return Math.hypot(size.width / 2, size.height / 2) + 20;
   }
 
-  return size.radius + 10;
+  return size.radius + 18;
 }
 
 function clamp(value, floor, ceiling) {
@@ -319,11 +320,13 @@ function applyRadialTreeLayout(root, dimensions) {
   const anchorCount = Math.max(anchors.length, 1);
   const minDimension = Math.min(dimensions.width, dimensions.height);
   const availableRadius = Math.max(180, minDimension / 2 - 22);
-  const anchorRadius = Math.max(86, Math.min(148, availableRadius * 0.38));
+  // 大分類固定坐在這個半徑上（不參與碰撞位移），所以中心圓與長方形之間的
+  // 距離完全由這個數字決定：中心半徑 51 + 長方形半對角 ~49 + 留白。
+  const anchorRadius = Math.max(168, Math.min(224, availableRadius * 0.5));
   const outerNodeRadius = nodeSize('point').radius;
   const maxDepth = Math.max(1, max(root.descendants(), (node) => node.depth) || 1);
   const depthAfterAnchor = Math.max(maxDepth - 1, 1);
-  const radialGap = Math.max(72, Math.min(132, (availableRadius - anchorRadius - outerNodeRadius) / depthAfterAnchor));
+  const radialGap = Math.max(112, Math.min(176, (availableRadius - anchorRadius - outerNodeRadius) / depthAfterAnchor));
   const sectorSize = (Math.PI * 2) / anchorCount;
 
   root.angle = 0;
@@ -337,7 +340,7 @@ function applyRadialTreeLayout(root, dimensions) {
     const sectorPadding = Math.min(0.16, sectorSize * 0.12);
     const usableSector = Math.max(0.34, sectorSize - sectorPadding * 2);
     const leafCount = Math.max(1, anchor.leaves().length);
-    const angleGap = Math.max(0.1, Math.min(0.36, usableSector / Math.max(leafCount - 0.5, 1)));
+    const angleGap = Math.max(0.14, Math.min(0.44, usableSector / Math.max(leafCount - 0.5, 1)));
 
     tree()
       .nodeSize([angleGap, radialGap])
@@ -376,6 +379,29 @@ function applyRadialTreeLayout(root, dimensions) {
   });
 
   resolveNodeCollisions(root.descendants());
+}
+
+const CENTER_LINK_GAP = 0;
+
+function centerLinkPath(target) {
+  // 中心連線要停在兩端的邊界上，不能畫進圖形內部：起點退到中心圓半徑，
+  // 終點退到長方形被這個方向切到的那條邊（取寬/高兩個交點的近者）。
+  const distance = Math.hypot(target.px, target.py) || 1;
+  const unitX = target.px / distance;
+  const unitY = target.py / distance;
+  // 兩端各留同樣的空隙。長方形是把整個框先向外膨脹 CENTER_LINK_GAP 再求交點，
+  // 而不是「求交點後退固定距離」——後者在正上／正下方會剛好頂到邊，斜角方向卻
+  // 因為圓角被切掉而多出一段空隙，看起來不一致。
+  const start = nodeSize('root').radius + CENTER_LINK_GAP;
+  const { width, height } = nodeSize('anchor');
+  const halfWidth = width / 2 + CENTER_LINK_GAP;
+  const halfHeight = height / 2 + CENTER_LINK_GAP;
+  const toSide = Math.min(
+    Math.abs(unitX) > 1e-6 ? halfWidth / Math.abs(unitX) : Infinity,
+    Math.abs(unitY) > 1e-6 ? halfHeight / Math.abs(unitY) : Infinity,
+  );
+  const end = Math.max(start, distance - toSide);
+  return `M${unitX * start},${unitY * start}L${unitX * end},${unitY * end}`;
 }
 
 function transformFromPosition(node) {
@@ -545,6 +571,7 @@ function ConversationTreePanel({
 }) {
   const shellRef = useRef(null);
   const svgRef = useRef(null);
+  const detailRef = useRef(null);
   const zoomTransformRef = useRef(null);
   const treeEntries = useMemo(
     () => normalizeTreeEntries(trees, treeData, topicTitle),
@@ -565,6 +592,8 @@ function ConversationTreePanel({
   const activeSelectedNodeId = selectedNode.id;
   const selectedPath = findNodePath(visibleTreeData, selectedNode.id) || [visibleTreeData];
   const selectedMessages = nodeMessages(selectedNode);
+  // 根節點＝「沒有選任何東西」的狀態：點空白畫布就會被設回根節點，浮窗跟著收掉。
+  const isDetailOpen = selectedNode.id !== visibleTreeData.id;
   const status = statusText({
     isActive,
     isLoading,
@@ -630,7 +659,7 @@ function ConversationTreePanel({
           pattern.append('path')
             .attr('d', 'M 26 0 L 0 0 0 26')
             .attr('fill', 'none')
-            .attr('stroke', 'rgba(93,74,58,0.09)')
+            .attr('stroke', 'rgba(93,74,58,0.14)')
             .attr('stroke-width', 1);
         });
 
@@ -651,7 +680,11 @@ function ConversationTreePanel({
         .data(root.links())
         .join('path')
         .attr('class', 'conversation-tree-link')
-        .attr('d', radialLink);
+        // 圓心的半徑是 0、角度固定 0，linkRadial 會讓每條中心連線先朝正上方
+        // 再彎向大分類，看起來歪一邊。中心往外一律走直線才會平均放射。
+        .attr('d', (link) => (link.source.depth === 0
+          ? centerLinkPath(link.target)
+          : radialLink(link)));
 
       const node = zoomLayer
         .append('g')
@@ -685,7 +718,7 @@ function ConversationTreePanel({
         });
 
       const zoomBehavior = zoom()
-        .scaleExtent([0.58, 2.5])
+        .scaleExtent([0.4, 2.5])
         .on('zoom', (event) => {
           zoomTransformRef.current = event.transform;
           zoomLayer.attr('transform', event.transform);
@@ -730,6 +763,22 @@ function ConversationTreePanel({
   }, [isActive, visibleTreeData]);
 
   useEffect(() => {
+    if (!isDetailOpen) {
+      return undefined;
+    }
+
+    const onDocumentClick = (event) => {
+      if (detailRef.current?.contains(event.target)) {
+        return;
+      }
+      setSelectedNodeId(visibleTreeData.id);
+    };
+
+    document.addEventListener('click', onDocumentClick);
+    return () => document.removeEventListener('click', onDocumentClick);
+  }, [isDetailOpen, visibleTreeData]);
+
+  useEffect(() => {
     const svgNode = svgRef.current;
     if (!svgNode) {
       return;
@@ -772,39 +821,55 @@ function ConversationTreePanel({
 
       <div ref={shellRef} className="conversation-tree-canvas-shell">
         <svg ref={svgRef} className="conversation-tree-canvas" role="img" aria-label="核電語意對話樹" />
+        <ul className="conversation-tree-legend" aria-label="節點顏色說明">
+          <li><i className="legend-dot legend-support" />支持</li>
+          <li><i className="legend-dot legend-oppose" />反對</li>
+        </ul>
         {status && (
           <div className="conversation-tree-empty">
             <strong>{status.title}</strong>
             <span>{status.detail}</span>
           </div>
         )}
-      </div>
+        <span className="conversation-tree-hint">滾輪可縮放，拖曳可平移</span>
 
-      <div className="conversation-tree-detail" aria-live="polite">
-        <span className="conversation-tree-detail-label">
-          {selectedPath.map((pathNode) => pathNode.name).join(' / ')}
-        </span>
-        {selectedMessages.length ? (
-          <div className="conversation-tree-message-list">
-            {selectedMessages.map((message, index) => {
-              const confidence = Number(message.confidence);
-              const confidenceText = Number.isFinite(confidence) ? `信心 ${(confidence * 100).toFixed(0)}%` : '';
-              const timestamp = formatSemanticTime(message.sourceTimestamp || message.recordedAt);
-              const meta = [message.stance || '中立', confidenceText, timestamp].filter(Boolean).join(' · ');
+        {isDetailOpen && (
+          <div ref={detailRef} className="conversation-tree-detail" role="dialog" aria-live="polite">
+            <div className="conversation-tree-detail-head">
+              <span className="conversation-tree-detail-label">
+                {selectedPath.map((pathNode) => pathNode.name).join(' / ')}
+              </span>
+              <button
+                type="button"
+                className="conversation-tree-detail-close"
+                aria-label="關閉節點詳情"
+                onClick={() => setSelectedNodeId(visibleTreeData.id)}
+              >
+                ×
+              </button>
+            </div>
+            {selectedMessages.length ? (
+              <div className="conversation-tree-message-list">
+                {selectedMessages.map((message, index) => {
+                  const confidence = Number(message.confidence);
+                  const confidenceText = Number.isFinite(confidence) ? `信心 ${(confidence * 100).toFixed(0)}%` : '';
+                  const timestamp = formatSemanticTime(message.sourceTimestamp || message.recordedAt);
+                  const meta = [message.stance || '中立', confidenceText, timestamp].filter(Boolean).join(' · ');
 
-              return (
-                <div className="conversation-tree-message" key={`${message.sourceMessageId || index}-${message.text}`}>
-                  <p>{message.text || EMPTY_DETAIL_TEXT}</p>
-                  {meta && <span>{meta}</span>}
-                  {message.rationale && <small>{message.rationale}</small>}
-                </div>
-              );
-            })}
+                  return (
+                    <div className="conversation-tree-message" key={`${message.sourceMessageId || index}-${message.text}`}>
+                      <p>{message.text || EMPTY_DETAIL_TEXT}</p>
+                      {meta && <span>{meta}</span>}
+                      {message.rationale && <small>{message.rationale}</small>}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p>{selectedNode.type === 'anchor' ? `「${selectedNode.name}」目前還沒有套用的訊息。` : EMPTY_DETAIL_TEXT}</p>
+            )}
           </div>
-        ) : (
-          <p>{selectedNode.type === 'anchor' ? `「${selectedNode.name}」目前還沒有套用的訊息。` : EMPTY_DETAIL_TEXT}</p>
         )}
-        <span className="conversation-tree-detail-time">滾輪可縮放，拖曳可平移</span>
       </div>
     </section>
   );

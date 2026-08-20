@@ -101,8 +101,8 @@
   flex: 1;
   min-height: 310px;
   overflow: hidden;
-  background: rgba(255, 252, 246, 0.68);
-  border: 1px solid rgba(137, 110, 86, 0.2);
+  background: rgba(255, 253, 248, 0.9);
+  border: 1px solid rgba(137, 110, 86, 0.32);
   border-radius: 18px;
 }
 
@@ -116,6 +116,46 @@
 
 .conversation-tree-canvas:active {
   cursor: grabbing;
+}
+
+/* 圖例疊在畫布右上角；pointer-events: none 才不會擋到拖曳／點選節點。 */
+.conversation-tree-legend {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  gap: 10px;
+  margin: 0;
+  padding: 5px 9px;
+  list-style: none;
+  color: #4a3728;
+  background: rgba(255, 251, 244, 0.92);
+  border: 1px solid rgba(137, 110, 86, 0.28);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  pointer-events: none;
+}
+
+.conversation-tree-legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-dot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+.legend-support {
+  background: #22a35e;
+}
+
+.legend-oppose {
+  background: #e04434;
 }
 
 .conversation-tree-empty {
@@ -147,10 +187,10 @@
 
 .conversation-tree-link {
   fill: none;
-  stroke: #c4b5a5;
+  stroke: #b08a63;
   stroke-linecap: round;
-  stroke-opacity: 0.8;
-  stroke-width: 1.5px;
+  stroke-opacity: 0.95;
+  stroke-width: 2px;
 }
 
 .conversation-tree-node {
@@ -163,14 +203,16 @@
   vector-effect: non-scaling-stroke;
 }
 
+/* 中心節點用品牌琥珀色（原本深棕底白字太生硬），跟面板的暖色系一致。 */
 .node-root .conversation-tree-node-shape {
-  fill: #3d2e24;
-  stroke: rgba(93, 74, 58, 0.35);
+  fill: #f2941f;
+  stroke: none;
 }
 
 .node-anchor .conversation-tree-node-shape {
-  fill: #c49a6c;
-  stroke: rgba(140, 100, 60, 0.3);
+  fill: #c98134;
+  stroke: rgba(255, 250, 241, 0.85);
+  stroke-width: 2px;
 }
 
 /* Dormant anchor: shown from the start in a muted gray state until one of its
@@ -179,7 +221,9 @@
 .node-anchor.is-dormant .conversation-tree-node-shape {
   fill: #d5ccc1;
   stroke: rgba(120, 105, 90, 0.25);
+  stroke-width: 1.5px;
   opacity: 0.55;
+  filter: none;
 }
 
 .node-anchor.is-dormant .anchor-label {
@@ -188,37 +232,54 @@
 }
 
 .node-point .conversation-tree-node-shape {
-  fill: #f0e8dc;
-  stroke: rgba(140, 110, 80, 0.28);
+  fill: #faeedb;
+  stroke: rgba(150, 105, 50, 0.42);
+  stroke-width: 1.8px;
 }
 
 /* Stance lighting: latest OpenAI-judged stance per node repaints it green
-   (support) or red (oppose). Neutral/mixed/undetermined stances intentionally
-   have no rule here, so the node keeps its default fill above. */
+   (support) or red (oppose) — 整顆實心上色，遠看就能分辨。Neutral/mixed/
+   undetermined stances intentionally have no rule here, so the node keeps its
+   default fill above. */
 .node-point.stance-support .conversation-tree-node-shape {
-  fill: #f0e8dc;
-  stroke: #2f9e58;
-  stroke-width: 2px;
+  fill: #22a35e;
+  stroke: none;
 }
 
 .node-point.stance-support .point-label {
-  fill: #4a3728;
+  fill: #ffffff;
 }
 
 .node-point.stance-oppose .conversation-tree-node-shape {
-  fill: #f0e8dc;
-  stroke: #d64545;
-  stroke-width: 2px;
+  fill: #e04434;
+  stroke: none;
 }
 
 .node-point.stance-oppose .point-label {
-  fill: #4a3728;
+  fill: #ffffff;
 }
 
+/* 選取狀態不加外框（描邊在實心綠/紅上會變成一圈突兀的異色），
+   改用自己顏色的陰影往外暈。 */
 .conversation-tree-node.is-selected .conversation-tree-node-shape {
-  stroke: #9b6f47;
-  stroke-width: 2.5px;
-  filter: drop-shadow(0 0 5px rgba(155, 111, 71, 0.45));
+  stroke: none;
+  filter: drop-shadow(0 0 9px rgba(120, 84, 48, 0.75));
+}
+
+.node-root.is-selected .conversation-tree-node-shape {
+  filter: drop-shadow(0 0 10px rgba(185, 106, 16, 0.9));
+}
+
+.node-anchor.is-selected .conversation-tree-node-shape {
+  filter: drop-shadow(0 0 10px rgba(150, 89, 28, 0.9));
+}
+
+.node-point.stance-support.is-selected .conversation-tree-node-shape {
+  filter: drop-shadow(0 0 10px rgba(18, 130, 70, 0.95));
+}
+
+.node-point.stance-oppose.is-selected .conversation-tree-node-shape {
+  filter: drop-shadow(0 0 10px rgba(190, 45, 32, 0.95));
 }
 
 .conversation-tree-node-label {
@@ -231,30 +292,73 @@
 }
 
 .root-label {
-  fill: #f7f3ee;
-  font-size: 12px;
+  fill: #3a2416;
+  font-size: 20px;
+  font-weight: 900;
 }
 
 .anchor-label {
   fill: #fff8f2;
-  font-size: 11px;
+  font-size: 19px;
 }
 
 .point-label {
   fill: #4a3728;
-  font-size: 9.5px;
+  font-size: 17px;
+  font-weight: bold;
 }
 
+/* 節點詳情改成疊在畫布上的浮窗，原本它固定佔掉面板底部一整條，
+   圖的高度就被吃掉了。點浮窗以外的地方會關掉（見元件內的 document click）。*/
 .conversation-tree-detail {
-  min-height: 72px;
-  max-height: 110px;
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  left: 12px;
+  max-width: 340px;
+  max-height: 52%;
   padding: 10px 12px;
   overflow-y: auto;
-  background: rgba(255, 255, 255, 0.68);
-  border: 1px solid rgba(127, 101, 78, 0.2);
+  background: rgba(255, 252, 246, 0.97);
+  border: 1px solid rgba(127, 101, 78, 0.3);
   border-radius: 16px;
+  box-shadow: 0 12px 28px rgba(70, 53, 38, 0.22);
   scrollbar-width: thin;
   scrollbar-color: rgba(0, 0, 0, 0.1) transparent;
+}
+
+.conversation-tree-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* 只要一個叉，不要底色圓框 */
+.conversation-tree-detail-close {
+  flex: 0 0 auto;
+  padding: 0;
+  color: #8a735e;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.conversation-tree-detail-close:hover {
+  color: #2b211b;
+}
+
+.conversation-tree-hint {
+  position: absolute;
+  bottom: 10px;
+  left: 12px;
+  color: #9a8874;
+  font-size: 11px;
+  font-weight: 700;
+  pointer-events: none;
 }
 
 .conversation-tree-detail::-webkit-scrollbar {
@@ -314,11 +418,6 @@
 .conversation-tree-message small {
   margin-top: 4px;
   color: #6d5a47;
-}
-
-.conversation-tree-detail-time {
-  color: #8d8075;
-  font-size: 12px;
 }
 
 @media (max-width: 768px) {
