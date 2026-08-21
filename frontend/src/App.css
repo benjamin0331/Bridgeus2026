@@ -62,6 +62,12 @@ html, body {
 
 .user-profile-name {
   font-size: 18px;
+  /* align-items: center 下，文字基線離盒子中心的距離只跟字級有關，
+     所以 24px 的「Take a Bridge」與 18px 的名字會差約 2px。用 relative
+     推回去對齊基線，不動版面（改 align-items: baseline 會讓整列的垂直
+     位置又變成由內容決定，登出鈕在不在就會讓它跳動）。 */
+  position: relative;
+  top: 2px;
 }
 
 .logout-btn {
@@ -86,12 +92,6 @@ html, body {
 
 .logout-btn:active {
   transform: translateY(0);
-}
-
-/* 對話頁把登出鈕藏起來但保留它佔的位置，理由見 Navbar.jsx。 */
-.logout-btn.is-hidden {
-  visibility: hidden;
-  pointer-events: none;
 }
 
 /* --- 4. 主畫面佈局區域 (包含內容區與側邊欄) --- */
@@ -228,6 +228,8 @@ html, body {
 
   .user-profile-name {
     font-size: 14px;
+    /* 16px / 14px 的基線差不到 1px，桌機那個補償在這裡會過頭。 */
+    top: 0;
   }
 
   .logout-btn {
