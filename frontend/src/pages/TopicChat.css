@@ -23,8 +23,10 @@
 
 .current-topic-section {
   /* 不留 margin-top：左欄標題列與右欄想法脈絡面板都是 .chat-page-container 的
-     flex 子層、容器上緣沒有 padding，補這個 margin 就會比外框低一截。 */
-  margin-bottom: 13px;
+     flex 子層、容器上緣沒有 padding，補這個 margin 就會比外框低一截。
+     下方留白比其他頁窄：導覽線到內容區的 35px 是全站共用值（決定側邊功能欄
+     長度，見 App.css），聊天室不能單獨縮，只能從自己內部的三處留白省回來。 */
+  margin-bottom: 8px;
   flex-shrink: 0;
 }
 
@@ -73,9 +75,11 @@
   gap: 20px;
   min-height: 0;
   padding-right: 10px;
-  padding-bottom: 18px;
+  /* 這兩個值跟 .current-topic-section 的 margin-bottom 一起被壓縮，
+     省下的高度全部回到訊息區本身。 */
+  padding-bottom: 10px;
   scroll-padding-bottom: 140px;
-  margin-bottom: 15px;
+  margin-bottom: 10px;
 }
 
 /* 尺寸對齊 .ai-end-dialogue-btn（12px 字、6/16 內距、20px 圓角）。

@@ -9,8 +9,9 @@
   /* 手機版兩顆浮動鈕（三／田）的共用間距：
      上方 = 與頂部橫線的距離，下方 = 與輸入列的距離，兩邊用同一個值。 */
   --chat-fab-gap: 8px;
-  /* 手機版頂部橫線的 y 位置：app padding 16 + nav 內容約 19 + padding 14 + border 2.5 */
-  --chat-nav-bottom: 52px;
+  /* 手機版頂部橫線的 y 位置：app padding 16 + 手機版 .top-navigation 的
+     固定高度 52.5。導覽列高度改了這裡要跟著改。 */
+  --chat-nav-bottom: 68.5px;
 }
 
 html, body {
@@ -37,19 +38,20 @@ html, body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  /* 高度鎖死（border-box：內容 40 + padding-bottom 20 + border 2.5）。
+     不讓內容決定高度，是因為對話頁會把登出鈕藏起來——只要高度是算出來的，
+     少一顆按鈕就會讓橫線、「Take a Bridge」、使用者名稱連同底下整條側邊
+     功能欄一起往上跑。寫死之後任何頁面的橫線都在同一條 y 上。 */
+  height: 62.5px;
   padding-bottom: 20px;
   border-bottom: 2.5px solid #e0d8cf;
   color: #7d6e6e;
   font-size: 24px;
+  /* 導覽線到內容區的距離。這個值直接決定 .main-layout-wrapper 的高度，
+     也就是側邊功能欄的長度——全站共用一個值，各頁的側邊欄才會一樣長。 */
   margin-bottom: 35px;
   /* 防止頂部導覽列在彈性佈局中被壓縮尺寸 */
   flex-shrink: 0;
-}
-
-/* 對話頁的標題列本身就有指標列撐著，導覽線下方不需要 35px 的呼吸。
-   用 :has 只縮這一頁，不動其他頁面的間距。 */
-.app-container:has(.chat-page-container) .top-navigation {
-  margin-bottom: 17px;
 }
 
 .top-navigation-actions {
@@ -65,6 +67,9 @@ html, body {
 .logout-btn {
   border: none;
   border-radius: 999px;
+  /* 10 + 20 + 10 = 40px，剛好是 .top-navigation 的內容高度。行高寫死，
+     不吃字體的 normal 行高，換字體時導覽列高度才不會跟著變。 */
+  line-height: 20px;
   padding: 10px 18px;
   background-color: #d8c3ad;
   color: #5f5045;
@@ -81,6 +86,12 @@ html, body {
 
 .logout-btn:active {
   transform: translateY(0);
+}
+
+/* 對話頁把登出鈕藏起來但保留它佔的位置，理由見 Navbar.jsx。 */
+.logout-btn.is-hidden {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 /* --- 4. 主畫面佈局區域 (包含內容區與側邊欄) --- */
@@ -208,6 +219,8 @@ html, body {
   }
 
   .top-navigation {
+    /* 內容 36（登出鈕 8 + 20 + 8）+ padding-bottom 14 + border 2.5 */
+    height: 52.5px;
     font-size: 16px;
     margin-bottom: 14px;
     padding-bottom: 14px;
