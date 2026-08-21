@@ -2949,6 +2949,45 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     : aiDriftUpdatedAt;
   const metricMessageHint = isMatchingMode ? '目前房間累計訊息' : '目前 AI 對話累計訊息';
 
+  // 桌機把指標放在左欄標題列、手機放回右側抽屜底部（標題列在窄螢幕塞不下三格）。
+  // 同一份 DOM 不能同時掛在兩個容器，所以兩邊都渲染，由 CSS 決定顯示哪一個。
+  const renderMetricRow = (placement) => (
+    <div className={`metric-row metric-row-${placement}`} aria-label="對話即時指標">
+      <div className="metric-card">
+        <span className="metric-label metric-label-with-info">
+          <span className="metric-label-text">我的論述移動</span>
+          <span
+            className="metric-info"
+            tabIndex={0}
+            role="note"
+            aria-label="論述移動說明：顯示你的發言與最初立場陳述的語意差距。+：與上句角度陳述不同。-：與上句角度陳述相似。"
+          >
+            i
+            <span className="metric-info-tooltip" role="tooltip">
+              顯示你的發言與最初立場陳述的語意差距。<br/>+：與上句角度陳述不同。<br/>-：與上句角度陳述相似。
+            </span>
+          </span>
+        </span>
+        <strong className="metric-value metric-value-equation" title={driftValueDisplay}>
+          {driftValueDisplay}
+        </strong>
+        <span className="metric-hint">
+          {driftHintDisplay}
+        </span>
+      </div>
+      <div className="metric-card">
+        <span className="metric-label">我的立場分數</span>
+        <strong className="metric-value">{stanceScoreDisplay}</strong>
+        <span className="metric-hint">{stanceCategoryDisplay}</span>
+      </div>
+      <div className="metric-card">
+        <span className="metric-label">對話訊息數</span>
+        <strong className="metric-value">{metricMessageCount}</strong>
+        <span className="metric-hint">{metricMessageHint}</span>
+      </div>
+    </div>
+  );
+
   return (
     <div className="chat-page-container">
       {showSurvey && (
@@ -2991,6 +3030,8 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
             <span className={`topic-mode-badge ${isMatchingMode ? 'mode-match' : 'mode-ai'}`}>
               {modeLabel}
             </span>
+
+            {renderMetricRow('header')}
           </div>
         </div>
 
@@ -3081,20 +3122,22 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
           )}
         </div>
 
-        {(isMatchingMode ? isMatchChatReady : Boolean(sessionId)) && showScrollToBottomButton && (
-          <button
-            className="scroll-to-bottom-btn"
-            type="button"
-            onClick={handleScrollToBottom}
-            onMouseDown={(event) => {
-              event.preventDefault();
-            }}
-          >
-            回到底部
-          </button>
-        )}
-
         <div className="chat-fixed-footer">
+          {/* 掛在 footer 上並用 bottom: calc(100% + gap)：footer 高度會隨
+              「結束對話」列與多行輸入變動，寫死的 bottom 值一定會撞到其中一個。 */}
+          {(isMatchingMode ? isMatchChatReady : Boolean(sessionId)) && showScrollToBottomButton && (
+            <button
+              className="scroll-to-bottom-btn"
+              type="button"
+              onClick={handleScrollToBottom}
+              onMouseDown={(event) => {
+                event.preventDefault();
+              }}
+            >
+              回到底部
+            </button>
+          )}
+
           {!isRightPanelOpen && (
             <button
               className="panel-toggle-btn"
@@ -3105,7 +3148,10 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
             </button>
           )}
 
-          {!isMatchingMode && sessionId && messages.length > 0 && (
+          {/* 只在捲到底部時出現：這一列在 flex 流裡，常駐就等於永久從對話區
+              扣掉一整列高度。showScrollToBottomButton 為真代表使用者離開了
+              底部，兩者剛好互斥（同一顆按鈕不會跟它同時出現）。 */}
+          {!isMatchingMode && sessionId && messages.length > 0 && !showScrollToBottomButton && (
             <div className="ai-end-dialogue-bar">
               <button
                 className="ai-end-dialogue-btn"
@@ -3202,40 +3248,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
           />
         </div>
 
-        <div className="right-minor-feature-row" aria-label="對話即時指標">
-          <div className="minor-feature-box metric-card">
-            <span className="metric-label metric-label-with-info">
-              <span className="metric-label-text">我的論述移動</span>
-              <span
-                className="metric-info"
-                tabIndex={0}
-                role="note"
-                aria-label="論述移動說明：顯示你的發言與最初立場陳述的語意差距。+：與上句角度陳述不同。-：與上句角度陳述相似。"
-              >
-                i
-                <span className="metric-info-tooltip" role="tooltip">
-                  顯示你的發言與最初立場陳述的語意差距。<br/>+：與上句角度陳述不同。<br/>-：與上句角度陳述相似。
-                </span>
-              </span>
-            </span>
-            <strong className="metric-value metric-value-equation" title={driftValueDisplay}>
-              {driftValueDisplay}
-            </strong>
-            <span className="metric-hint">
-              {driftHintDisplay}
-            </span>
-          </div>
-          <div className="minor-feature-box metric-card">
-            <span className="metric-label">我的立場分數</span>
-            <strong className="metric-value">{stanceScoreDisplay}</strong>
-            <span className="metric-hint">{stanceCategoryDisplay}</span>
-          </div>
-          <div className="minor-feature-box metric-card">
-            <span className="metric-label">對話訊息數</span>
-            <strong className="metric-value">{metricMessageCount}</strong>
-            <span className="metric-hint">{metricMessageHint}</span>
-          </div>
-        </div>
+        {renderMetricRow('panel')}
       </aside>
     </div>
   );

@@ -26,7 +26,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 36px;
+  gap: 22px;
 }
 
 /* 區塊標題（如：選擇議題、熱門對話） */
@@ -37,12 +37,12 @@
   font-weight: bold;
 }
 
-/* 推薦標籤雲佈局 */
+/* 推薦標籤雲佈局。不用 margin-bottom：它是 .kb-topic-select 的最後一個元素，
+   跟下一個區塊的距離已經由 .kb-left-section 的 gap 管，兩者會疊加。 */
 .kb-tag-cloud {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
-  margin-bottom: 30px;
 }
 
 /* 單個標籤樣式 */

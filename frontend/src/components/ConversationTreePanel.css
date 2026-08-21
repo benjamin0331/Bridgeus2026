@@ -3,8 +3,10 @@
   height: 100%;
   min-height: 0;
   flex-direction: column;
-  gap: 6px;
-  padding: 18px;
+  /* 上方留白刻意小於左右／下方：標題列上下各留約 10px 就置中了，
+     省下來的高度直接給下面 flex: 1 的畫布。 */
+  gap: 9px;
+  padding: 10px 18px 18px;
   color: #2f2722;
   background:
     radial-gradient(circle at 16% 18%, rgba(246, 162, 58, 0.2), transparent 28%),
@@ -158,11 +160,18 @@
   background: #e04434;
 }
 
-.conversation-tree-empty {
+.conversation-tree-canvas-footer {
   position: absolute;
-  right: 16px;
-  bottom: 16px;
-  left: 16px;
+  right: 14px;
+  bottom: 12px;
+  left: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  pointer-events: none;
+}
+
+.conversation-tree-empty {
   display: flex;
   align-items: flex-start;
   flex-direction: column;
@@ -352,9 +361,6 @@
 }
 
 .conversation-tree-hint {
-  position: absolute;
-  bottom: 10px;
-  left: 12px;
   color: #9a8874;
   font-size: 11px;
   font-weight: 700;
@@ -423,7 +429,7 @@
 @media (max-width: 768px) {
   .conversation-tree-panel {
     min-height: 460px;
-    padding: 14px;
+    padding: 9px 14px 14px;
     border-radius: 18px;
   }
 

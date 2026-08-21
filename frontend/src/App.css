@@ -46,6 +46,12 @@ html, body {
   flex-shrink: 0;
 }
 
+/* 對話頁的標題列本身就有指標列撐著，導覽線下方不需要 35px 的呼吸。
+   用 :has 只縮這一頁，不動其他頁面的間距。 */
+.app-container:has(.chat-page-container) .top-navigation {
+  margin-bottom: 17px;
+}
+
 .top-navigation-actions {
   display: flex;
   align-items: center;

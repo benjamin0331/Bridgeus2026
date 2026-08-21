@@ -825,13 +825,17 @@ function ConversationTreePanel({
           <li><i className="legend-dot legend-support" />支持</li>
           <li><i className="legend-dot legend-oppose" />反對</li>
         </ul>
-        {status && (
-          <div className="conversation-tree-empty">
-            <strong>{status.title}</strong>
-            <span>{status.detail}</span>
-          </div>
-        )}
-        <span className="conversation-tree-hint">滾輪可縮放，拖曳可平移</span>
+        {/* 提示與狀態卡都貼在畫布底部，各自 absolute 會疊在一起，
+            所以放進同一個由下往上堆的容器：提示在上、狀態卡在下。 */}
+        <div className="conversation-tree-canvas-footer">
+          <span className="conversation-tree-hint">滾輪可縮放，拖曳可平移</span>
+          {status && (
+            <div className="conversation-tree-empty">
+              <strong>{status.title}</strong>
+              <span>{status.detail}</span>
+            </div>
+          )}
+        </div>
 
         {isDetailOpen && (
           <div ref={detailRef} className="conversation-tree-detail" role="dialog" aria-live="polite">
