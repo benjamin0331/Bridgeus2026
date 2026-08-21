@@ -9,6 +9,9 @@
   /* 手機版兩顆浮動鈕（三／田）的共用間距：
      上方 = 與頂部橫線的距離，下方 = 與輸入列的距離，兩邊用同一個值。 */
   --chat-fab-gap: 8px;
+  /* 對話頁左欄標題列往上靠的距離。側邊功能欄與右欄想法脈絡面板會用同樣的
+     值往下補回來，所以只有左欄真的變高——改這一個值就好。 */
+  --chat-header-lift: 23px;
   /* 手機版頂部橫線的 y 位置：app padding 16 + 手機版 .top-navigation 的
      固定高度 52.5。導覽列高度改了這裡要跟著改。 */
   --chat-nav-bottom: 68.5px;
@@ -52,6 +55,20 @@ html, body {
   margin-bottom: 35px;
   /* 防止頂部導覽列在彈性佈局中被壓縮尺寸 */
   flex-shrink: 0;
+}
+
+/* 對話頁：只有左欄的標題列往上靠。
+   導覽線下方縮掉 --chat-header-lift，.main-layout-wrapper 就多拿到這麼多
+   高度；再把同樣的值以 margin-top 還給側邊功能欄與右欄，這兩者的位置和
+   長度就跟其他頁完全一樣，多出來的高度全部只給左欄。 */
+@media (min-width: 769px) {
+  .app-container:has(.chat-page-container) .top-navigation {
+    margin-bottom: calc(35px - var(--chat-header-lift));
+  }
+
+  .app-container:has(.chat-page-container) .sidebar-container {
+    margin-top: var(--chat-header-lift);
+  }
 }
 
 .top-navigation-actions {
