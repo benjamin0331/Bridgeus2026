@@ -551,6 +551,7 @@ function ConversationTreePanel({
   const zoomTransformRef = useRef(null);
   const litNodeStanceRef = useRef(new Map());
   const breathingUntilRef = useRef(new Map());
+  const nodeMentionCountRef = useRef(new Map());
   const treeEntries = useMemo(
     () => normalizeTreeEntries(trees, treeData, topicTitle),
     [topicTitle, treeData, trees],
@@ -698,6 +699,29 @@ function ConversationTreePanel({
         }
       });
       node.classed('is-breathing', (item) => breathingIds.has(item.data.id));
+
+      // A node ripples whenever it's brand new (no prior mention-count entry)
+      // or whenever it just gained another message (i.e. was mentioned again
+      // in this analysis pass). Tracked per tree entry, same as the lit-state
+      // map above, so switching tabs can't cross-contaminate the counts.
+      const rippleIds = new Set();
+      root.descendants().forEach((item) => {
+        if (item.data.type !== 'point') return;
+        const mentionKey = `${activeOwnerKey}:${item.data.id}`;
+        const mentionCount = nodeMessages(item.data).length;
+        const previousMentionCount = nodeMentionCountRef.current.get(mentionKey);
+        if (previousMentionCount === undefined || mentionCount > previousMentionCount) {
+          rippleIds.add(item.data.id);
+        }
+        nodeMentionCountRef.current.set(mentionKey, mentionCount);
+      });
+      node.classed('is-rippling', (item) => rippleIds.has(item.data.id));
+
+      node
+        .filter((item) => item.data.type === 'point')
+        .append('circle')
+        .attr('class', 'conversation-tree-node-ripple')
+        .attr('r', nodeSize('point').radius);
 
       appendNodeShape(node);
 

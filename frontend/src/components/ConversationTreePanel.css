@@ -239,6 +239,45 @@
   animation: node-breathe-oppose 2s ease-in-out 3;
 }
 
+/* Ripple: a ring that expands outward and fades whenever a point node is
+   brand new or just picked up another message (re-mentioned). The circle
+   sits behind the node shape at rest (opacity 0, no size cost); `is-rippling`
+   is only ever applied for the render where the mention count actually grew
+   (see mention-count tracking in ConversationTreePanel.jsx), so later
+   re-renders with no new mention don't replay it. */
+@keyframes node-ripple {
+  0% {
+    opacity: 0.6;
+    transform: scale(0.75);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2.4);
+  }
+}
+
+.conversation-tree-node-ripple {
+  fill: none;
+  stroke: #9b6f47;
+  stroke-width: 2.5px;
+  opacity: 0;
+  pointer-events: none;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.node-point.stance-support .conversation-tree-node-ripple {
+  stroke: #2f9e58;
+}
+
+.node-point.stance-oppose .conversation-tree-node-ripple {
+  stroke: #d64545;
+}
+
+.node-point.is-rippling .conversation-tree-node-ripple {
+  animation: node-ripple 2s ease-out 3;
+}
+
 .conversation-tree-node.is-selected .conversation-tree-node-shape {
   stroke: #9b6f47;
   stroke-width: 4px;
