@@ -241,7 +241,7 @@
 
 .conversation-tree-node.is-selected .conversation-tree-node-shape {
   stroke: #9b6f47;
-  stroke-width: 2.5px;
+  stroke-width: 4px;
   filter: drop-shadow(0 0 3px rgba(155, 111, 71, 0.35));
 }
 

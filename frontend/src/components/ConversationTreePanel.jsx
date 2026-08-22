@@ -13,6 +13,9 @@ import './ConversationTreePanel.css';
 
 const EMPTY_DETAIL_TEXT = '點選語意節點後，這裡會顯示完整原始訊息、路徑與整理理由。';
 
+// 對應 ConversationTreePanel.css 的 node-breathe-* 動畫：2s * 3 iterations。
+const BREATHING_DURATION_MS = 6000;
+
 function cleanText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
@@ -547,6 +550,7 @@ function ConversationTreePanel({
   const svgRef = useRef(null);
   const zoomTransformRef = useRef(null);
   const litNodeStanceRef = useRef(new Map());
+  const breathingUntilRef = useRef(new Map());
   const treeEntries = useMemo(
     () => normalizeTreeEntries(trees, treeData, topicTitle),
     [topicTitle, treeData, trees],
@@ -667,9 +671,15 @@ function ConversationTreePanel({
           setSelectedNodeId(item.data.id);
         });
 
-      // A node only breathes the first time it is seen carrying a given
-      // stance; the map is keyed per tree entry so switching between "my"
+      // A node breathes for BREATHING_DURATION_MS after its stance first
+      // changes; the map is keyed per tree entry so switching between "my"
       // and "their" tabs can't cross-contaminate the lit-state tracking.
+      // The deadline (not just "first seen") is what's tracked because the
+      // WebSocket-driven CCND updates (~2-3s) rerun renderChart and tear
+      // down/rebuild the whole SVG mid-animation; without a deadline the
+      // node would look "already seen" on the very next rebuild and lose
+      // its is-breathing class after a single CSS animation iteration.
+      const now = Date.now();
       const breathingIds = new Set();
       root.descendants().forEach((item) => {
         if (item.data.type !== 'point') return;
@@ -677,9 +687,15 @@ function ConversationTreePanel({
         if (!stanceClass) return;
         const litKey = `${activeOwnerKey}:${item.data.id}`;
         if (litNodeStanceRef.current.get(litKey) !== stanceClass) {
-          breathingIds.add(item.data.id);
+          breathingUntilRef.current.set(litKey, now + BREATHING_DURATION_MS);
         }
         litNodeStanceRef.current.set(litKey, stanceClass);
+        const breathingUntil = breathingUntilRef.current.get(litKey);
+        if (breathingUntil && now < breathingUntil) {
+          breathingIds.add(item.data.id);
+        } else {
+          breathingUntilRef.current.delete(litKey);
+        }
       });
       node.classed('is-breathing', (item) => breathingIds.has(item.data.id));
 
