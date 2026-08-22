@@ -218,9 +218,12 @@
 /* Breathing intro: a node that has just been assigned a stance flashes
    between its stance color and the resting brown/cream fill for 3 cycles
    (2s each = 6s total) before settling back on the resting fill that the
-   stance stroke rules above already use. `is-breathing` is only ever
-   applied once per node id (see lit-tracking in ConversationTreePanel.jsx),
-   so re-renders (resize, etc.) don't replay it. */
+   stance stroke rules above already use. `is-breathing` stays on the node
+   until a 6s deadline passes (see breathingUntilRef in
+   ConversationTreePanel.jsx) rather than being applied once per node id ——
+   CCND 準即時更新每 2-3 秒就重建整棵 SVG，只認「第一次看到」的話動畫會在
+   下一次重建時被判定成看過而中斷。重建會讓動畫從頭播，所以這裡不加
+   animation-fill-mode：6s 之後節點自然回到靜止色，class 殘留也不影響外觀。 */
 @keyframes node-breathe-support {
   0%, 100% { fill: #f0e8dc; }
   50% { fill: #2f9e58; }

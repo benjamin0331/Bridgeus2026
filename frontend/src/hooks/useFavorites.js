@@ -12,6 +12,8 @@ let state = {
 };
 let listeners = new Set();
 let inFlightFetch = null;
+// 正在等待回應的 toggle（`${kind}:${id}`），避免同一個目標連點時競態。
+const inFlightToggles = new Set();
 
 function emitChange() {
   listeners.forEach((listener) => listener());
@@ -34,6 +36,7 @@ function getSnapshot() {
 // 登出時呼叫，避免下一個在同一頁面登入的使用者看到前一個人的收藏。
 export function resetFavoritesStore() {
   inFlightFetch = null;
+  inFlightToggles.clear();
   setState({ viewpoint: new Map(), video: new Map(), status: 'idle' });
 }
 
@@ -51,7 +54,10 @@ function ensureLoaded() {
       const videoMap = new Map((data.video || []).map((item) => [String(item.id), item]));
       setState({ viewpoint: viewpointMap, video: videoMap, status: 'loaded' });
     })
-    .catch(() => {
+    .catch((error) => {
+      // 不要靜靜消失：畫面會停在「還沒有收藏」，跟真的沒收藏長得一模一樣，
+      // console 至少要留下線索（同 LevelSummaryCard 的作法）。
+      console.warn('收藏清單讀取失敗：', error?.message ?? error);
       setState({ status: 'error' });
     })
     .finally(() => {
@@ -65,9 +71,15 @@ function ensureLoaded() {
 export function useFavorites(kind) {
   const snapshot = useSyncExternalStore(subscribe, getSnapshot);
 
+  // 依賴 status 而不是 []：登出時 resetFavoritesStore() 把狀態打回 'idle'，
+  // 如果這裡只在掛載時跑一次，登出後在同一個頁面重新登入、而元件沒有被卸載
+  // 過的話就永遠不會重抓，收藏頁會一直是空的。'error' 不會回到 'idle'，
+  // 所以不會變成無限重試。
   useEffect(() => {
-    ensureLoaded();
-  }, []);
+    if (snapshot.status === 'idle') {
+      ensureLoaded();
+    }
+  }, [snapshot.status]);
 
   const favoriteMap = snapshot[kind];
 
@@ -80,6 +92,13 @@ export function useFavorites(kind) {
 
   const toggleFavorite = useCallback((item) => {
     const key = String(item.id);
+    const inFlightKey = `${kind}:${key}`;
+    // 後端 POST 是 toggle 語意，所以連點兩下會送出兩個方向相反的請求，而回應
+    // 不保證照送出順序回來——先回的那個會覆寫後回的，畫面就跟資料庫對不上。
+    // 同一個目標在請求還沒回來之前直接忽略後續點擊。
+    if (inFlightToggles.has(inFlightKey)) return;
+    inFlightToggles.add(inFlightKey);
+
     const beforeMap = state[kind];
     const wasFavorited = beforeMap.has(key);
 
@@ -114,6 +133,9 @@ export function useFavorites(kind) {
           revertMap.delete(key);
         }
         setState({ [kind]: revertMap });
+      })
+      .finally(() => {
+        inFlightToggles.delete(inFlightKey);
       });
   }, [kind]);
 

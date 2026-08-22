@@ -67,6 +67,16 @@
 }
 
 .achievement-toast-close {
+  /* 這顆從 span 改成真的 <button>（見同名 .jsx 的註解），要把瀏覽器的預設
+     按鈕外觀清掉，否則會冒出灰底＋外框。font: inherit 放在 font-size 之前，
+     下面的 font-size 才蓋得過去。 */
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+
   flex-shrink: 0;
   display: flex;
   align-items: center;

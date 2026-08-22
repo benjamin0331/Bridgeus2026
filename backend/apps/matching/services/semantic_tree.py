@@ -1042,10 +1042,15 @@ def classify_stance_with_openai(
     if not resolved_api_key:
         return "中立"
 
+    # context_label 預設是空字串（見函式簽名），空的話 prompt 會出現「目標議題
+    # 節點：」後面什麼都沒有，等於讓模型自己猜要對什麼表態。保留改寫前就有的
+    # 這個 fallback。
+    label = context_label or "目前討論主題"
+
     prompt_text = "\n".join(
         [
             "你是一個客觀嚴謹的「立場分類 Agent (Stance Classification Agent)」。",
-            f"你的任務是判斷【使用者輸入】對於目標議題節點「{context_label}」的真實立場，"
+            f"你的任務是判斷【使用者輸入】對於目標議題節點「{label}」的真實立場，"
             "包含表面直接表達的立場，以及透過語氣、反諷、修辭問句、預設前提等方式隱含的「潛在立場」。",
             "",
             "### 判斷步驟：",
@@ -1073,7 +1078,7 @@ def classify_stance_with_openai(
             "- 嚴禁輸出任何解釋、標點符號、引號或多餘前綴文字。",
             "",
             "---",
-            f"目標議題節點：{context_label}",
+            f"目標議題節點：{label}",
             f"使用者輸入：{cleaned}",
             "---",
             "立場判定結果：",
