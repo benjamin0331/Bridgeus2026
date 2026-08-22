@@ -9,6 +9,7 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 
 from api.models import Title, UserTitle
+from api.views import LEVEL_THRESHOLDS
 
 User = get_user_model()
 
@@ -22,7 +23,16 @@ def test_titles_me_empty_when_no_titles_owned():
     response = client.get("/api/titles/me/")
 
     assert response.status_code == 200
-    assert response.data == {"owned": [], "selected_id": None, "color": None}
+    # 這支順路回傳等級（見 TitleMeView docstring），所以斷言不只有頭銜三欄。
+    # level_thresholds 比對常數而不是抄一份字面值，門檻調整時測試才不會又過時。
+    assert response.data == {
+        "owned": [],
+        "selected_id": None,
+        "color": None,
+        "dialogue_count": 0,
+        "level": 0,
+        "level_thresholds": list(LEVEL_THRESHOLDS),
+    }
 
 
 @pytest.mark.django_db
