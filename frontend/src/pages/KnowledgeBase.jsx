@@ -5,7 +5,6 @@ import { useFavorites } from '../hooks/useFavorites';
 import FavoriteStarButton from '../components/FavoriteStarButton';
 import './KnowledgeBase.css';
 
-const TRENDING_DISPLAY_LIMIT = 4;
 const TOP_CONVERSATIONS_LIMIT = 5;
 
 // stance_direction 目前後端沒有固定的中文對照表，這裡只涵蓋已知會出現的值，
@@ -45,7 +44,6 @@ const KnowledgeBase = () => {
 
   const [topics, setTopics] = useState([]);
   const [topicsLoaded, setTopicsLoaded] = useState(false);
-  const [trending, setTrending] = useState([]);
   const [selectedTopicId, setSelectedTopicId] = useState(null);
   const [topConversations, setTopConversations] = useState([]);
   const [topConversationsLoaded, setTopConversationsLoaded] = useState(false);
@@ -73,15 +71,6 @@ const KnowledgeBase = () => {
       })
       .finally(() => {
         if (!cancelled) setTopicsLoaded(true);
-      });
-
-    api
-      .get('/api/dialogue/topics/trending/')
-      .then((response) => {
-        if (!cancelled) setTrending(Array.isArray(response.data) ? response.data : []);
-      })
-      .catch(() => {
-        if (!cancelled) setTrending([]);
       });
 
     return () => {
@@ -155,7 +144,6 @@ const KnowledgeBase = () => {
     };
   }, [selectedTopicId]);
 
-  const topTrending = trending.slice(0, TRENDING_DISPLAY_LIMIT);
 
   const groupedTopConversations = useMemo(
     () => groupViewpointsBySummary(topConversations),
@@ -381,29 +369,6 @@ const KnowledgeBase = () => {
             </div>
           )}
         </section>
-      </div>
-
-      {/* 近期熱門：跨議題的整體活動量統計 */}
-      <div className="kb-right-section">
-        <div className="kb-blue-card">
-          <h3>近期熱門</h3>
-          <div className="kb-trending-list">
-            {topTrending.length === 0 ? (
-              <div className="kb-history-empty">尚無活動資料</div>
-            ) : (
-              topTrending.map((item) => (
-                <div
-                  key={item.id}
-                  className={`kb-trending-item${item.id === selectedTopicId ? ' kb-trending-item-active' : ''}`}
-                  onClick={() => selectTopic(item)}
-                >
-                  <span>{item.title}</span>
-                  <span>{item.hits}/Hits</span>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
       </div>
 
       {playingVideo && (

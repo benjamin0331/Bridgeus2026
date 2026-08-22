@@ -5,6 +5,18 @@
   padding: 0;
 }
 
+:root {
+  /* 手機版兩顆浮動鈕（三／田）的共用間距：
+     上方 = 與頂部橫線的距離，下方 = 與輸入列的距離，兩邊用同一個值。 */
+  --chat-fab-gap: 8px;
+  /* 對話頁左欄標題列往上靠的距離。側邊功能欄與右欄想法脈絡面板會用同樣的
+     值往下補回來，所以只有左欄真的變高——改這一個值就好。 */
+  --chat-header-lift: 23px;
+  /* 手機版頂部橫線的 y 位置：app padding 16 + 手機版 .top-navigation 的
+     固定高度 52.5。導覽列高度改了這裡要跟著改。 */
+  --chat-nav-bottom: 68.5px;
+}
+
 html, body {
   width: 100%;
   height: 100%;
@@ -29,13 +41,34 @@ html, body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  /* 高度鎖死（border-box：內容 40 + padding-bottom 20 + border 2.5）。
+     不讓內容決定高度，是因為對話頁會把登出鈕藏起來——只要高度是算出來的，
+     少一顆按鈕就會讓橫線、「Take a Bridge」、使用者名稱連同底下整條側邊
+     功能欄一起往上跑。寫死之後任何頁面的橫線都在同一條 y 上。 */
+  height: 62.5px;
   padding-bottom: 20px;
   border-bottom: 2.5px solid #e0d8cf;
   color: #7d6e6e;
   font-size: 24px;
+  /* 導覽線到內容區的距離。這個值直接決定 .main-layout-wrapper 的高度，
+     也就是側邊功能欄的長度——全站共用一個值，各頁的側邊欄才會一樣長。 */
   margin-bottom: 35px;
   /* 防止頂部導覽列在彈性佈局中被壓縮尺寸 */
   flex-shrink: 0;
+}
+
+/* 對話頁：只有左欄的標題列往上靠。
+   導覽線下方縮掉 --chat-header-lift，.main-layout-wrapper 就多拿到這麼多
+   高度；再把同樣的值以 margin-top 還給側邊功能欄與右欄，這兩者的位置和
+   長度就跟其他頁完全一樣，多出來的高度全部只給左欄。 */
+@media (min-width: 769px) {
+  .app-container:has(.chat-page-container) .top-navigation {
+    margin-bottom: calc(35px - var(--chat-header-lift));
+  }
+
+  .app-container:has(.chat-page-container) .sidebar-container {
+    margin-top: var(--chat-header-lift);
+  }
 }
 
 .top-navigation-actions {
@@ -46,11 +79,20 @@ html, body {
 
 .user-profile-name {
   font-size: 18px;
+  /* align-items: center 下，文字基線離盒子中心的距離只跟字級有關，
+     所以 24px 的「Take a Bridge」與 18px 的名字會差約 2px。用 relative
+     推回去對齊基線，不動版面（改 align-items: baseline 會讓整列的垂直
+     位置又變成由內容決定，登出鈕在不在就會讓它跳動）。 */
+  position: relative;
+  top: 2px;
 }
 
 .logout-btn {
   border: none;
   border-radius: 999px;
+  /* 10 + 20 + 10 = 40px，剛好是 .top-navigation 的內容高度。行高寫死，
+     不吃字體的 normal 行高，換字體時導覽列高度才不會跟著變。 */
+  line-height: 20px;
   padding: 10px 18px;
   background-color: #d8c3ad;
   color: #5f5045;
@@ -194,6 +236,8 @@ html, body {
   }
 
   .top-navigation {
+    /* 內容 36（登出鈕 8 + 20 + 8）+ padding-bottom 14 + border 2.5 */
+    height: 52.5px;
     font-size: 16px;
     margin-bottom: 14px;
     padding-bottom: 14px;
@@ -201,6 +245,8 @@ html, body {
 
   .user-profile-name {
     font-size: 14px;
+    /* 16px / 14px 的基線差不到 1px，桌機那個補償在這裡會過頭。 */
+    top: 0;
   }
 
   .logout-btn {
@@ -267,8 +313,10 @@ html, body {
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
   }
 
-  /* 就地欄頁面：按鈕移至輸入欄上方 */
+  /* 對話頁：三按鈕移到右上角（原本田按鈕的位置） */
   .sidebar-toggle-btn--chat {
-    bottom: 90px;
+    top: calc(var(--chat-nav-bottom) + var(--chat-fab-gap));
+    bottom: auto;
+    right: 14px;
   }
 }
