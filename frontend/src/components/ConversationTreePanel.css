@@ -270,10 +270,10 @@
 
 /* Breathing intro: a node that has just been assigned a stance pulses for 3
    cycles (2s each = 6s total) to pull the eye, then settles on its resting
-   fill. 節點的靜止色現在是整顆實心的立場色（見上面的 stance-support /
-   stance-oppose 規則），所以這裡是「閃向淺色再回到實心」——原本的寫法是
-   反過來的（靜止奶油色、閃向立場色），那是立場還用描邊表示時的前提。
-   要不要改成往亮色脈動請 hsiao 與 Ceeeuu 決定，這裡只讓顏色值對齊。
+   fill. 動態沿用 hsiao 的設計（animate fill、2s、3 次、ease-in-out），配色
+   一律用 Ceeeuu 的立場色：靜止是實心的 #22a35e / #e04434，脈動峰值是同色系
+   的淺色，全程不離開該立場的色相。原版是「奶油色 ↔ 立場色」，那是立場還用
+   描邊、填色維持奶油色時的前提，在實心填色下會變成閃向淺灰而非亮起來。
    `is-breathing` stays on the node
    until a 6s deadline passes (see breathingUntilRef in
    ConversationTreePanel.jsx) rather than being applied once per node id ——
@@ -281,13 +281,13 @@
    下一次重建時被判定成看過而中斷。重建會讓動畫從頭播，所以這裡不加
    animation-fill-mode：6s 之後節點自然回到靜止色，class 殘留也不影響外觀。 */
 @keyframes node-breathe-support {
-  0%, 100% { fill: #f0e8dc; }
-  50% { fill: #22a35e; }
+  0%, 100% { fill: #22a35e; }
+  50% { fill: #7ac89e; }
 }
 
 @keyframes node-breathe-oppose {
-  0%, 100% { fill: #f0e8dc; }
-  50% { fill: #e04434; }
+  0%, 100% { fill: #e04434; }
+  50% { fill: #ec8f85; }
 }
 
 .node-point.stance-support.is-breathing .conversation-tree-node-shape {
