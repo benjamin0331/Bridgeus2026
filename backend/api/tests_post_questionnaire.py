@@ -45,7 +45,7 @@ BASE_C3 = {
 }
 BASE_D = {
     "post_open_comprehension": "這是一段超過五十個字的測試文字，用來驗證 D1 的最低字數限制是否正確運作。" * 2,
-    "post_open_feedback": "對話體驗良好。",
+    "post_open_feedback": "對話體驗良好，整體來說這次的討論讓我對議題有更深入一點的理解。",
 }
 BASE_E = {
     "discomfort_flag": False,
@@ -151,11 +151,52 @@ class TestPostQuestionnaire:
         assert response.status_code == 400
 
     def test_d1_min_length(self, auth_client):
-        """D1 少於 50 字應被拒絕（400）。"""
+        """D1 少於 30 字應被拒絕（400）。"""
         client, _ = auth_client
         payload = _make_ai_payload(post_open_comprehension="短句")
         response = client.post("/api/post-questionnaire/", payload, format="json")
         assert response.status_code == 400
+
+    def test_d1_exactly_29_chars_is_rejected(self, auth_client):
+        client, _ = auth_client
+        payload = _make_ai_payload(post_open_comprehension="字" * 29)
+        response = client.post("/api/post-questionnaire/", payload, format="json")
+        assert response.status_code == 400
+        assert "post_open_comprehension" in response.data
+
+    def test_d1_exactly_30_chars_is_accepted(self, auth_client):
+        client, _ = auth_client
+        payload = _make_ai_payload(post_open_comprehension="字" * 30)
+        response = client.post("/api/post-questionnaire/", payload, format="json")
+        assert response.status_code == 201, response.data
+
+    def test_d2_min_length(self, auth_client):
+        """D2 少於 30 字應被拒絕（400）。"""
+        client, _ = auth_client
+        payload = _make_ai_payload(post_open_feedback="太短了")
+        response = client.post("/api/post-questionnaire/", payload, format="json")
+        assert response.status_code == 400
+        assert "post_open_feedback" in response.data
+
+    def test_d2_exactly_29_chars_is_rejected(self, auth_client):
+        client, _ = auth_client
+        payload = _make_ai_payload(post_open_feedback="字" * 29)
+        response = client.post("/api/post-questionnaire/", payload, format="json")
+        assert response.status_code == 400
+
+    def test_d2_exactly_30_chars_is_accepted(self, auth_client):
+        client, _ = auth_client
+        payload = _make_ai_payload(post_open_feedback="字" * 30)
+        response = client.post("/api/post-questionnaire/", payload, format="json")
+        assert response.status_code == 201, response.data
+
+    def test_d2_is_now_required(self, auth_client):
+        """D2 從選填改成必填：留空應被拒絕（400）。"""
+        client, _ = auth_client
+        payload = _make_ai_payload(post_open_feedback="")
+        response = client.post("/api/post-questionnaire/", payload, format="json")
+        assert response.status_code == 400
+        assert "post_open_feedback" in response.data
 
     def test_reverse_scoring(self, auth_client):
         """C1-2, C1-6, C1-7, C1-8 做 8-raw；s_post = Σadjusted / 8 計算正確。"""

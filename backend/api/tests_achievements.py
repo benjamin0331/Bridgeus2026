@@ -747,7 +747,7 @@ def _hh_questionnaire_payload():
         "post_open_comprehension": (
             "這是一段超過五十個字的測試文字，用來驗證 D1 的最低字數限制是否正確運作。" * 2
         ),
-        "post_open_feedback": "對話體驗良好。",
+        "post_open_feedback": "對話體驗良好，整體來說這次的討論讓我對議題有更深入一點的理解。",
         "discomfort_flag": False,
     }
 
