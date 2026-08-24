@@ -3172,6 +3172,26 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
             </div>
           )}
 
+          {/* H-H 版本：跟上面 AI 那顆同樣的位置與樣式，但要先呼叫
+              handleLeaveMatchRoom（打 /leave/、結清 match 狀態、清本地訊息）
+              才能 navigate，不能只是單純導頁——post-questionnaire 頁面本身
+              不會、也不該幫忙把房間關掉。與上方 banner 裡「退出聊天室」共用
+              同一個 handler，那顆在 matchingState.status 剛變 matched、還沒
+              有任何訊息時就先出現；這顆則跟 AI 一樣掛在輸入框正上方，只在
+              已經開始對話後才出現，讓「結束對話」在兩種模式下的視覺位置一致。 */}
+          {isMatchingMode && isMatchChatReady && matchMessages.length > 0 && !showScrollToBottomButton && (
+            <div className="ai-end-dialogue-bar">
+              <button
+                className="ai-end-dialogue-btn"
+                type="button"
+                disabled={isMatchingActionLoading}
+                onClick={handleLeaveMatchRoom}
+              >
+                {isMatchingActionLoading ? '結束中...' : '結束對話 & 填寫後測問卷'}
+              </button>
+            </div>
+          )}
+
           <div className="chat-input-area">
             {/* 3–5 次無效輸入的系統提示列：不是 AI 對話氣泡，不佔對話輪數。 */}
             {inputGateNotice && !isCoolingDown && (
