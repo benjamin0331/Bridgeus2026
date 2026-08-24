@@ -170,33 +170,33 @@ class TestPostQuestionnaire:
         response = client.post("/api/post-questionnaire/", payload, format="json")
         assert response.status_code == 201, response.data
 
-    def test_d2_min_length(self, auth_client):
-        """D2 少於 30 字應被拒絕（400）。"""
+    def test_d2_has_no_min_length(self, auth_client):
+        """D2 沒有字數下限，短文字也該被接受。"""
         client, _ = auth_client
         payload = _make_ai_payload(post_open_feedback="太短了")
         response = client.post("/api/post-questionnaire/", payload, format="json")
-        assert response.status_code == 400
-        assert "post_open_feedback" in response.data
+        assert response.status_code == 201, response.data
 
-    def test_d2_exactly_29_chars_is_rejected(self, auth_client):
-        client, _ = auth_client
-        payload = _make_ai_payload(post_open_feedback="字" * 29)
-        response = client.post("/api/post-questionnaire/", payload, format="json")
-        assert response.status_code == 400
-
-    def test_d2_exactly_30_chars_is_accepted(self, auth_client):
-        client, _ = auth_client
-        payload = _make_ai_payload(post_open_feedback="字" * 30)
+    def test_d2_is_optional(self, auth_client):
+        """D2 選填：留空／不帶都該被接受。"""
+        client, user = auth_client
+        payload = _make_ai_payload(post_open_feedback="")
         response = client.post("/api/post-questionnaire/", payload, format="json")
         assert response.status_code == 201, response.data
 
-    def test_d2_is_now_required(self, auth_client):
-        """D2 從選填改成必填：留空應被拒絕（400）。"""
-        client, _ = auth_client
-        payload = _make_ai_payload(post_open_feedback="")
-        response = client.post("/api/post-questionnaire/", payload, format="json")
-        assert response.status_code == 400
-        assert "post_open_feedback" in response.data
+        DialogueSessionRecord.objects.create(
+            user=user,
+            session_id="testsessionid789",
+            topic_id=102,
+            topic_title="測試議題",
+            collection_name="nuclear_energy_all",
+            session_state={"user_stance_score": 6.0, "history": []},
+            last_activity_at=timezone.now(),
+        )
+        payload2 = _make_ai_payload(session_id="testsessionid789")
+        del payload2["post_open_feedback"]
+        response2 = client.post("/api/post-questionnaire/", payload2, format="json")
+        assert response2.status_code == 201, response2.data
 
     def test_reverse_scoring(self, auth_client):
         """C1-2, C1-6, C1-7, C1-8 做 8-raw；s_post = Σadjusted / 8 計算正確。"""

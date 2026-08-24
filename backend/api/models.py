@@ -588,10 +588,7 @@ class PostDialogueResponse(models.Model):
     )
     post_open_feedback = models.TextField(
         blank=True,
-        help_text=(
-            "D2 — 自由回饋（最低 30 字）；blank=True 只是讓 admin 與直接用 ORM "
-            "建資料時不用強制帶值，實際必填/字數限制在 PostDialogueResponseSerializer"
-        ),
+        help_text="D2 — 自由回饋，選填，無字數限制",
     )
 
     # Part E: Discomfort flag (detail stored in DiscomfortReport)

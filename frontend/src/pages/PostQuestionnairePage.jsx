@@ -168,8 +168,6 @@ function StepC4({ value, onChange }) {
 function StepD({ d1, d2, questionText, onD1Change, onD2Change }) {
   const d1Length = d1.trim().length;
   const d1Valid = d1Length >= 30;
-  const d2Length = d2.trim().length;
-  const d2Valid = d2Length >= 30;
   return (
     <div className="pq-step-content">
       <div className="pq-part-header">
@@ -191,17 +189,14 @@ function StepD({ d1, d2, questionText, onD1Change, onD2Change }) {
       </div>
       <div className="pq-survey-item pq-survey-item-open">
         <h4>D2 | 自由回饋</h4>
-        <p>對於這次對話體驗，你有什麼想法或建議？</p>
+        <p>對於這次對話體驗，你有什麼想法或建議？（可自由書寫）</p>
         <textarea
-          className={`pq-open-textarea ${!d2Valid && d2.length > 0 ? 'invalid' : ''}`}
-          placeholder="請寫下你的想法或建議（最低 30 字）"
+          className="pq-open-textarea"
+          placeholder="自由填寫，無字數限制"
           value={d2}
           onChange={(e) => onD2Change(e.target.value)}
           rows={4}
         />
-        <div className={`pq-char-count ${d2Valid ? 'ok' : 'warn'}`}>
-          {d2Length} 字{d2Valid ? '　✓' : '　（至少需 30 字）'}
-        </div>
       </div>
     </div>
   );
@@ -355,7 +350,7 @@ export default function PostQuestionnairePage() {
     if (step === 2) return C3_QUESTIONS.every((q) => c3Answers[q.key] !== undefined);
     if (!isHH && step === 3) return c4Answer !== null;
     const dStep = isHH ? 3 : 4;
-    if (step === dStep) return d1.trim().length >= 30 && d2.trim().length >= 30;
+    if (step === dStep) return d1.trim().length >= 30;
     const eStep = isHH ? 4 : 5;
     if (step === eStep) return !discomfortFlag || discomfortDetail.trim().length > 0;
     return true;
