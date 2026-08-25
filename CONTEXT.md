@@ -9,7 +9,16 @@
 
 > 每完成一項未 commit 的工作就記在這；commit 後刪掉該行。
 
-（目前無）
+- **新增議題 104「手扶梯靠邊站討論」**：`api/dialogue_topics.py` 加 `TOPIC_CONFIGS[104]` + `SURVEY_CONFIGS[104]`（8 李克特 + Q9/Q10，反向題 2/4/6/8，高分＝支持一側站立一側通行）、6 個 CCND 錨點；測試 `api/tests_topic_escalator.py`（8 passed）。
+  - **CCND 走 GPT 版**：104 不在 `semantic_tree._LOCAL_CLASSIFIER_MODULES`，`analyze_text_for_tree()` 自動落到 `analyze_with_openai()`。⚠️ 需要 `OPENAI_API_KEY`（目前 `.env` 兩份都沒有），否則這個議題的節點分析會回 `missing_openai_api_key`。
+  - RAG collection 用 `escalator_standing_all` 佔位，目前是空的（AI 對話可用，只是沒有可引用來源）；之後灌資料進同名 collection 即生效。
+- **AI 開場（新功能，H-AI + H-H）**：依前測開放式問卷（Q9／Q10）產生開場白與可討論方向。
+  - 後端：`apps/matching/services/opening.py`（LLM + 議題錨點 bigram fallback）、`MatchOpeningBrief` model（migration `0034`）、`POST /api/dialogue/sessions/<id>/opening/`、`POST|GET /api/matching/rooms/<room_id>/opening/`、房間 payload 加 `opening` 欄位、WS `match_opening` 廣播、env flag `AI_OPENING_ENABLED`（預設 true）
+  - 前端：`TopicChat.jsx`（H-AI 進房自動補開場成第一則 agent 訊息；H-H 顯示共用開場卡片）+ `TopicChat.css`
+  - 測試：`api/tests_ai_opening.py`（17 passed）
+  - 文件：`docs/BridgeUs_API_Spec.md`、`backend/.env.example`、`README.md`、`backend/README.md`、`frontend/README.md`
+  - 附帶：input gate 規則 5 的 `prev_ai_is_question` 抽成 `views._previous_ai_turn_is_question`（WS／REST 共用），有開場時第一則短回應（如「第二個」）不再被當低訊息量擋掉
+- 後測 D1（對立觀點陳述）最低字數 50 → 30：`api/serializers.py`、`api/models.py` help_text（migration `0033`）、前端 `PostQuestionnairePage.jsx`、`docs/post_questionnaire_v1.1.md`
 
 
 _（未追蹤的資料/設定檔 `.claude/`、`chroma_data/`、`*.csv`、`0530…txt` 不納入 commit。）_
