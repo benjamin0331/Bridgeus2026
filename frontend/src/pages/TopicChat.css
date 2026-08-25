@@ -221,6 +221,9 @@
   line-height: 1.5;
   max-width: 70%;
   word-wrap: break-word;
+  /* AI 開場是「開場白 + 編號方向」的多行文字，換行要保留；
+     一般回覆本來就沒有換行，加這行不影響它們。 */
+  white-space: pre-wrap;
   background-color: #ececec;
   color: #333;
 }
@@ -382,6 +385,40 @@
   top: 0;
   z-index: 20;
   box-shadow: 0 16px 32px rgba(102, 73, 44, 0.22);
+}
+
+/* AI 開場卡片：一房共用一則，貼在對話紀錄最上面。刻意跟 assist 卡片
+   （情緒改寫／離題提醒）分開配色——那些是介入，這則是開場資訊。 */
+.match-opening-card {
+  width: min(100%, 760px);
+  margin: 0 auto 4px;
+  padding: 16px 20px;
+  border-radius: 20px;
+  border: 1px solid #c9d3c0;
+  background: linear-gradient(160deg, #f9fcf5 0%, #eaf1e4 100%);
+  box-shadow: 0 12px 28px rgba(96, 118, 84, 0.08);
+  display: grid;
+  gap: 8px;
+}
+
+.match-opening-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.match-opening-hint {
+  color: #7d8b73;
+  font-size: 12px;
+}
+
+.match-opening-copy {
+  margin: 0;
+  color: #3b3129;
+  font-size: 14px;
+  line-height: 1.75;
+  /* 開場是「開場白 + 編號方向」的多行文字，換行必須保留。 */
+  white-space: pre-wrap;
 }
 
 .match-assist-content {

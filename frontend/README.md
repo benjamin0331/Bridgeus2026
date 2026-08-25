@@ -80,6 +80,7 @@ Human matching:
 - Room messages are persisted by the backend.
 - The UI polls matching status while waiting and fetches room message snapshots from `/api/matching/rooms/<room_id>/messages/` while also using WebSocket for live delivery. Repeated backend 200 logs for this endpoint are expected during an open room.
 - The right-side semantic tree panel does not classify messages locally. It loads `GET /api/matching/rooms/<room_id>/semantic-tree/` and triggers `POST /api/matching/rooms/<room_id>/semantic-tree/analyze/` after new room messages arrive; backend Gemini analysis owns the prompt, schema validation, and tree merge behavior.
+- AI 開場: on entering a room `TopicChat.jsx` requests the opening once. H-AI renders it as the first agent bubble (it arrives inside the session `history`); H-H renders `match-opening-card` above the transcript and also accepts the WebSocket `match_opening` broadcast triggered by whoever entered first. A failed request is silent — the participant just starts the conversation themselves.
 - When backend `H_H_AI_ASSIST_ENABLED=true`, matching WebSocket may emit `match_system_prompt` and `match_ai_suggestion`; `TopicChat.jsx` renders these as prompt/suggestion cards with accept, modify, or ignore actions. Backend may fail open and relay messages without intervention if NLP inference exceeds `H_H_AI_ASSIST_TIMEOUT_SECONDS`.
 - Closing or leaving pages sends best-effort cancel/leave requests to avoid ghost queue entries.
 

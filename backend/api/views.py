@@ -44,6 +44,7 @@ from .models import (
     Issue,
     IssueReaction,
     MatchMessage,
+    MatchOpeningBrief,
     MatchQueueEntry,
     MatchStanceDrift,
     MessageReaction,
@@ -870,6 +871,9 @@ def _build_room_messages_payload(*, match: DialogueMatch, user_id: int, messages
         "other_user_id": other_user.id,
         "other_user_name": anon_ids[other_user.id],
         "stance_drift": _get_latest_room_stance_drift(match=match, user_id=user_id),
+        # 進房第一次載入就把 AI 開場帶回去；還沒生成時是 None，前端據此
+        # 決定要不要打 POST /opening/ 觸發生成。
+        "opening": _serialize_match_opening(match),
         **_match_presence_fields(match, user_id=user_id),
         "messages": messages,
     }
@@ -1767,6 +1771,43 @@ class DialogueSessionDetailView(APIView):
         )
 
 
+def _previous_ai_turn_is_question(*, user_id: int, session_id: str) -> bool:
+    """input gate 規則 5 用的「上一則 AI 回覆是否以提問收尾」。
+
+    正常情況讀 `AIConversation.ai_turn_is_question`（由策略層寫入）。還沒有
+    任何 AI 回覆 turn 時，若這場有 AI 開場，就當作 True：開場本身就是在邀請
+    對方挑一個方向開始講，這時回「第二個」不是低訊息量輸入。開場沒有對應的
+    AIConversation turn（沒有使用者發言可配對），所以這裡要另外看 history。
+    """
+    flag = (
+        AIConversation.objects.filter(
+            user_id=user_id,
+            session_id=session_id,
+            ai_response__isnull=False,
+        )
+        .exclude(ai_response="")
+        .order_by("-created_at", "-id")
+        .values_list("ai_turn_is_question", flat=True)
+        .first()
+    )
+    if flag is not None:
+        return bool(flag)
+    return _session_starts_with_ai_opening(user_id=user_id, session_id=session_id)
+
+
+def _session_starts_with_ai_opening(*, user_id: int, session_id: str) -> bool:
+    session_state = (
+        DialogueSessionRecord.objects.filter(
+            user_id=user_id,
+            session_id=session_id,
+        )
+        .values_list("session_state", flat=True)
+        .first()
+    ) or {}
+    history = session_state.get("history") or []
+    return bool(history) and history[0].get("role") == "agent"
+
+
 def _apply_reply_input_gate(*, session_id: str, user, user_message: str):
     """Run the input gate on the REST reply path.
 
@@ -1814,16 +1855,9 @@ def _apply_reply_input_gate(*, session_id: str, user, user_message: str):
             status=status.HTTP_429_TOO_MANY_REQUESTS,
         )
 
-    prev_is_question = bool(
-        AIConversation.objects.filter(
-            user_id=user.id,
-            session_id=session_id,
-            ai_response__isnull=False,
-        )
-        .exclude(ai_response="")
-        .order_by("-created_at", "-id")
-        .values_list("ai_turn_is_question", flat=True)
-        .first()
+    prev_is_question = _previous_ai_turn_is_question(
+        user_id=user.id,
+        session_id=session_id,
     )
     verdict = classify(user_message, prev_ai_is_question=prev_is_question)
     if verdict is InputVerdict.VALID:
@@ -2022,6 +2056,82 @@ class DialogueSessionReplyView(APIView):
                     user_id=request.user.id,
                     history=session_record["session"]["history"],
                 ),
+            }
+        )
+
+
+class DialogueSessionOpeningView(APIView):
+    """H-AI 的 AI 開場：由代理人先發言，內容依前測 Q9/Q10 給出討論方向。
+
+    開場寫進 session history 的第一則 agent 訊息，因此重連／還原時會跟著
+    回來，不需要前端另外保存。它沒有對應的 `AIConversation` turn（沒有使用者
+    發言可配對），所以不可被讚踩，也不計入 `turn_count`／對話階段。
+
+    POST 是 idempotent 的：history 非空就直接回傳現況，不會再生一次。
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, session_id: str):
+        from apps.matching.services.opening import build_ai_opening
+
+        _, _, DialogueSession = _get_dialogue_runtime()
+
+        session_record, error_response = _get_dialogue_session_record_for_user(
+            session_id=session_id,
+            user_id=request.user.id,
+        )
+        if error_response is not None:
+            return error_response
+
+        session = DialogueSession.from_dict(session_record["session"])
+
+        def _history_response(opening: dict | None) -> Response:
+            return Response(
+                {
+                    "opening": opening,
+                    "history": _live_dialogue_history(
+                        session_id=session_id,
+                        user_id=request.user.id,
+                        history=session_record["session"]["history"],
+                    ),
+                }
+            )
+
+        if session.history:
+            first = session.history[0]
+            existing = (
+                {"content": first.content, "directions": [], "source": "existing"}
+                if first.role == "agent"
+                else None
+            )
+            return _history_response(existing)
+
+        survey_context = session_record.get("survey_context") or {}
+        open_answers = survey_context.get("survey_open_answers") or {}
+        try:
+            opening = build_ai_opening(
+                topic_id=session_record.get("topic_id"),
+                q9=_get_open_answer(open_answers, question_id=9, question_code="Q9"),
+                q10=_get_open_answer(open_answers, question_id=10, question_code="Q10"),
+                stance_label=session.user_stance_label,
+            )
+        except Exception:
+            logger.exception("AI opening generation failed for session %s.", session_id)
+            return _history_response(None)
+
+        if opening is None:
+            return _history_response(None)
+
+        session.add_agent_message(opening["text"])
+        session_record["session"] = session.to_dict()
+        _cache_dialogue_session_record(session_record)
+        _persist_dialogue_session_record(session_record)
+        return _history_response(
+            {
+                "content": opening["text"],
+                "directions": opening["directions"],
+                "source": opening["source"],
             }
         )
 
@@ -3665,6 +3775,136 @@ class MatchingRoomMessagesView(APIView):
             ),
             status=status.HTTP_201_CREATED,
         )
+
+
+class MatchingRoomOpeningView(APIView):
+    """H-H 配對房的 AI 開場：GET 讀取、POST 產生（idempotent）。
+
+    產生刻意不放在建房流程裡：那條路徑在配對成功的當下同步執行，多押一次
+    LLM 呼叫會讓兩個人一起卡在等待畫面。改成進房後由前端補打一次，慢的是
+    開場卡片而不是整間房。
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, room_id: str):
+        match = _get_room_match_for_user(room_id=room_id, user_id=request.user.id)
+        if not match:
+            return Response(
+                {"detail": "找不到這個配對房間。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response({"opening": _serialize_match_opening(match)})
+
+    def post(self, request, room_id: str):
+        from apps.matching.services.opening import build_match_opening
+
+        match = _get_room_match_for_user(room_id=room_id, user_id=request.user.id)
+        if not match:
+            return Response(
+                {"detail": "找不到這個配對房間。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        gate = _godot_pretest_incomplete_response(match)
+        if gate is not None:
+            # 前測還沒填完就沒有 Q9/Q10 可依據，開場也就無從生成。
+            return gate
+
+        existing = _serialize_match_opening(match)
+        if existing is not None:
+            return Response({"opening": existing, "pending": False})
+
+        # 兩位參與者幾乎同時進房，會同時打這支端點。鎖只讓其中一位真的去呼叫
+        # LLM；另一位拿到 pending=True，靠 WebSocket 廣播或下一次 GET 收斂。
+        lock_key = f"match_opening_lock:{match.id}"
+        if not cache.add(lock_key, "1", timeout=90):
+            return Response({"opening": None, "pending": True})
+
+        try:
+            opening = build_match_opening(
+                topic_id=match.topic_id,
+                participant_a=_opening_participant_context(
+                    user_id=match.user_a_id, topic_id=match.topic_id
+                ),
+                participant_b=_opening_participant_context(
+                    user_id=match.user_b_id, topic_id=match.topic_id
+                ),
+            )
+        except Exception:
+            logger.exception("Match opening generation failed for room %s.", room_id)
+            cache.delete(lock_key)
+            return Response({"opening": None, "pending": False})
+
+        if opening is None:
+            # AI_OPENING_ENABLED=0：這場就是沒有開場，不要留鎖擋住之後開啟。
+            cache.delete(lock_key)
+            return Response({"opening": None, "pending": False})
+
+        brief, _ = MatchOpeningBrief.objects.get_or_create(
+            match=match,
+            defaults={
+                "content": opening["text"],
+                "directions": opening["directions"],
+                "source": opening["source"],
+            },
+        )
+        payload = _serialize_match_opening_brief(brief)
+        _broadcast_match_opening(room_id=room_id, opening=payload)
+        return Response({"opening": payload, "pending": False})
+
+
+def _opening_participant_context(*, user_id: int, topic_id: int) -> dict:
+    profile = UserStanceProfile.objects.filter(
+        user_id=user_id, topic_id=topic_id
+    ).first()
+    if not profile:
+        return {"q9": "", "q10": "", "stance_label": ""}
+
+    open_answers = profile.survey_open_answers or {}
+    return {
+        "q9": _get_open_answer(open_answers, question_id=9, question_code="Q9"),
+        "q10": _get_open_answer(open_answers, question_id=10, question_code="Q10"),
+        "stance_label": _stance_user_label(
+            topic_id=topic_id,
+            stance_category=profile.stance_category,
+        ),
+    }
+
+
+def _stance_user_label(*, topic_id: int, stance_category: str) -> str:
+    labels = TOPIC_CONFIGS.get(topic_id, {}).get("stance_labels", {})
+    return (labels.get(stance_category) or {}).get("user_label", "")
+
+
+def _serialize_match_opening(match: DialogueMatch) -> dict | None:
+    brief = MatchOpeningBrief.objects.filter(match=match).first()
+    return _serialize_match_opening_brief(brief) if brief else None
+
+
+def _serialize_match_opening_brief(brief: MatchOpeningBrief) -> dict:
+    return {
+        "content": brief.content,
+        "directions": brief.directions or [],
+        "source": brief.source,
+        "created_at": brief.created_at.isoformat(),
+    }
+
+
+def _broadcast_match_opening(*, room_id: str, opening: dict) -> None:
+    """把開場推給房裡另一位——他不必等自己的輪詢。失敗不影響已落庫的開場。"""
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        channel_layer = get_channel_layer()
+        if channel_layer is None:
+            return
+        async_to_sync(channel_layer.group_send)(
+            f"match_room_{room_id}",
+            {"type": "match_opening", "opening": opening},
+        )
+    except Exception:
+        logger.exception("Failed to broadcast match opening for room %s.", room_id)
 
 
 class MatchingRoomSemanticTreeView(APIView):

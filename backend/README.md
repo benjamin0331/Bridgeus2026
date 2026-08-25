@@ -72,6 +72,7 @@ MATCHING_ALLOW_SAME_STANCE_FALLBACK=false
 MATCH_ROOM_IDLE_TIMEOUT_SECONDS=600
 MATCH_ROOM_ABSENCE_TIMEOUT_SECONDS=180
 H_H_AI_ASSIST_ENABLED=false
+AI_OPENING_ENABLED=true
 H_H_AI_ASSIST_TIMEOUT_SECONDS=2
 PRELOAD_NLP_MODELS=false
 OPENAI_API_KEY=replace-me
@@ -153,7 +154,7 @@ Matching:
 
 ## Matching Details
 
-- Current topic: `102`, `台灣核能議題討論`.
+- Topics: `102` `台灣核能議題討論`, `103` `女性義務兵役討論`, `104` `手扶梯靠邊站討論`. Adding one means adding `TOPIC_CONFIGS` + `SURVEY_CONFIGS` entries in `api/dialogue_topics.py` — nothing else is keyed by topic id except `semantic_tree._LOCAL_CLASSIFIER_MODULES` (topics listed there use their trained BERT pipeline for CCND nodes; everything else uses the OpenAI path and therefore needs `OPENAI_API_KEY`).
 - Likert reverse items: Q2, Q4, Q5, Q6.
 - `S > 4.5`: support.
 - `S < 3.5`: oppose.
@@ -167,6 +168,7 @@ Matching:
 - Matching rooms also track per-participant presence in `DialogueMatch.stats["presence"]`. Active rooms survive page refresh, but if either participant stays disconnected longer than `MATCH_ROOM_ABSENCE_TIMEOUT_SECONDS` (default 180 seconds), the room is closed on the next status/message/WebSocket activity check. Manual `/leave/` still closes immediately.
 - AI dialogue sessions are persisted in `DialogueSessionRecord` so the frontend can restore the latest active session for the same user/topic after reload. If the cache is missing, `GET /api/dialogue/sessions/latest/?topic_id=<topic_id>` rebuilds the cache from the DB session record and `AIConversation` rows.
 - Semantic trees use backend-only OpenAI calls (model `gpt-5.4-mini` via the Responses API). Matching rooms return separate participant thought-context trees in `trees`, store them in `DialogueMatch.stats["semantic_tree"]`, and keep `treeData` as the current user's active tree for compatibility. AI dialogue sessions expose the same tree payload shape under `/api/dialogue/sessions/<session_id>/semantic-tree/`, but only analyze `AIConversation.user_prompt`; AI responses are not added as graph nodes in v1. Missing `OPENAI_API_KEY` returns `missing_openai_api_key` for analyze calls but does not block message persistence, WebSocket chat, or AI dialogue replies.
+- AI 開場 (`AI_OPENING_ENABLED`, default on) makes the AI speak first, using the participant's pre-survey open answers (Q9/Q10) to propose 3 discussable directions. H-AI writes it as the first agent message of the session; H-H stores one shared `MatchOpeningBrief` per room and pushes it over WebSocket as `match_opening`. Generation is lazy (`POST /api/dialogue/sessions/<id>/opening/`, `POST /api/matching/rooms/<room_id>/opening/`) so LLM latency never blocks room entry, and it falls back to topic-anchor directions when the LLM is unavailable.
 - H-H AI assistance is off by default. Set `H_H_AI_ASSIST_ENABLED=true` to enable content-block prompts, emotion rephrase suggestions, topic redirects, and research suggestion records for WebSocket matching rooms. `H_H_AI_ASSIST_TIMEOUT_SECONDS` defaults to `2` so slow NLP inference fails open and chat messages still relay. Run `uv run python manage.py warm_nlp_models` before starting uvicorn, or set `PRELOAD_NLP_MODELS=true` in Docker, to preload models before users enter chat. If you see repeated `GET /api/matching/rooms/<room_id>/messages/` logs, that is frontend room snapshot polling, not repeated model downloads.
 
 ## NLP Model Warmup

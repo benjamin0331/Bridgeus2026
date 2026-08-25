@@ -89,6 +89,10 @@ urlpatterns = [
         views.DialogueSessionDetailView.as_view(),
     ),
     path(
+        'dialogue/sessions/<str:session_id>/opening/',
+        views.DialogueSessionOpeningView.as_view(),
+    ),
+    path(
         'dialogue/sessions/<str:session_id>/reply/',
         views.DialogueSessionReplyView.as_view(),
     ),
@@ -107,6 +111,10 @@ urlpatterns = [
     path(
         'matching/rooms/<str:room_id>/messages/',
         views.MatchingRoomMessagesView.as_view(),
+    ),
+    path(
+        'matching/rooms/<str:room_id>/opening/',
+        views.MatchingRoomOpeningView.as_view(),
     ),
     path(
         'matching/rooms/<str:room_id>/semantic-tree/',

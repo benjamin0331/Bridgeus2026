@@ -99,6 +99,7 @@ DB_CONN_MAX_AGE=0
 MATCHING_ALLOW_SAME_STANCE_FALLBACK=false
 MATCH_ROOM_IDLE_TIMEOUT_SECONDS=600
 H_H_AI_ASSIST_ENABLED=false
+AI_OPENING_ENABLED=true
 H_H_AI_ASSIST_TIMEOUT_SECONDS=2
 PRELOAD_NLP_MODELS=false
 GEMINI_API_KEY=replace-me
@@ -158,8 +159,8 @@ Human matching:
 
 ## Matching Behavior
 
-- Topic `102` is currently `台灣核能議題討論`.
-- Likert scoring uses Q2/Q4/Q5/Q6 reverse scoring.
+- Topics: `102` `台灣核能議題討論`, `103` `女性義務兵役討論`, `104` `手扶梯靠邊站討論`.
+- Reverse-scored Likert items differ per topic (`102`: Q2/Q4/Q5/Q6; `103` and `104`: Q2/Q4/Q6/Q8) and are read from `SURVEY_CONFIGS[topic]["stance_rules"]`; the post-test derives its own reverse set from the same config, so a new topic needs no code change.
 - Stance score `S` is in `[1, 7]`.
 - `S > 4.5`: support.
 - `S < 3.5`: oppose.
@@ -170,6 +171,7 @@ Human matching:
 - Q9 is embedded for semantic matching; Q10 is stored but not scored yet.
 - Matching rooms are anonymous and auto-close after 10 minutes of no conversation activity by default.
 - Matching room semantic trees are built by backend Gemini analysis, not frontend keyword matching. `GET /semantic-tree/` returns the persisted `DialogueMatch.stats["semantic_tree"]` tree; `POST /semantic-tree/analyze/` analyzes unprocessed room messages in small batches and stores applied nodes/history. Missing `GEMINI_API_KEY` returns a semantic-tree error only; chat message delivery remains unaffected.
+- AI 開場（`AI_OPENING_ENABLED`，預設開啟）讓 AI 先開口：依受試者前測開放式作答（Q9／Q10）給出 3 個可討論方向。H-AI 寫成 session 的第一則 agent 訊息，H-H 則一房共用一則 `MatchOpeningBrief` 並以 WebSocket `match_opening` 廣播。生成是進房後才觸發的，LLM 慢不會卡住進房；LLM 不可用時退回議題錨點方向。
 - Human-human AI assistance is feature-flagged with `H_H_AI_ASSIST_ENABLED=true`; when enabled, WebSocket matching rooms can show content-block prompts and AI rephrase/direction/redirect suggestions. `H_H_AI_ASSIST_TIMEOUT_SECONDS` keeps slow NLP inference or first-time model downloads from blocking chat message delivery. Run `uv run python manage.py warm_nlp_models` before starting uvicorn, or set `PRELOAD_NLP_MODELS=true` in Docker, to download and warm models ahead of traffic. Repeated `GET /api/matching/rooms/<room_id>/messages/` logs during chat are the frontend polling room snapshots and are expected.
 
 ## NLP Model Warmup
