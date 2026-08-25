@@ -584,7 +584,7 @@ class PostDialogueResponse(models.Model):
 
     # Part D: Open questions
     post_open_comprehension = models.TextField(
-        help_text="D1 — 對立觀點陳述（最低 50 字）；與前測 Q10 同題幹，向量化後存 pgvector"
+        help_text="D1 — 對立觀點陳述（最低 30 字）；與前測 Q10 同題幹，向量化後存 pgvector"
     )
     post_open_feedback = models.TextField(
         blank=True,

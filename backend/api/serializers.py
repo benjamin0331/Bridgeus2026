@@ -529,10 +529,10 @@ class PostDialogueResponseSerializer(serializers.Serializer):
 
     # D
     post_open_comprehension = serializers.CharField(
-        min_length=50,
+        min_length=30,
         max_length=4000,
         trim_whitespace=False,
-        error_messages={"min_length": "D1 最少需填寫 50 字。"},
+        error_messages={"min_length": "D1 最少需填寫 30 字。"},
     )
     post_open_feedback = serializers.CharField(
         max_length=4000,
