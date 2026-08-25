@@ -278,22 +278,16 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
         """讀 session 最後一則 AI 回覆的 ai_turn_is_question 旗標。
 
         旗標在回應落庫時由策略層寫入（見 input_gate.ai_turn_is_question），
-        這裡不做任何事後推測。沒有前一輪 AI 回覆時回傳 False——對話第一句
-        就送「好」本來就是低訊息量輸入。
+        這裡不做任何事後推測。沒有前一輪 AI 回覆、也沒有 AI 開場時回傳
+        False——對話第一句就送「好」本來就是低訊息量輸入。判斷本身與 REST
+        路徑共用 views._previous_ai_turn_is_question，兩條路的規則必須一致。
         """
-        from api.models import AIConversation
+        from api.views import _previous_ai_turn_is_question
 
         try:
-            return bool(
-                await AIConversation.objects.filter(
-                    user_id=self.user.id,
-                    session_id=self.session_id,
-                    ai_response__isnull=False,
-                )
-                .exclude(ai_response="")
-                .order_by("-created_at", "-id")
-                .values_list("ai_turn_is_question", flat=True)
-                .afirst()
+            return await sync_to_async(_previous_ai_turn_is_question)(
+                user_id=self.user.id,
+                session_id=self.session_id,
             )
         except Exception:
             logger.exception(
@@ -1045,6 +1039,17 @@ class MatchRoomConsumer(AsyncWebsocketConsumer):
                 {
                     "type": "match_message",
                     "message": event["message"],
+                }
+            )
+        )
+
+    async def match_opening(self, event):
+        """AI 開場廣播。由先進房那位觸發生成的 REST 端點送進 group。"""
+        await self.send(
+            json.dumps(
+                {
+                    "type": "match_opening",
+                    "opening": event["opening"],
                 }
             )
         )

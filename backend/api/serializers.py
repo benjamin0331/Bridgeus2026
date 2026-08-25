@@ -438,6 +438,15 @@ class MatchingRoomStanceDriftSerializer(serializers.Serializer):
     measured_at = serializers.DateTimeField()
 
 
+class MatchingRoomOpeningSerializer(serializers.Serializer):
+    """H-H 的 AI 開場卡片（一房共用一則）。"""
+
+    content = serializers.CharField()
+    directions = serializers.JSONField()
+    source = serializers.CharField(max_length=16)
+    created_at = serializers.CharField(max_length=64)
+
+
 class MatchingRoomMessagesSerializer(serializers.Serializer):
     room_id = serializers.CharField(max_length=64)
     match_id = serializers.IntegerField()
@@ -446,6 +455,7 @@ class MatchingRoomMessagesSerializer(serializers.Serializer):
     other_user_id = serializers.IntegerField(required=False, allow_null=True)
     other_user_name = serializers.CharField(max_length=150, required=False, allow_null=True)
     stance_drift = MatchingRoomStanceDriftSerializer(required=False, allow_null=True)
+    opening = MatchingRoomOpeningSerializer(required=False, allow_null=True)
     presence = serializers.JSONField(required=False, allow_null=True)
     absence_deadline = serializers.DateTimeField(required=False, allow_null=True)
     messages = MatchMessageSerializer(many=True)
@@ -529,10 +539,10 @@ class PostDialogueResponseSerializer(serializers.Serializer):
 
     # D
     post_open_comprehension = serializers.CharField(
-        min_length=50,
+        min_length=30,
         max_length=4000,
         trim_whitespace=False,
-        error_messages={"min_length": "D1 最少需填寫 50 字。"},
+        error_messages={"min_length": "D1 最少需填寫 30 字。"},
     )
     post_open_feedback = serializers.CharField(
         max_length=4000,

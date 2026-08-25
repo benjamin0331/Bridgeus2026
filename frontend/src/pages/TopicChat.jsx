@@ -371,6 +371,8 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
   // status === 'matched'——倖存者若立刻被重新配對就永遠看不到訊息。
   const [bindingNotice, setBindingNotice] = useState('');
   const [matchMessages, setMatchMessages] = useState([]);
+  // H-H 的 AI 開場（一房共用一則，以卡片而非對話泡泡呈現）。
+  const [matchOpening, setMatchOpening] = useState(null);
   const [matchStanceDrift, setMatchStanceDrift] = useState(null);
   const previousMatchDriftValue = usePreviousValue(matchStanceDrift?.drift_value ?? null);
   const previousAiDriftValue = usePreviousValue(aiStanceDrift?.drift_value ?? null);
@@ -379,6 +381,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
   const [semanticTreeMessage, setSemanticTreeMessage] = useState('');
   const [isSemanticTreeLoading, setIsSemanticTreeLoading] = useState(false);
   const [isSemanticTreeAnalyzing, setIsSemanticTreeAnalyzing] = useState(false);
+  const [isAiOpeningLoading, setIsAiOpeningLoading] = useState(false);
   const [isMatchMessagesLoading, setIsMatchMessagesLoading] = useState(false);
   const [isMatchSending, setIsMatchSending] = useState(false);
   const [matchChatError, setMatchChatError] = useState('');
@@ -398,6 +401,8 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
   const textareaRef = useRef(null);
   const wsRef = useRef(null);
   const wsSessionIdRef = useRef(null);
+  // 已經替哪一場（session_id / room_id）要過開場了，避免 effect 重跑時重打。
+  const openingRequestedRef = useRef('');
   const matchWsRef = useRef(null);
   const matchWsRoomIdRef = useRef(null);
   const currentAgentMsgIdRef = useRef(null);
@@ -740,6 +745,11 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
         return;
       }
 
+      if (data.type === 'match_opening') {
+        setMatchOpening(data.opening || null);
+        return;
+      }
+
       // Input gate。H-H 一律走系統提示列——被攔截的訊息不轉發給對方，
       // 也不該在自己這邊偽造成一則已送出的對話訊息。
       if (data.type === 'input_blocked' || data.type === 'rate_limited') {
@@ -914,6 +924,8 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     setIsMatchingActionLoading(false);
     setMatchingError('');
     setMatchMessages([]);
+    setMatchOpening(null);
+    openingRequestedRef.current = '';
     setMatchStanceDrift(null);
     setSemanticTreePayload(null);
     setSemanticTreeStatus('ready');
@@ -1319,6 +1331,24 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     });
   }, [id, isMatchingMode, matchingState?.room_id, matchingState?.status, navigate]);
 
+  // 房間 payload 沒帶開場時補打一次。兩位參與者可能同時打，後端用鎖擋住
+  // 第二次生成並回 pending=True；那一位靠 WebSocket 廣播收斂，不必輪詢。
+  const requestMatchOpening = useCallback(async (roomId) => {
+    if (!roomId || openingRequestedRef.current === `match:${roomId}`) {
+      return;
+    }
+    openingRequestedRef.current = `match:${roomId}`;
+    try {
+      const response = await api.post(`/api/matching/rooms/${roomId}/opening/`);
+      if (!isChatPageMountedRef.current) return;
+      if (response.data?.opening) {
+        setMatchOpening(response.data.opening);
+      }
+    } catch {
+      // 開場是加值資訊，失敗就當作這場沒有開場，不打斷進房。
+    }
+  }, []);
+
   useEffect(() => {
     if (!isMatchChatReady) {
       return undefined;
@@ -1329,6 +1359,12 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     const applyRoomPayload = (payload) => {
       setMatchMessages(Array.isArray(payload?.messages) ? payload.messages : []);
       setMatchStanceDrift(payload?.stance_drift || null);
+      if (payload?.opening) {
+        setMatchOpening(payload.opening);
+      } else {
+        // 還沒生成——由先進房的人觸發，另一位會透過 WebSocket 廣播收到。
+        requestMatchOpening(payload?.room_id || matchingState.room_id);
+      }
       setMatchingState((prev) => {
         if (!prev) {
           return prev;
@@ -1386,7 +1422,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       cancelled = true;
       window.clearInterval(pollTimer);
     };
-  }, [isMatchChatReady, isMatchingMode, matchingState?.room_id]);
+  }, [isMatchChatReady, isMatchingMode, matchingState?.room_id, requestMatchOpening]);
 
   useEffect(() => {
     if (!isMatchingMode) {
@@ -1881,6 +1917,45 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
 
     return sessionCreationPromiseRef.current;
   };
+
+  // H-AI 開場：AI 依前測 Q9／Q10 先開口，提供可以往下談的方向。
+  // 掛在 sessionId 上而不是各個建立 session 的呼叫點（混合入口、fallback、
+  // 還原），是因為那些路徑都會走到這裡，一個 effect 就全部涵蓋。
+  // 只在對話還沒有任何訊息時打——已經聊過的 session 不該補一段開場。
+  useEffect(() => {
+    if (isMatchingMode || !sessionId || messages.length > 0) {
+      return;
+    }
+    if (openingRequestedRef.current === `ai:${sessionId}`) {
+      return;
+    }
+    openingRequestedRef.current = `ai:${sessionId}`;
+
+    let cancelled = false;
+    setIsAiOpeningLoading(true);
+    api
+      .post(`/api/dialogue/sessions/${sessionId}/opening/`)
+      .then((response) => {
+        if (cancelled || !isChatPageMountedRef.current) return;
+        const history = response.data?.history;
+        if (Array.isArray(history) && history.length > 0) {
+          setMessages(mapHistoryToMessages(history, displayUserName));
+          shouldAutoScrollAiRef.current = true;
+        }
+      })
+      .catch(() => {
+        // 開場失敗就讓使用者自己先說第一句，不擋住對話。
+      })
+      .finally(() => {
+        if (!cancelled && isChatPageMountedRef.current) {
+          setIsAiOpeningLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [displayUserName, isMatchingMode, messages.length, sessionId]);
 
   const requestRestDialogueReply = async (activeSessionId, text) => {
     const response = await api.post(
@@ -2401,6 +2476,8 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       setMatchingState(response.data);
       setShowSurvey(false);
       setMatchMessages([]);
+      setMatchOpening(null);
+      openingRequestedRef.current = '';
       setMatchStanceDrift(null);
       setMatchChatError('');
       setMatchAssistNotice(null);
@@ -2432,6 +2509,8 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       );
       setMatchingState(response.data);
       setMatchMessages([]);
+      setMatchOpening(null);
+      openingRequestedRef.current = '';
       setMatchStanceDrift(null);
       setMatchAssistNotice(null);
       setPendingMatchSuggestion(null);
@@ -2460,6 +2539,8 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     setMatchingError('');
     setMatchChatError('');
     setMatchMessages([]);
+    setMatchOpening(null);
+    openingRequestedRef.current = '';
     setMatchStanceDrift(null);
     setMatchAssistNotice(null);
     setPendingMatchSuggestion(null);
@@ -2677,6 +2758,15 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
               </button>
             </div>
           </div>
+          {matchOpening && (
+            <div className="match-opening-card">
+              <div className="match-opening-header">
+                <span className="match-assist-label">AI 開場</span>
+                <span className="match-opening-hint">依你們的前測問卷整理</span>
+              </div>
+              <p className="match-opening-copy">{matchOpening.content}</p>
+            </div>
+          )}
           {isMatchMessagesLoading && matchMessages.length === 0 && (
             <div className="match-message-empty">正在載入對話紀錄...</div>
           )}
@@ -3077,6 +3167,17 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
                     >
                       開始新對話
                     </button>
+                  </div>
+                </div>
+              )}
+              {isAiOpeningLoading && messages.length === 0 && (
+                <div className="message-row">
+                  <div className="message-user-info">
+                    <img src="/logo.png" alt="Avatar" className="message-avatar" />
+                    <span className="message-username">BridgeUs</span>
+                  </div>
+                  <div className="message-bubble agent-thinking-bubble">
+                    正在依你的問卷準備開場...
                   </div>
                 </div>
               )}

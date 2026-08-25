@@ -151,7 +151,7 @@ class TestPostQuestionnaire:
         assert response.status_code == 400
 
     def test_d1_min_length(self, auth_client):
-        """D1 少於 50 字應被拒絕（400）。"""
+        """D1 少於 30 字應被拒絕（400）。"""
         client, _ = auth_client
         payload = _make_ai_payload(post_open_comprehension="短句")
         response = client.post("/api/post-questionnaire/", payload, format="json")

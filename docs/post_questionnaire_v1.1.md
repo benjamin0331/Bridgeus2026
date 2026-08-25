@@ -272,7 +272,7 @@ Debriefing 頁面（AI 身分揭露 + 資料使用再確認）
 | C2-1 ~ C2-6 | Likert 7 | — | exp_stance_change_1, exp_stance_change_2, exp_quality_1, exp_quality_2, exp_reflection_1, exp_reflection_2 | |
 | C3-1 ~ C3-3 | Likert 7 | — | ccnd_attention, ccnd_awareness, ccnd_influence | |
 | C4-1 | 單選 | — | opponent_judgment | 值：1=真人, 2=AI, 3=不確定；僅 H-AI 組 |
-| D1 | 文字 | Q10 | post_open_comprehension | 最低 50 字；向量化後存 pgvector |
+| D1 | 文字 | Q10 | post_open_comprehension | 最低 30 字；向量化後存 pgvector |
 | D2 | 文字 | — | post_open_feedback | 無字數限制 |
 | E1 | 核取+文字 | — | discomfort_flag + discomfort_detail | flag: boolean; detail: nullable text |
 | Debrief | 單選 | — | consent_confirmed | true=同意繼續, false=撤回 |

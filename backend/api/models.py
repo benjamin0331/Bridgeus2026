@@ -348,6 +348,41 @@ class MatchMessage(models.Model):
         return f"match={self.match_id} sender={self.sender_id}"
 
 
+class MatchOpeningBrief(models.Model):
+    """H-H 配對房的 AI 開場，一房一則、兩位參與者共用。
+
+    刻意不存成 `MatchMessage`：那張表的 `sender` 是 participant 的非空 FK，
+    而立場偏移、語意樹、逐字稿匯出、input gate 全都假設每一列都出自某位
+    參與者。把 AI 開場塞進去會污染這些分析，所以它獨立成表，前端也以
+    「開場卡片」而非對話泡泡呈現。
+
+    H-AI 沒有對應的表：那邊的開場是 AI 代理人自己說的話，直接寫進
+    `DialogueSessionRecord.session_state["history"]` 的第一則 agent 訊息。
+    """
+
+    class Source(models.TextChoices):
+        LLM = "llm", "LLM 生成"
+        FALLBACK = "fallback", "議題錨點 fallback"
+
+    match = models.OneToOneField(
+        DialogueMatch,
+        on_delete=models.CASCADE,
+        related_name="opening_brief",
+    )
+    content = models.TextField()
+    # [{"title": ..., "detail": ...}]，供前端列成可點選的方向。
+    directions = models.JSONField(default=list, blank=True)
+    source = models.CharField(
+        max_length=16,
+        choices=Source.choices,
+        default=Source.FALLBACK,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"match={self.match_id} opening source={self.source}"
+
+
 class MessageReaction(models.Model):
     """A participant's like/dislike reaction to an opponent message."""
 
@@ -584,7 +619,7 @@ class PostDialogueResponse(models.Model):
 
     # Part D: Open questions
     post_open_comprehension = models.TextField(
-        help_text="D1 — 對立觀點陳述（最低 50 字）；與前測 Q10 同題幹，向量化後存 pgvector"
+        help_text="D1 — 對立觀點陳述（最低 30 字）；與前測 Q10 同題幹，向量化後存 pgvector"
     )
     post_open_feedback = models.TextField(
         blank=True,
