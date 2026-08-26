@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import urllib.error
@@ -10,6 +11,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from api.models import AIConversation, DialogueMatch
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_MODEL = "gpt-5.4-mini"
@@ -1040,6 +1043,14 @@ def classify_stance_with_openai(
 
     resolved_api_key = api_key if api_key is not None else get_openai_api_key()
     if not resolved_api_key:
+        # 這條路徑只有本地分類器會走（topic 102），而那條路的 OPENAI_API_KEY
+        # 前置檢查是被刻意跳過的。沒有這行 log，缺 key 的伺服器會安靜地把每一顆
+        # 節點都標成「中立」，圖上支持／反對配色全部消失卻沒有任何錯誤訊號。
+        logger.warning(
+            "缺少 OPENAI_API_KEY，CCND 節點立場分類退回「中立」（節點主題：%s）。"
+            "本地分類器本身不需要 key，但立場判斷需要。",
+            context_label or "(未指定)",
+        )
         return "中立"
 
     # context_label 預設是空字串（見函式簽名），空的話 prompt 會出現「目標議題
@@ -1116,6 +1127,14 @@ def classify_stance_with_openai(
         stance = clean_text(parsed.get("stance"))
         return stance if stance in STANCE_LABELS else "中立"
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OpenAIApiError, ValueError):
+        # 刻意不讓立場查詢的失敗擋住節點建立（節點照長，只是沒有支持／反對配色），
+        # 但要留下痕跡：這些「中立」在資料上跟真正判定為中立的無法區分，事後只能
+        # 靠 log 才知道那段時間的立場資料不可信。
+        logger.warning(
+            "CCND 節點立場分類呼叫失敗，退回「中立」（節點主題：%s）。",
+            context_label or "(未指定)",
+            exc_info=True,
+        )
         return "中立"
 
 
@@ -1207,17 +1226,51 @@ LOCAL_CLASSIFIER_TOPIC_IDS = frozenset(_LOCAL_CLASSIFIER_MODULES)
 LOCAL_CLASSIFIER_MIN_CONFIDENCE = 0.35
 
 
-# 本機沒有權重檔時的逃生門：權重未進版控（每個約 391MB），沒有從共用空間複製
-# 進來的機器把這個開關打開，102/103 就跟其他議題一樣走 analyze_with_openai。
-# 只擋在這個 helper，因為 dispatch 和兩處 OPENAI_API_KEY 前置檢查都問它。
+# 全域逃生門：權重未進版控（每個約 391MB），沒有從共用空間複製進來的機器把這個
+# 開關打開，102/103 就跟其他議題一樣走 analyze_with_openai。
+#
+# 這是「全有全無」的開關，適合開發機。正式機要的通常是逐議題指定（例如核電留
+# 本地模型、女性義務兵役改走 API），那要用 SEMANTIC_TREE_AI_TOPIC_IDS。
 def force_ai_node_analysis() -> bool:
     return os.getenv("SEMANTIC_TREE_FORCE_AI", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+# 逐議題覆寫：列在 SEMANTIC_TREE_AI_TOPIC_IDS 裡的 topic_id，即使有本地分類器
+# 模組也一律改走 analyze_with_openai。
+#
+# 為什麼需要它而不是沿用 force_ai_node_analysis()：兩個實驗議題的模型成熟度不同
+# ——核電的權重已經訓練完成要保留 ML 版本，女性義務兵役則要先用 GPT 版本上線。
+# 全域開關沒辦法同時滿足這兩件事，只能二選一。
+#
+# 值是逗號分隔的 topic_id，例如 SEMANTIC_TREE_AI_TOPIC_IDS=103。刻意接受全形
+# 逗號，因為這個值常常是從中文文件或聊天訊息複製貼上到 .env 的。
+def ai_override_topic_ids() -> frozenset[int]:
+    raw = os.getenv("SEMANTIC_TREE_AI_TOPIC_IDS", "")
+    topic_ids: set[int] = set()
+    for chunk in raw.replace("，", ",").split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        try:
+            topic_ids.add(int(chunk))
+        except ValueError:
+            # 設定打錯字不該讓整場對話的節點分析掛掉，但一定要留下痕跡：靜默忽略
+            # 的話，現象會是「明明設了卻還是走本地模型」，跟沒設一模一樣難查。
+            logger.warning(
+                "SEMANTIC_TREE_AI_TOPIC_IDS 含有無法解析的 topic id %r，已忽略；"
+                "整個設定值為 %r。",
+                chunk,
+                raw,
+            )
+    return frozenset(topic_ids)
+
+
 def uses_local_classifier(topic_id: int | None) -> bool:
+    if topic_id not in LOCAL_CLASSIFIER_TOPIC_IDS:
+        return False
     if force_ai_node_analysis():
         return False
-    return topic_id in LOCAL_CLASSIFIER_TOPIC_IDS
+    return topic_id not in ai_override_topic_ids()
 
 
 def analyze_text_for_tree(
@@ -1229,8 +1282,15 @@ def analyze_text_for_tree(
     anchor_descriptions: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Dispatch node analysis by topic: topics in LOCAL_CLASSIFIER_TOPIC_IDS
-    each use their own locally fine-tuned classifier pipeline; every other
-    topic keeps using the generative OpenAI path.
+    each use their own locally fine-tuned classifier pipeline, unless that
+    topic has been switched onto the OpenAI path (see uses_local_classifier);
+    every other topic keeps using the generative OpenAI path.
+
+    Deliberately no automatic fallback to OpenAI when the weights are missing.
+    The two paths produce measurably different trees, so silently swapping one
+    for the other mid-experiment would contaminate the data with no record of
+    which analyzer actually ran. Switching is an explicit config decision —
+    the error below names the two knobs that make it.
     """
     resolved_anchors = anchors or FIXED_ANCHORS
     if uses_local_classifier(topic_id):
@@ -1241,11 +1301,16 @@ def analyze_text_for_tree(
         # Translated here rather than raised from the classifiers so they stay
         # free of any semantic_tree import (the dispatch above imports them),
         # and so both topics get the same handling. The classifiers' messages
-        # already name the missing file and how to obtain it — preserve them.
+        # already name the missing file and how to obtain it — preserve them,
+        # and append how to switch this topic to the API version instead.
         try:
             candidate_items = classifier_module.build_candidate_items(text, resolved_anchors)
         except FileNotFoundError as exc:
-            raise MissingLocalClassifierModel(str(exc)) from exc
+            raise MissingLocalClassifierModel(
+                f"{exc} 若要改用 GPT API 版本，請在 backend/.env 設定"
+                f" SEMANTIC_TREE_AI_TOPIC_IDS={topic_id}（只切這個議題）或"
+                " SEMANTIC_TREE_FORCE_AI=true（全部議題），並重新啟動伺服器。"
+            ) from exc
         return {
             **validate_analysis_items(
                 {"items": candidate_items},

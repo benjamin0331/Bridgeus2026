@@ -375,8 +375,12 @@ class LocalClassifierDispatchTests(SimpleTestCase):
 
     def setUp(self):
         # 這裡驗的是 topic -> 本機分類器的路由本身，不該被開發機上
-        # SEMANTIC_TREE_FORCE_AI（缺權重時整批退回 OpenAI 版）的設定影響。
-        patcher = patch.dict(os.environ, {"SEMANTIC_TREE_FORCE_AI": "false"})
+        # SEMANTIC_TREE_FORCE_AI（缺權重時整批退回 OpenAI 版）或
+        # SEMANTIC_TREE_AI_TOPIC_IDS（逐議題切到 API 版）的設定影響。
+        patcher = patch.dict(
+            os.environ,
+            {"SEMANTIC_TREE_FORCE_AI": "false", "SEMANTIC_TREE_AI_TOPIC_IDS": ""},
+        )
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -395,6 +399,71 @@ class LocalClassifierDispatchTests(SimpleTestCase):
         self.assertTrue(uses_local_classifier(103))
         self.assertFalse(uses_local_classifier(101))
         self.assertFalse(uses_local_classifier(None))
+
+    def test_ai_topic_id_override_switches_one_topic_without_touching_others(self):
+        # 正式機的實際設定：核電（102）保留本地 ML 版本，女性義務兵役（103）
+        # 改走 GPT API 版本。全域的 SEMANTIC_TREE_FORCE_AI 表達不出這件事。
+        from apps.matching.services.semantic_tree import uses_local_classifier
+
+        with patch.dict(os.environ, {"SEMANTIC_TREE_AI_TOPIC_IDS": "103"}):
+            self.assertTrue(uses_local_classifier(102))
+            self.assertFalse(uses_local_classifier(103))
+
+    def test_ai_topic_id_override_accepts_a_list_and_full_width_commas(self):
+        # 這個值常常是從中文文件或聊天訊息複製貼上進 .env 的，全形逗號很常見。
+        from apps.matching.services.semantic_tree import uses_local_classifier
+
+        for raw in ("102,103", "102, 103", "102，103", " 103 , 102 "):
+            with self.subTest(raw=raw):
+                with patch.dict(os.environ, {"SEMANTIC_TREE_AI_TOPIC_IDS": raw}):
+                    self.assertFalse(uses_local_classifier(102))
+                    self.assertFalse(uses_local_classifier(103))
+
+    def test_unparseable_ai_topic_id_is_ignored_and_logged(self):
+        # 設定打錯字不該讓整場對話的節點分析掛掉，但也不能安靜吞掉——安靜吞掉的
+        # 現象跟「沒設」一模一樣，查起來會非常痛苦。
+        from apps.matching.services.semantic_tree import uses_local_classifier
+
+        with patch.dict(os.environ, {"SEMANTIC_TREE_AI_TOPIC_IDS": "103,abc"}):
+            with self.assertLogs(
+                "apps.matching.services.semantic_tree", level="WARNING"
+            ) as logs:
+                self.assertFalse(uses_local_classifier(103))
+            self.assertTrue(any("abc" in line for line in logs.output))
+            # 壞掉的那一段被忽略，同一行裡合法的 103 仍然生效（上面已驗），
+            # 而沒被列到的 102 也不該被波及。
+            self.assertTrue(uses_local_classifier(102))
+
+    def test_global_force_ai_still_overrides_every_topic(self):
+        from apps.matching.services.semantic_tree import uses_local_classifier
+
+        with patch.dict(os.environ, {"SEMANTIC_TREE_FORCE_AI": "true"}):
+            self.assertFalse(uses_local_classifier(102))
+            self.assertFalse(uses_local_classifier(103))
+
+    def test_missing_weights_error_names_the_switch_to_the_api_version(self):
+        # 缺權重的錯誤訊息必須自己講出怎麼切到 API 版本，否則使用者只會看到
+        # 「找不到權重檔」然後不知道下一步該做什麼。
+        from apps.matching.services.semantic_tree import (
+            MissingLocalClassifierModel,
+            analyze_text_for_tree,
+        )
+
+        with patch(
+            "apps.matching.services.women_conscription_node_classifier.build_candidate_items",
+            side_effect=FileNotFoundError("找不到權重: model.safetensors。"),
+        ):
+            with self.assertRaises(MissingLocalClassifierModel) as ctx:
+                analyze_text_for_tree(
+                    topic_id=103,
+                    text="女性也應該服義務役",
+                    tree={"id": "root", "children": []},
+                )
+
+        message = str(ctx.exception)
+        self.assertIn("model.safetensors", message)          # 原訊息保留
+        self.assertIn("SEMANTIC_TREE_AI_TOPIC_IDS=103", message)
+        self.assertIn("SEMANTIC_TREE_FORCE_AI", message)
 
     def test_topic_103_routes_to_the_women_conscription_module(self):
         from apps.matching.services.semantic_tree import (
