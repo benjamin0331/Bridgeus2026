@@ -2730,13 +2730,18 @@ def _fill_video_url_from_file(instance, request):
     但下游所有讀取路徑（公開清單、KB 首頁 <a href>）都只認 url 欄位，這裡
     補完之後其他地方完全不用知道背後是本地檔案還是外部連結。
 
-    一定要組成絕對網址（build_absolute_uri），不能存 instance.video_file.url
-    的相對路徑：前端跟後端是不同網域/port（開發環境 5173 vs 8005，正式環境
-    也可能是不同子網域），存相對路徑的話瀏覽器會拿前端自己的網域去解析，
-    404 找不到檔案。
+    存的是「根相對路徑」（instance.video_file.url，例如 /media/kb_videos/...），
+    不是 build_absolute_uri 組出來的絕對網址。理由：
+    - 絕對網址會把「上傳當下那個 request 的 host/scheme」寫死進 DB。開發機
+      上傳存成 http://127.0.0.1:8005/...，換到正式站就指向不存在的主機；
+      http 存進去、正式站走 https 又會被瀏覽器擋 mixed content。
+    - 部署拓撲是前端、API、媒體同一個網域用路徑分流（dev 由 Vite proxy、
+      docker 由 nginx、正式站由 Cloudflare Tunnel 把 /media/ 轉到後端），
+      所以用頁面自己的 origin 解析 /media/... 一定對。
+    request 參數保留是為了相容既有呼叫端；目前不需要用到。
     """
     if instance.video_file and not instance.url:
-        instance.url = request.build_absolute_uri(instance.video_file.url)
+        instance.url = instance.video_file.url
         instance.save(update_fields=["url"])
 
 

@@ -31,18 +31,21 @@ urlpatterns = [
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
 ]
 
-# 本機上傳的影片檔（MEDIA_ROOT）：whitenoise 只認 STATIC_ROOT，這裡要另外
-# 掛路徑才服務得到。用自己寫的 serve_media（見 media_views.py）而不是
-# django.contrib.staticfiles/django.views.static.serve()提供的 static()
+# 研究者上傳的知識庫影片檔（MEDIA_ROOT）：whitenoise 只認 STATIC_ROOT，這裡
+# 要另外掛路徑才服務得到。用自己寫的 serve_media（見 media_views.py）而不是
+# django.contrib.staticfiles/django.views.static.serve() 提供的 static()
 # helper——後者完全不支援 HTTP Range request，會讓 <video> 播放器沒辦法拖
-# 時間軸、Chrome 甚至常常直接放棄解析音軌。只在 DEBUG 開著時掛這條路由，
-# 正式環境如果換成 S3/GCS 之類的物件儲存，這段就不需要了（FileField 會
-# 直接吐物件儲存本身、原生支援 Range 的網址）。
-if settings.DEBUG:
-    urlpatterns += [
-        re_path(
-            r"^media/(?P<path>.*)$",
-            serve_media,
-            {"document_root": settings.MEDIA_ROOT},
-        ),
-    ]
+# 時間軸、Chrome 甚至常常直接放棄解析音軌。
+#
+# 不再用 `if settings.DEBUG` 包住：影片的 url 現在存根相對路徑（見
+# _fill_video_url_from_file），正式站也是由前面的反向代理（docker
+# frontend/nginx、Cloudflare Tunnel）把 /media/ 原封不動轉到這個後端，
+# 所以這條路由在 DEBUG=False 時一樣要在。改用物件儲存（S3/GCS）之後，
+# FileField 會直接吐物件儲存原生支援 Range 的網址，那時這段才能拿掉。
+urlpatterns += [
+    re_path(
+        r"^media/(?P<path>.*)$",
+        serve_media,
+        {"document_root": settings.MEDIA_ROOT},
+    ),
+]
