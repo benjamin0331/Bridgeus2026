@@ -246,10 +246,16 @@ function mapMatchMessagesToDisplay(messages, userId) {
     const senderId = Number(message.sender_id);
     const isCurrentUser = Number.isFinite(currentUserId) && senderId === currentUserId;
 
+    // 對方的顯示名稱以後端指派的匿名代號（message.sender_name）為準；
+    // 只有在後端還沒帶名字回來時才退回通用的 MATCH_PARTNER_NAME。
+    const partnerName =
+      (typeof message.sender_name === 'string' && message.sender_name.trim()) ||
+      MATCH_PARTNER_NAME;
+
     return {
       id: `match-message-${message.id}`,
       type: isCurrentUser ? 'user' : 'agent',
-      userName: isCurrentUser ? MATCH_SELF_NAME : MATCH_PARTNER_NAME,
+      userName: isCurrentUser ? MATCH_SELF_NAME : partnerName,
       text: message.content,
       timestamp: message.created_at,
       // Only the partner's messages are reactable.
@@ -407,7 +413,9 @@ function TopicChat({ user, issues, issuesLoaded }) {
   const semanticTreeRequestIdRef = useRef(0);
   const currentIssue = issues?.find((item) => item.id === parseInt(id, 10));
   const displayUserName = user?.name || '公民';
-  const matchPartnerName = MATCH_PARTNER_NAME;
+  // 配對狀態帶回來的 other_user_name 就是這間房指派給對方的匿名代號；
+  // 還沒配對／還沒收到時才用通用預設。輸入框提示與離線提示都吃這個值。
+  const matchPartnerName = matchingState?.other_user_name || MATCH_PARTNER_NAME;
   // Godot 綁定房：自己填完問卷了（survey_required 是 false），但對方還沒填
   // （partner_state 是 pending）——不能直接放行進聊天室，要先擋在等待畫面。
   const isGodotWaitingForPartner =
@@ -2792,7 +2800,7 @@ function TopicChat({ user, issues, issuesLoaded }) {
       : chatError;
   const otherPresence = matchingState?.presence?.other_user;
   const matchPresenceNotice = isMatchChatReady && otherPresence?.connected === false
-    ? `匿名對話者暫時離線，若持續到 ${formatTimestamp(
+    ? `${matchPartnerName}暫時離線，若持續到 ${formatTimestamp(
         matchingState?.absence_deadline || matchingState?.presence?.absence_deadline,
       )} 對話會自動結束。`
     : '';
