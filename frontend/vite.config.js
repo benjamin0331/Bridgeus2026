@@ -13,6 +13,13 @@ export default defineConfig(({ mode }) => {
           target: env.VITE_PROXY_TARGET || 'http://127.0.0.1:8005',
           changeOrigin: true,
         },
+        // 研究者上傳的知識庫影片檔。url 存的是根相對路徑（/media/...），
+        // <video src> 會拿 dev server 的 origin（5173）去解析，沒有這條就
+        // 404。正式環境由 nginx / Cloudflare Tunnel 對應轉發。
+        '/media': {
+          target: env.VITE_PROXY_TARGET || 'http://127.0.0.1:8005',
+          changeOrigin: true,
+        },
         '/ws': {
           target: env.VITE_PROXY_TARGET || 'http://127.0.0.1:8005',
           changeOrigin: true,
