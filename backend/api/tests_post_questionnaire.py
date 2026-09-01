@@ -126,6 +126,8 @@ class TestPostQuestionnaire:
         assert data["consent_confirmed"] is None
         assert "s_post" in data
         assert data["pre_question_map"] == {1: 8, 2: 5, 3: 3, 4: 7, 5: 1, 6: 4, 7: 6, 8: 2}
+        # 結算收據標頭要顯示議題名而不是 topic_id
+        assert data["topic_title"] == "台灣核能議題討論"
 
     def test_hh_c4_null(self, auth_client):
         """H-H 組 opponent_judgment 傳 null，欄位應存 NULL。"""

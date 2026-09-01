@@ -3,7 +3,7 @@
 **畫面**：`SettlementReceipt`（`frontend/src/pages/SettlementReceipt.jsx`），後測問卷送出後顯示。
 **風格**：紙質收據 / 明細風 —— 米色紙感、細分隔線、襯線標題、印章。簡潔優雅、有分享價值。
 **互動流程**：送出後測 → 出現**信封** → 點擊有**開封動畫** → 滑出分頁收據明細 → 可翻頁 → 按分享鍵匯出**整份長圖 PNG** 下載。
-**資料來源**：`POST /api/post-questionnaire/` 的回傳（`PostDialogueResponseOutputSerializer`）＋ 讚倒讚另打 `GET /api/message-reactions/`。**純前端消費，不新增後端欄位。**
+**資料來源**：`POST /api/post-questionnaire/` 的回傳（`PostDialogueResponseOutputSerializer`）＋ 讚倒讚另打 `GET /api/message-reactions/`。除了 `topic_title`（議題名，後端從 `TOPIC_CONFIGS` 補）之外，其餘皆為前端消費既有欄位。
 **技術**：圖表全手刻 inline SVG（無圖表套件）；PNG 匯出用 `html-to-image` 的 `toPng`（把全部分頁疊進隱藏長容器一次截圖）。
 
 > 📌 本文件為結算功能的即時規格，結算畫面一有更動就同步更新整份。
@@ -85,7 +85,7 @@
 | `post_open_comprehension` | D1 對立觀點陳述（走 NLP 向量化）|
 | `post_open_feedback` | D2 自由回饋 |
 | `pre_question_map` | 後測題 → 前測題對照表 |
-| `id` / `topic_id` / `session_id` / `room_id` / `created_at` | Metadata |
+| `id` / `topic_id` / `topic_title` / `session_id` / `room_id` / `created_at` | Metadata；`topic_title` 是議題名（收據標頭顯示用），未知議題為空字串 |
 
 ### F. 另有：讚倒讚（獨立資料，非本 payload）
 `MessageReaction` 表，記錄「使用者對每則對方訊息按的 👍(1)/👎(-1)」，**私人可見**。要另打 `GET /api/message-reactions/` 取得，不在後測回傳裡。

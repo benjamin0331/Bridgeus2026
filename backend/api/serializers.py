@@ -10,7 +10,7 @@ from django.db import IntegrityError, transaction
 
 from apps.summary.models import VideoRecommendation, ViewpointNode
 
-from .dialogue_topics import get_dialogue_survey
+from .dialogue_topics import TOPIC_CONFIGS, get_dialogue_survey
 from .models import (
     AIConversation,
     DiscomfortReport,
@@ -660,9 +660,15 @@ class PostDialogueResponseOutputSerializer(serializers.ModelSerializer):
         read_only=True,
     )
     pre_question_map = serializers.SerializerMethodField()
+    # 結算畫面要顯示議題名而不是 topic_id；標題只存在 TOPIC_CONFIGS，沒有
+    # 對應的資料表，也不受 TopicDisplayOverride 覆寫（那層只管可見性與門檻）。
+    topic_title = serializers.SerializerMethodField()
 
     def get_s_post(self, obj):
         return obj.s_post()
+
+    def get_topic_title(self, obj):
+        return TOPIC_CONFIGS.get(obj.topic_id, {}).get("title", "")
 
     def get_pre_question_map(self, _obj):
         from .models import POST_LIKERT_TO_PRE_QUESTION
@@ -671,7 +677,7 @@ class PostDialogueResponseOutputSerializer(serializers.ModelSerializer):
     class Meta:
         model = PostDialogueResponse
         fields = [
-            "id", "topic_id", "experiment_condition",
+            "id", "topic_id", "topic_title", "experiment_condition",
             "session_id", "room_id",
             "post_likert_1", "post_likert_2", "post_likert_3", "post_likert_4",
             "post_likert_5", "post_likert_6", "post_likert_7", "post_likert_8",

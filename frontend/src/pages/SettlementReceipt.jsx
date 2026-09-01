@@ -353,7 +353,9 @@ function ReceiptBody({ data, reactions, page, export: isExport }) {
     <PageEngagement key="e" data={data} />,
     <PageExtras key="x" data={data} reactions={reactions} />,
   ];
-  const topicLabel = data.topic_id ? `議題 #${data.topic_id}` : '對話';
+  // 後端補的 topic_title 是議題名；舊資料或未知議題才退回 id。
+  const topicLabel = data.topic_title
+    || (data.topic_id ? `議題 #${data.topic_id}` : '對話');
 
   return (
     <div className={`sr-receipt${isExport ? ' sr-receipt--export' : ''}`}>
