@@ -15,8 +15,15 @@
 
 上傳端點（皆 `IsResearcher`）：
 
-- `POST   /api/summary/videos/admin/`（新增，multipart，欄位 `title` + `video_file`）
+- `POST   /api/summary/videos/admin/`（新增，multipart）
+  欄位：`title`（必填）、`video_file`／`url` 擇一（兩者皆空會被 serializer 的
+  `validate()` 擋下）、`thumbnail_url`、`description`、`topic_id`、
+  `stance_direction`（`support`／`neutral`／`oppose`，預設 `neutral`）、
+  `is_published`、`display_order`。設定頁的上傳表單送出 `title`、`video_file`、
+  `thumbnail_url`、`description`、`topic_id`（選填）、`stance_direction`。
 - `PATCH  /api/summary/videos/admin/<pk>/`（更新／重新上傳／發布切換）
+- `DELETE /api/summary/videos/admin/<pk>/`（刪除該筆；DB 的列會消失，
+  `media/kb_videos/` 底下的檔案本體不會被一併刪除）
 - `GET    /api/summary/videos/admin/`（研究者清單，含未發布）
 - `GET    /api/summary/videos/`（公開清單，只回 `is_published=True`）
 
@@ -37,7 +44,22 @@
 - `backend/media/` 目錄由 Django 於首次上傳時自動建立；正式機請確認 **執行 uvicorn 的使用者對該目錄有寫入權限**。
 - `backend/media/` 已在 `.gitignore`（`media/`），不進版控。
 - 備份策略：`backend/media/kb_videos/` 需納入伺服器備份範圍（DB 只存路徑，檔案本體在這裡）。
-- 之後若改用物件儲存（S3/GCS），把 `DEFAULT_FILE_STORAGE` 換掉即可，`urls.py` 的 `^media/…` 路由與 `serve_media` 可一併移除（物件儲存原生支援 Range）。
+- 之後若改用物件儲存（S3/GCS），改的是 `settings.STORAGES["default"]`——本專案跑
+  Django 6.0，舊的 `DEFAULT_FILE_STORAGE` 設定在 5.1 已移除，寫了不會報錯但完全
+  不生效：
+
+  ```python
+  STORAGES = {
+      "default": {"BACKEND": "storages.backends.s3.S3Storage"},
+      "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+  }
+  ```
+
+  （順帶一提，`settings.py:257` 現存的 `STATICFILES_STORAGE` 同樣是 5.1 移除的
+  舊名，目前是失效狀態；真的改成 `STORAGES` 時要一起收進上面這個 dict。）
+
+  換過去之後 `urls.py` 的 `^media/…` 路由與 `serve_media` 可一併移除（物件儲存
+  原生支援 Range）。
 
 ---
 

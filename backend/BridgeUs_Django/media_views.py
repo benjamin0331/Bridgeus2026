@@ -1,4 +1,8 @@
-"""Range-aware 靜態檔案伺服器，只給本機開發模式的 MEDIA_URL 用（見 urls.py）。
+"""Range-aware 檔案伺服器，服務 MEDIA_URL 底下的上傳檔（見 urls.py）。
+
+DEBUG 與正式站都會走這裡：影片的 url 存的是根相對路徑（/media/...），正式站
+由前面的反向代理把 /media/ 原封不動轉到這個後端，所以這條路由不能只在開發
+模式掛。
 
 django.views.static.serve() 完全不理會 Range header（原始碼裡沒有任何相關
 邏輯），每次都回傳整個檔案；瀏覽器原生 <video> 播放器因此沒辦法拖曳時間軸，
