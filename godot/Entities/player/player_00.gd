@@ -85,6 +85,13 @@ func _ready():
 	# 等級還沒抓回來時是 0（Lv0 白），game.gd 在 /titles/me/ 回來後會補設一次
 	# （見 _apply_level_to_local_player）。
 	roll_appearance()
+	# 頭銜同理（見 game.gd::_apply_banner_to_local_player）：/titles/me/ 已經回來的話
+	# 這裡直接貼上，還沒回來的話由 game.gd 那邊補。
+	# 延一幀再送：等級走的是 MultiplayerSynchronizer 的同步屬性，頭銜走的是 RPC，
+	# 而 _ready 當下其他 peer 未必已經收到這個節點的複製，直接 rpc 會在對面找不到
+	# 節點。晚進的人另有 request_issue_sync 補送（game.gd 會重送 apply_banner）。
+	if Backend.banner_text != "":
+		set_banner.call_deferred(Backend.banner_text, Backend.banner_color)
 	# Only the locally controlled player needs proximity detection + UI.
 	_make_proximity_area()
 
@@ -430,9 +437,33 @@ func invite_to_voice(target):
 
 @rpc("any_peer", "reliable")
 func receive_voice_invite(from_id: int):
+	# 已經在通話中就直接回絕，不跳邀請視窗。跳了而玩家按下接受的話，_start_voice
+	# 會把 _voice_peer 換成新來的這位，而**現任對象完全不會收到任何通知**——他的
+	# 面板還寫著通話中、麥克風還開著、音框還照樣送過來，等於被單方面丟在一場他
+	# 已經不在的通話裡，而且要自己看出不對勁才會去按掛斷。
+	if _in_voice:
+		var inviter = _find_player(from_id)
+		if inviter:
+			inviter.voice_invite_busy.rpc_id(from_id)
+		return
 	var ui = _ui()
 	if ui:
 		ui.show_invite(from_id, true)
+
+# 對方忙線中。跟「拒絕」分開報是因為玩家的下一步不同：拒絕是「他不想講」，
+# 忙線是「等一下再約」。
+@rpc("any_peer", "reliable")
+func voice_invite_busy():
+	var ui = _ui()
+	if ui:
+		ui.notify("對方忙線中，請稍後再試")
+
+# 告訴對方「這邊不繼續了」，但不動自己的通話狀態。不能直接用 leave_voice()——
+# 那支會順手 _stop_voice()，把自己跟現任對象的通話也一起掛掉。
+func _decline_voice_from(peer_id: int) -> void:
+	var other = _find_player(peer_id)
+	if other:
+		other.peer_left_voice.rpc_id(peer_id, multiplayer.get_unique_id())
 
 # Local (target side): answer a voice invite.
 func respond_voice_invite(from_id: int, accepted: bool):
@@ -448,12 +479,21 @@ func respond_voice_invite(from_id: int, accepted: bool):
 @rpc("any_peer", "reliable")
 func voice_invite_result(from_id: int, accepted: bool):
 	var ui = _ui()
-	if accepted:
-		_start_voice(from_id)
+	if not accepted:
 		if ui:
-			ui.open_voice(from_id)
-	elif ui:
-		ui.notify("對方拒絕了語音邀請")
+			ui.notify("對方拒絕了語音邀請")
+		return
+	# 等對方回覆的這段期間，自己可能已經接了別人的邀請（receive_voice_invite 的
+	# 忙線擋不到這條——那時邀請早就發出去了）。無條件 _start_voice 會把 _voice_peer
+	# 換成後到的這位，現任對象一樣被靜默丟下，所以這裡也要擋。
+	if _in_voice and _voice_peer != from_id:
+		_decline_voice_from(from_id)
+		if ui:
+			ui.notify("你已經在另一場通話中，已婉拒對方")
+		return
+	_start_voice(from_id)
+	if ui:
+		ui.open_voice(from_id)
 
 # Local: leave the voice call.
 func leave_voice(to_id: int):
@@ -464,10 +504,19 @@ func leave_voice(to_id: int):
 
 @rpc("any_peer", "reliable")
 func peer_left_voice(from_id: int):
+	# 只有現任對象的離開才作數。這道檢查現在是必要的：voice_invite_result 婉拒
+	# 後到者時送的也是這支，不檢查的話它會把收件人跟**別人**的通話掛掉。
+	if _in_voice and _voice_peer != from_id:
+		return
 	_stop_voice()
 	var ui = _ui()
 	if ui:
 		ui.voice_peer_left(from_id)
+
+# 給 receive_voice 用：這個 peer 是不是我現在的通話對象。公開（無底線）是因為
+# 那支 RPC 跑在別人的節點副本上，只能從外面問自己的節點。
+func is_voice_peer(peer_id: int) -> bool:
+	return _in_voice and _voice_peer == peer_id
 
 func _start_voice(peer: int):
 	_in_voice = true
@@ -576,4 +625,15 @@ func _update_anim():
 
 @rpc("any_peer", "unreliable")
 func receive_voice(frames: PackedVector2Array):
+	# ⚠️ 這支跑在**發話者**的節點副本上（rpc_id 是依節點路徑對位的，而送出端是在
+	# 自己的節點上呼叫），不是收件人自己的節點。所以這裡的 _in_voice / _voice_peer
+	# 永遠是預設值，通話狀態要去自己的節點上問——這也是原本這支只呼叫全域
+	# VoiceChat 的原因。
+	var me = _find_player(multiplayer.get_unique_id())
+	if me == null:
+		return
+	# 只播現任通話對象的音框。不檢查的話，任何還以為自己在跟你通話的人送來的聲音
+	# 都會被混進來（邀請競態的殘影、或掛斷訊息還沒送達的那幾幀）。
+	if not me.is_voice_peer(multiplayer.get_remote_sender_id()):
+		return
 	VoiceChat.play_frames(frames)

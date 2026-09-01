@@ -14,6 +14,13 @@ var level := 0
 var dialogue_count := 0           # 累積完成場次，用來顯示「再 N 場升級」
 var level_thresholds: Array = []  # 後端給的門檻表，同上；空陣列＝還沒抓到
 
+# 目前選中的頭銜（文字＋顏色），同樣由 get_my_titles() 解好之後快取在這裡。
+# 快取的理由跟 level 一模一樣：/titles/me/ 的回應時機跟玩家按 Host/Join 生出身體
+# 的時機互相獨立，兩邊都要能讀到這份結果，才不會變成「有時候貼得上、有時候貼不上」。
+# 空字串＝沒選頭銜、沒登入、或還沒抓回來。
+var banner_text := ""
+var banner_color := Color(0.15, 0.15, 0.15, 0.85)   # 預設同泡泡底色（見 player_00.gd）
+
 # 只在常駐 headless server 從環境變數讀到才會有值；web client 一律空字串，
 # 不會/不該呼叫需要它的方法（金鑰絕不可流向瀏覽器，見部署規格 §4「服務金鑰建房契約」）。
 var service_token := ""
@@ -167,6 +174,21 @@ func get_my_titles(callback := Callable()) -> void:
 			var th = data.get("level_thresholds")
 			if th is Array:
 				level_thresholds = th
+			# selected_id 只是個 id，頭上要貼的是名稱——對照表只有這裡的 owned 有，
+			# 呼叫端拿不到，所以在這裡就解好。沒選頭銜時 selected_id 是 null。
+			banner_text = ""
+			var sel = data.get("selected_id")
+			var owned = data.get("owned")
+			if sel != null and owned is Array:
+				for t in owned:
+					if typeof(t) == TYPE_DICTIONARY and int(t.get("id", 0)) == int(sel):
+						banner_text = str(t.get("name", ""))
+						break
+			var col = data.get("color")
+			# 先驗證再轉：Color.html() 吃到不合法的字串會在 console 噴紅字並回黑色，
+			# 頭銜就會變成一塊看不出所以然的黑框。
+			if typeof(col) == TYPE_STRING and Color.html_is_valid(col):
+				banner_color = Color.html(col)
 		if callback.is_valid():
 			callback.call(code, data)
 	)

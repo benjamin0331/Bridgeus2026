@@ -37,6 +37,11 @@ func _ready():
 	_resolve_connection_settings()
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	multiplayer.connection_failed.connect(_on_connection_failed)
+	# 「連上之後才斷」是另一個訊號，而且比 connection_failed 更常走到：券兌換
+	# 失敗時 server 就是呼叫 disconnect_peer 把人踢掉（見 submit_ticket），
+	# server 重啟、Cloudflare Tunnel 掉線也都是這條。沒接的話玩家會停在一個
+	# 沒有按鈕、沒有訊息的空世界，只剩重整一途——正是下面那段要避免的事。
+	multiplayer.server_disconnected.connect(_on_server_disconnected)
 
 	# 常駐 headless server（見 godot-web-deployment-spec.md §4）：只跑連線與配對邏輯，
 	# 不代表任何玩家、不生自己的身體、不叫身份交接（沒有 window 可讀、也沒有真人要登入）。
@@ -300,6 +305,17 @@ func hide_buttons():
 # 連不上時把入口還給玩家。沒有這段的話按鈕已經被 hide_buttons() 藏起來，
 # 玩家只剩重整一途——而重整要再付一次 WASM 冷啟動。
 func _on_connection_failed() -> void:
+	_return_to_lobby("無法連線到伺服器，請稍後再試")
+
+# 已經握手成功、之後才斷：被 server 踢（券無效／已用過／逾期，見 submit_ticket）、
+# server 重啟、tunnel 掉線。善後跟「連不上」完全一樣，訊息不一樣——這裡玩家是
+# 「進去過又被請出來」，要說得出下一步該做什麼。
+func _on_server_disconnected() -> void:
+	_return_to_lobby("與伺服器的連線已中斷，請重新加入；持續失敗請回主功能頁面重新登入")
+
+# 兩條斷線路徑共用的善後。分開兩支訊號但共用這裡，是因為要還原的東西完全相同，
+# 分頭寫兩份遲早會有一邊漏掉其中一項。
+func _return_to_lobby(msg: String) -> void:
 	# 換一顆全新的 peer：舊的 socket 未必已回到 DISCONNECTED，沿用會讓下一次
 	# create_client 回 ERR_ALREADY_IN_USE。
 	multiplayer.multiplayer_peer = null
@@ -309,9 +325,19 @@ func _on_connection_failed() -> void:
 	if multiplayer.connected_to_server.is_connected(_on_connected_to_server):
 		multiplayer.connected_to_server.disconnect(_on_connected_to_server)
 	_ticket = ""
+	# 斷線後所有身體都是殘影：MultiplayerSpawner 的「移除」是 server 端 queue_free
+	# 才複製過來的，而斷線本身就是收不到那則訊息的原因。不清的話重新 Join 會看到
+	# 上一輪的幽靈玩家跟自己的新身體並存，而舊身體的 authority 已經不是自己了，
+	# _local_player() 也找不到它——只能站在原地永遠不動。
+	for p in get_tree().get_nodes_in_group("players"):
+		p.queue_free()
+	# 坐在木樁上等配對時被踢的話，等待視窗會留在畫面上蓋住 Join 鍵。
+	_show_waiting(false)
 	host_btn.visible = not OS.has_feature("web")
+	# _on_join_pressed 拉券期間會把 Join 停用，斷在那之後就得自己還原。
+	join_btn.disabled = false
 	join_btn.show()
-	_notify("無法連線到伺服器，請稍後再試")
+	_notify(msg)
 
 # 空心跳：內容不重要，重點是「有資料在傳」讓代理層（Cloudflare）不判定閒置。
 @rpc("any_peer", "unreliable")
@@ -430,8 +456,8 @@ func _fetch_banner_options() -> void:
 			_title_ids.append(int(t.get("id", 0)))
 			if selected_id != null and int(t.get("id", 0)) == int(selected_id):
 				selected_idx = i
-		# 程式設 selected 不會觸發 item_selected（只有玩家點才會），所以頭上不會
-		# 自動貼——玩家要親自點一次才套到頭上。這裡只是把「上次選的」顯示出來。
+		# 程式設 selected 不會觸發 item_selected（只有玩家點才會），所以這一行只是
+		# 把「上次選的」顯示在下拉選單上；頭上要另外貼，見 _apply_banner_to_local_player。
 		option_btn.selected = selected_idx
 		var c = data.get("color")
 		if typeof(c) == TYPE_STRING and c != "":
@@ -440,7 +466,19 @@ func _fetch_banner_options() -> void:
 		# 青蛙顏色，而這個 HTTP 回應跟玩家按 Host/Join 的時機無關，所以兩邊都要顧：
 		# 先生成的話這裡補設，後生成的話 player_00.gd::_ready 自己讀 Backend.level。
 		_apply_level_to_local_player()
+		_apply_banner_to_local_player()
 	)
+
+# 把後端記著的頭銜貼回自己頭上。沒有這支的話，後端明明記著你上次選的頭銜、下拉
+# 選單也顯示對了，但青蛙頭上是空的——每次進大廳都得重新點一次同一個頭銜才會出現。
+# 兩條路都要有，理由同 _apply_level_to_local_player：HTTP 先回來就走這裡，
+# 身體先生出來就走 player_00.gd::_ready。
+func _apply_banner_to_local_player() -> void:
+	if Backend.banner_text == "":
+		return   # 沒選頭銜（selected_id 是 null）就什麼都不貼，不要蓋掉空狀態
+	var p = _local_player()
+	if p:
+		p.set_banner(Backend.banner_text, Backend.banner_color)
 
 # 把 Backend.level 套到自己的青蛙上（appearance 是同步欄位，改了就會廣播出去）。
 # apply_level 內部會順便刷右上角色表（含「你在這一級」的箭頭與場次門檻），而且刷到
