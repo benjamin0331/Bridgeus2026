@@ -154,14 +154,11 @@
   box-shadow: 0 12px 45px rgba(0, 0, 0, 0.07);
 }
 
-.knowledge-base-entry { background-color: #f6f3cc; }
-.virtual-chat-entry {
-  position: relative;   /* 右下角青蛙的定位錨點 */
-  /* 背景換成遊戲內實拍截圖（同成就頁那張 /frogs/map_bg.png）。
-     薄紗與成就頁那張等級卡用完全同一組：同樣的米色、同樣的轉折點。兩張卡並存時看起來
-     才是一套設計。曾試過 135° 從左上角淡出（斜向邊界很明顯）和薄荷綠版（左半邊糊成
-     一片乳綠），都不好看。background-color 留著薄荷綠只是圖載不到時的退路。 */
-  background-color: #b9e6d0;
+/* 背景換成膠帶拼貼的書牆（scripts/gen_kb_tape.py 產的 /kb_shelf_tape.png）。
+   薄紗跟隔壁 .virtual-chat-entry 用完全同一組值：同樣的米色、同樣的轉折點，兩張卡
+   並存時才是一套設計。background-color 留著原本的米黃只是圖載不到時的退路。 */
+.knowledge-base-entry {
+  background-color: #f6f3cc;
   background-image:
     linear-gradient(
       to right,
@@ -171,23 +168,36 @@
       rgba(255, 251, 246, 0.16) 72%,
       rgba(255, 251, 246, 0.08) 100%
     ),
-    url('/frogs/map_bg.png');
+    url('/kb_shelf_tape.png');
+  background-size: 100% 100%, cover;
+  background-position: center, center;
+  background-repeat: no-repeat, no-repeat;
+}
+
+.virtual-chat-entry {
+  /* 背景是遊戲場景的膠帶拼貼（scripts/gen_map_tape.py 產的 /frogs/map_tape.png，
+     底稿是原本那張 Godot 實拍截圖 map_bg.png）。跟隔壁「觀點知識庫」的書牆同一套做法，
+     兩張卡並存才是一組。
+     薄紗與成就頁那張等級卡用完全同一組：同樣的米色、同樣的轉折點。曾試過 135° 從左上角
+     淡出（斜向邊界很明顯）和薄荷綠版（左半邊糊成一片乳綠），都不好看。
+     background-color 留著草地的橄欖綠只是圖載不到時的退路。 */
+  background-color: #8c9758;
+  background-image:
+    linear-gradient(
+      to right,
+      rgba(255, 251, 246, 0.93) 0%,
+      rgba(255, 251, 246, 0.9) 33%,
+      rgba(255, 251, 246, 0.45) 52%,
+      rgba(255, 251, 246, 0.16) 72%,
+      rgba(255, 251, 246, 0.08) 100%
+    ),
+    url('/frogs/map_tape.png');
   background-size: 100% 100%, cover;
   background-position: center, center 35%;
   background-repeat: no-repeat, no-repeat;
-  image-rendering: pixelated;
-  overflow: hidden;     /* 背景與散落裝飾都不要溢出圓角 */
+  overflow: hidden;     /* 背景不要溢出圓角 */
 }
 
-/* 標題的可讀性靠上面那道左→右漸變，不加 text-shadow —— 白色外光看起來像貼了塊白底。
-   z-index 確保標題永遠在散落裝飾之上。
-   ⚠️ 一定要用 .action-card-text 這個 class，不要寫成 .virtual-chat-entry > span：
-   裝飾層也是直接的 span 子元素，那樣會把它的 position: absolute 覆寫成 relative，
-   尺寸變 0，裡面的圖就被 overflow: hidden 全部裁掉（散落物整批消失過一次）。 */
-.virtual-chat-entry .action-card-text {
-  position: relative;
-  z-index: 1;
-}
 
 .issue-list.scrollable::-webkit-scrollbar {
   width: 8px;

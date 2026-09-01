@@ -188,9 +188,12 @@
   padding-left: calc(var(--frog-w) + 50px);  /* 左側讓給青蛙（26 左偏移 + 24 間距） */
   min-height: calc(var(--frog-h) - 14px);
   box-shadow: 0 12px 30px rgba(83, 62, 44, 0.07);
-  /* 背景 /frogs/map_bg.png 是**遊戲內實拍截圖**（人工從 Godot 場景截的）。曾經改用腳本
-     解析 Game.tscn 的圖磚重畫，結果水域被畫成大片深褐色方塊、完全不能看，所以那條路
-     放棄了，腳本也移除以免它覆蓋這張圖。要換背景就換掉這個 PNG 檔。
+  /* 背景 /frogs/map_tape.png 是同一個遊戲場景的膠帶拼貼（scripts/gen_map_tape.py），
+     跟首頁「虛擬大廳」卡片共用同一張。原本那張 Godot 實拍截圖 map_bg.png 留在原地
+     當底稿，不要刪。（更早之前試過用腳本解析 Game.tscn 的圖磚重畫，水域變成大片深褐色
+     方塊、完全不能看，那條路已經放棄。）
+     縱向位置 55% 是對著拼貼圖重挑的：這條卡很扁，cover 之後只看得到一小條，55% 剛好
+     落在水岸線上（有水、有岸、有樹腳）。截圖時代的 20% 換到這張圖只剩一片水。
 
      薄紗做成「左濃右淡」的橫向漸層，而不是整片同一個濃度：文字只佔到約 35% 寬，
      那一段要 0.9 才讀得清（均勻 0.55 時字壓在紅樹上就看不見了）；過了文字就快速淡掉，
@@ -204,11 +207,10 @@
       rgba(255, 251, 246, 0.16) 72%,
       rgba(255, 251, 246, 0.08) 100%
     ),
-    url('/frogs/map_bg.png');
+    url('/frogs/map_tape.png');
   background-size: 100% 100%, cover;
-  background-position: center, center 20%;
+  background-position: center, center 55%;
   background-repeat: repeat, no-repeat;
-  image-rendering: pixelated;
   overflow: visible;               /* 讓青蛙的上半部露出去 */
 }
 
