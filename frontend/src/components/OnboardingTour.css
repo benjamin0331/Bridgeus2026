@@ -1,0 +1,270 @@
+/* 新手指引。整層蓋在 app 之上，配色沿用平台的暖色系。
+   示意圖本身沒有樣式——它們直接套真實頁面的 class（見 OnboardingTour.jsx 的
+   CSS import），這裡只負責把它們框在一塊固定大小的舞台裡。 */
+
+.ob-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(46, 36, 28, 0.55);
+  backdrop-filter: blur(3px);
+  animation: ob-fade 180ms ease;
+}
+
+@keyframes ob-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ob-overlay { animation: none; }
+}
+
+/* ── 歡迎頁 ─────────────────────────────────────────────────────────── */
+
+.ob-welcome {
+  width: min(520px, 100%);
+  padding: 40px 40px 34px;
+  border-radius: 26px;
+  background: #fffaf1;
+  box-shadow: 0 24px 70px rgba(45, 33, 24, 0.32);
+  text-align: center;
+}
+
+.ob-welcome-kicker {
+  margin: 0 0 10px;
+  color: #b08a63;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+}
+
+.ob-welcome h2 {
+  margin: 0 0 14px;
+  color: #2f2722;
+  font-size: 28px;
+}
+
+.ob-welcome-body {
+  margin: 0 0 26px;
+  color: #6d5a47;
+  font-size: 15px;
+  line-height: 1.85;
+}
+
+.ob-welcome-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+}
+
+/* ── 投影片舞台 ─────────────────────────────────────────────────────── */
+
+.ob-stage {
+  display: flex;
+  width: min(940px, 100%);
+  max-height: 100%;
+  flex-direction: column;
+  padding: 24px 26px 16px;
+  border-radius: 28px;
+  background: #fffaf1;
+  box-shadow: 0 24px 70px rgba(45, 33, 24, 0.32);
+  cursor: pointer;
+  overflow: hidden;
+}
+
+/* 內容過長時由這一層捲動。捲軸沿用站上其他捲動區的同一組值
+   （見 AchievementPage.css / NotificationPage.css）：6px、灰色圓角滑塊、
+   透明軌道，並把 Windows 預設的上下箭頭按鈕關掉 */
+.ob-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.1) transparent;
+}
+
+.ob-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.ob-scroll::-webkit-scrollbar-button,
+.ob-scroll::-webkit-scrollbar-button:start,
+.ob-scroll::-webkit-scrollbar-button:end {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.ob-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 10px;
+}
+
+/* 示意圖區：裡面是真元件，游標不要再顯示「可點翻頁」 */
+.ob-slide-visual {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  border: 1px solid #ecdfcc;
+  border-radius: 20px;
+  background: #fdf6ea;
+  cursor: default;
+}
+
+.ob-frame {
+  width: 100%;
+  max-width: 760px;
+}
+
+/* 主畫面全景：真實頁面裡這一格靠 flex 撐滿內容區，示意圖要自己給高度 */
+.ob-frame-overview .dashboard-grid {
+  height: 300px;
+  margin: 0;
+  padding: 0;
+  gap: 22px;
+}
+
+.ob-frame-overview .issue-highlight-card { padding: 22px; border-radius: 26px; }
+.ob-frame-overview .card-title { font-size: 18px; margin-bottom: 14px; }
+.ob-frame-overview .action-button-stack { gap: 18px; }
+.ob-frame-overview .action-card { padding: 22px 26px; font-size: 19px; border-radius: 26px; }
+
+/* 開放中主題單獨一張時放大一點 */
+.ob-frame-issues .issue-highlight-card {
+  height: 320px;
+  padding: 26px;
+  border-radius: 30px;
+}
+
+/* 虛擬大廳：實際場景截圖，像素圖要用 pixelated 放大才不會糊 */
+.ob-lobby-shot {
+  display: block;
+  width: 100%;
+  border-radius: 16px;
+  image-rendering: pixelated;
+}
+
+/* 對話室：標題列 + 指標列 + 兩則訊息 */
+.ob-frame-chat .topic-title-row { margin-bottom: 14px; }
+.ob-frame-chat .topic-title { font-size: 22px; }
+
+.ob-frame-chat .ob-static-scroll {
+  max-height: 210px;
+  margin-bottom: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+}
+
+/* 語意樹面板：真實頁面裡它靠 flex 撐滿右欄，示意圖要自己給高度 */
+.ob-frame-ccnd .right-major-feature-box {
+  height: 360px;
+  border-radius: 22px;
+  overflow: hidden;
+}
+
+/* ── 文字 ───────────────────────────────────────────────────────────── */
+
+.ob-slide-copy { padding: 20px 4px 0; }
+
+.ob-slide-copy h2 {
+  margin: 0 0 14px;
+  color: #2f2722;
+  font-size: 23px;
+  line-height: 1.35;
+}
+
+.ob-lines {
+  margin: 0;
+  padding-left: 18px;
+  color: #57483b;
+  font-size: 14px;
+  line-height: 1.85;
+}
+
+.ob-lines li + li { margin-top: 8px; }
+
+/* ── 底部控制列 ─────────────────────────────────────────────────────── */
+
+.ob-bar {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #efe3d2;
+  cursor: default;
+}
+
+/* 主要按鈕跟導覽列的登出鈕同一組值（App.css 的 .logout-btn），
+   整站的主要動作看起來才是同一顆按鈕 */
+.ob-btn {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 10px 20px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
+}
+
+.ob-btn-primary {
+  background-color: #d8c3ad;
+  color: #5f5045;
+}
+
+.ob-btn-primary:hover {
+  background-color: #ccb39a;
+  transform: translateY(-1px);
+}
+
+.ob-btn-primary:active { transform: translateY(0); }
+
+.ob-btn-ghost {
+  background: none;
+  border-color: #e0d2bd;
+  color: #7a6858;
+}
+
+.ob-btn-ghost:hover { border-color: #c9b193; color: #4a3728; }
+
+.ob-btn:disabled { opacity: 0.35; cursor: default; transform: none; }
+.ob-btn:focus-visible { outline: 2px solid #c98134; outline-offset: 2px; }
+
+.ob-dots { display: flex; gap: 7px; }
+
+.ob-dot-nav {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #e3d5c1;
+}
+
+.ob-dot-nav.is-on { background: #c98134; }
+
+/* ── 窄螢幕 ─────────────────────────────────────────────────────────── */
+
+@media (max-width: 860px) {
+  .ob-overlay { padding: 12px; }
+
+  .ob-stage { padding: 16px 14px 12px; }
+
+  .ob-slide-visual { padding: 10px; }
+
+  .ob-slide-copy { padding-top: 16px; }
+  .ob-slide-copy h2 { font-size: 19px; }
+
+  .ob-lines { font-size: 13px; }
+
+  .ob-frame-ccnd .right-major-feature-box { height: 300px; }
+
+  .ob-bar { flex-wrap: wrap; gap: 10px; }
+  .ob-dots { order: 3; width: 100%; justify-content: center; }
+}

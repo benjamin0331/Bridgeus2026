@@ -7,6 +7,7 @@ import { NotificationsProvider } from './context/NotificationsContext'
 import { MatchingHeartbeatProvider } from './context/MatchingHeartbeatContext'
 import Navbar from './components/Navbar'
 import Sidebar from './components/Sidebar'
+import OnboardingTour from './components/OnboardingTour'
 import HomePage from './pages/HomePage'
 import TopicChat from './pages/TopicChat'
 import KnowledgeBase from './pages/KnowledgeBase'
@@ -305,6 +306,10 @@ function App() {
 
           <Sidebar navigate={navigate} isTopicPage={isTopicPage} />
         </div>
+
+        {/* 首次登入的新手指引（假介面，不碰任何 API）。放在最外層而不是 HomePage
+            裡面，是因為它要蓋住整個畫面，包含側邊功能欄與導覽列。 */}
+        <OnboardingTour userName={user.name || user.username} />
 
         <AchievementToast
           key={unlockedToast?.code}
