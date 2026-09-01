@@ -777,6 +777,7 @@ def resolve_godot_survey_gate(*, match, viewer_user_id=None, now=None):
     觸發，由 close_expired_godot_matches 指令兜底。
 
     先判離開再判逾時：離開的訊息（「對方已退出」）比「時間到了」對使用者具體。
+    但「離開」要有人留下來才成立——兩位都不在時退回逾時判斷，見下方 gone/present。
 
     viewer_user_id 是正在發出這次請求的人。他顯然還在現場，所以不拿他的
     last_seen 去判斷——輪詢者自己的 last_seen 要到 mark_match_participant_connected
@@ -807,14 +808,30 @@ def resolve_godot_survey_gate(*, match, viewer_user_id=None, now=None):
     reason = None
 
     if timeout_seconds > 0:
+        gone = []
+        present = []
         for user_id in (match.user_a_id, match.user_b_id):
             if user_id == viewer_user_id:
+                # 發出這次請求的人顯然在現場（理由見 docstring：他自己的 last_seen
+                # 要到裁決之後的 mark_match_participant_connected 才會更新）。
+                present.append(user_id)
                 continue
             if _godot_participant_is_gone(
                 match, user_id, now=current_time, timeout_seconds=timeout_seconds
             ):
-                reason = "godot_partner_left"
-                break
+                gone.append(user_id)
+            else:
+                present.append(user_id)
+        # 「對方已退出」的前提是還有人留在現場等他。兩位都不在的時候沒有「對方」
+        # 這個角色，這句話對誰都不成立——那是逾時，交給下面的期限判斷。
+        #
+        # 這個條件不是理論上的邊界：close_expired_godot_matches 傳 viewer_user_id
+        # =None，而它抓到的房依定義就是沒有人在輪詢的房（有人輪詢的話那個請求
+        # 早就把房裁決掉了），兩位一定都判定為不在。沒有這一條的話
+        # godot_survey_timeout 永遠不會從清理指令這條路發出，明明是問卷逾時卻
+        # 對兩個人都說「對方已退出配對」，連 stats 裡記下的原因都是錯的。
+        if gone and present:
+            reason = "godot_partner_left"
 
     if reason is None:
         deadline = survey_deadline_of(match)

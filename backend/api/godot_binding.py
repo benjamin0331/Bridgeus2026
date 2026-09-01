@@ -5,7 +5,9 @@
 特定值」之類的比對——真實分數可能剛好等於任何佔位值，而且那種判斷會散落在裁決、
 API payload、資料分析三個地方各長一份。
 """
-from api.models import MatchQueueEntry
+from django.db import transaction
+
+from api.models import DialogueMatch, MatchQueueEntry
 
 BINDING_STATS_KEY = "binding"
 
@@ -64,20 +66,38 @@ def pending_cancel_notice_for(match, user_id: int) -> str | None:
 
 
 def mark_cancel_notice_seen(match, user_id: int) -> None:
-    """把這位使用者記成已通知（冪等）。"""
-    binding = godot_binding_info(match)
-    if binding is None or not binding.get("cancel_reason"):
+    """把這位使用者記成已通知（冪等）。
+
+    名單要在鎖內重讀再寫。兩位參與者的輪詢（每 3 秒一次）會打到同一間作廢的房，
+    各自從自己那份快照讀到還沒有對方 id 的名單、各自只加自己、再整包寫回 stats
+    ——後寫的贏，前一位的標記就這樣消失，他下一次輪詢會再收到一次同樣的作廢
+    通知。stats 的其他寫入者（matcher.py 的 _save_presence_state、
+    resolve_godot_survey_gate）都是先 select_for_update 重讀才寫，這裡不該是
+    唯一的例外。
+    """
+    # 鎖外先擋掉大多數呼叫：這支在每次輪詢都會被問到，沒有作廢原因時不值得
+    # 為了確認「沒事」而開一個 transaction。
+    if godot_binding_info(match) is None or not binding_cancel_reason(match):
         return
-    notified = list(binding.get("notified_user_ids") or [])
-    if user_id in notified:
-        return
-    notified.append(user_id)
-    stats = dict(match.stats or {})
-    new_binding = dict(stats.get(BINDING_STATS_KEY) or {})
-    new_binding["notified_user_ids"] = notified
-    stats[BINDING_STATS_KEY] = new_binding
-    match.stats = stats
-    match.save(update_fields=["stats"])
+
+    with transaction.atomic():
+        locked = DialogueMatch.objects.select_for_update().get(pk=match.pk)
+        binding = godot_binding_info(locked)
+        if binding is None or not binding.get("cancel_reason"):
+            return
+        notified = list(binding.get("notified_user_ids") or [])
+        if user_id in notified:
+            return
+        notified.append(user_id)
+        stats = dict(locked.stats or {})
+        new_binding = dict(stats.get(BINDING_STATS_KEY) or {})
+        new_binding["notified_user_ids"] = notified
+        stats[BINDING_STATS_KEY] = new_binding
+        locked.stats = stats
+        locked.save(update_fields=["stats"])
+
+    # 呼叫端手上那份快照跟著更新，免得同一個請求後面又讀到舊名單。
+    match.stats = locked.stats
 
 
 def match_pretest_state(match) -> dict:

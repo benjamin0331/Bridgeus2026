@@ -4,10 +4,13 @@ pytest tests for Godot 綁定房的問卷裁決與收尾（階段五）。
 Run from backend/:
     pytest api/tests_godot_adjudication.py -v
 """
+import threading
+import uuid
 from datetime import timedelta
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -183,6 +186,123 @@ def test_deadline_expiry_cancels_room():
 
     assert resolved.status == DialogueMatch.Status.CANCELLED
     assert resolved.stats["binding"]["cancel_reason"] == "godot_survey_timeout"
+
+
+@pytest.mark.django_db
+def test_both_sides_gone_and_expired_reports_timeout_not_partner_left():
+    """兩位都不在、而且已經逾期 → 原因是逾時，不是「對方已退出」。
+
+    「對方已退出」的前提是還有人留在現場等他。兩個人都關掉網頁的時候沒有「對方」
+    這個角色，那句話對誰都不成立。這不是文字潔癖：這正是 close_expired_godot_matches
+    抓到的房的形狀（有人在輪詢的話那個請求早就把房裁決掉了），裁決若無條件先判離開，
+    godot_survey_timeout 這個原因就永遠不會從清理指令那條路發出，兩位使用者一律被
+    告知「對方已退出配對」，stats 裡記下的原因也跟著錯，研究資料分不出這兩種情況。
+
+    邊界的另一半由 test_partner_gone_cancels_room 釘著（一個在、一個不在，仍然是
+    partner_left）——修好這邊不能把那邊一起改掉。
+    """
+    from apps.matching.services.matcher import resolve_godot_survey_gate
+
+    user_a, user_b = _make_users()
+    match = _godot_match(
+        user_a, user_b, room_id="room-gate-both-gone", deadline_offset_seconds=-10
+    )
+    _mark_seen(match, user_a, seconds_ago=GODOT_PRESENCE_TIMEOUT + 10)
+    match = _mark_seen(match, user_b, seconds_ago=GODOT_PRESENCE_TIMEOUT + 10)
+
+    resolved = resolve_godot_survey_gate(match=match)
+
+    assert resolved.status == DialogueMatch.Status.CANCELLED
+    assert resolved.stats["binding"]["cancel_reason"] == "godot_survey_timeout"
+
+
+@pytest.mark.django_db
+def test_command_reports_timeout_on_a_room_that_is_genuinely_old():
+    """跟 test_command_cancels_expired_unattended_room 同一件事，但房是「真的舊」。
+
+    那支測試的房是當場建的，created_at 就是現在，所以
+    _godot_participant_is_gone 的 created_at 寬限期還沒過（last_seen 是 None 時
+    改用 created_at 起算），兩位都算「在」，逾時判斷自然跑得到。正式環境不是這樣：
+    期限 300 秒，指令抓到房的時候 created_at 至少是 300 秒前，兩位一定都超過 45 秒
+    的存在門檻——也就是說原本那支測試綠燈，線上仍然全部報成 partner_left。
+    """
+    from django.core.management import call_command
+
+    user_a, user_b = _make_users()
+    match = _godot_match(
+        user_a, user_b, room_id="room-cmd-old", deadline_offset_seconds=-60
+    )
+    # created_at 是 auto_now_add，只能建完再用 queryset update 覆寫。
+    DialogueMatch.objects.filter(pk=match.pk).update(
+        created_at=timezone.now() - timedelta(seconds=400)
+    )
+
+    call_command("close_expired_godot_matches")
+
+    match.refresh_from_db()
+    assert match.status == DialogueMatch.Status.CANCELLED
+    assert match.stats["binding"]["cancel_reason"] == "godot_survey_timeout"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_concurrent_cancel_notice_marks_do_not_clobber_each_other():
+    """兩位參與者同時輪詢到同一間作廢的房，兩個人都要留下「已通知」的記錄。
+
+    名單住在 stats 這個 JSON 欄位裡，讀改寫必須在 select_for_update 之內。不然兩邊
+    各自從自己的快照讀到還沒有對方的名單、各自只加自己、再整包寫回——後寫的贏，
+    前一位的標記就這樣消失，他下一次輪詢會再收到一次同樣的作廢通知。前端輪詢是
+    3 秒一次，兩個人同時撞上完全是日常。
+
+    需要 transaction=True 才有真實的 commit 邊界與真實的列鎖。barrier 只保證同時
+    起跑、不保證同時進臨界區，所以跑多輪把漏抓的機率壓低（做法沿用
+    tests_godot_tickets.py::test_concurrent_redeem_only_one_succeeds）。
+    """
+    from api.godot_binding import mark_cancel_notice_seen, pending_cancel_notice_for
+    from apps.matching.services.matcher import resolve_godot_survey_gate
+
+    for i in range(10):
+        user_a = User.objects.create_user(
+            username=f"ca{uuid.uuid4().hex}", password="pw"
+        )
+        user_b = User.objects.create_user(
+            username=f"cb{uuid.uuid4().hex}", password="pw"
+        )
+        match = _godot_match(
+            user_a, user_b, room_id=f"room-notice-{i}", deadline_offset_seconds=-10
+        )
+        _mark_seen(match, user_a, seconds_ago=1)
+        match = _mark_seen(match, user_b, seconds_ago=1)
+        cancelled = resolve_godot_survey_gate(match=match)
+        assert cancelled.status == DialogueMatch.Status.CANCELLED
+
+        errors = []
+        barrier = threading.Barrier(2)
+
+        def worker(user_id, pk=match.pk):
+            try:
+                barrier.wait(timeout=5)
+                # 各自讀自己那份快照，模擬兩個平行的 HTTP 請求。
+                mark_cancel_notice_seen(DialogueMatch.objects.get(pk=pk), user_id)
+            except Exception as exc:  # noqa: BLE001 - 蒐集起來在主執行緒重新拋出
+                errors.append(exc)
+            finally:
+                connection.close()
+
+        threads = [
+            threading.Thread(target=worker, args=(user_a.id,)),
+            threading.Thread(target=worker, args=(user_b.id,)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        if errors:
+            raise errors[0]
+
+        fresh = DialogueMatch.objects.get(pk=match.pk)
+        assert pending_cancel_notice_for(fresh, user_a.id) is None
+        assert pending_cancel_notice_for(fresh, user_b.id) is None
 
 
 @pytest.mark.django_db

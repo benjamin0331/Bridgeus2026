@@ -14,6 +14,13 @@ const MATCH_SCROLL_BOTTOM_THRESHOLD_PX = 96;
 const MATCH_SELF_NAME = '我';
 const MATCH_PARTNER_NAME = '匿名對話者';
 
+// Godot 綁定房被裁決作廢時給使用者看的說明。抽出來是因為有三條路徑會收到這個
+// 原因（初次抓取狀態、輪詢、送問卷被 409 擋下），文案散成三份遲早會走鐘。
+const bindingCancelMessage = (reason) =>
+  reason === 'godot_partner_left'
+    ? '對方已退出配對，已為你轉回一般配對模式。'
+    : '前測問卷逾時，已為你轉回一般配對模式。';
+
 function getWebSocketBaseUrl() {
   const configuredBase = import.meta.env.VITE_WS_BASE_URL;
   if (configuredBase) {
@@ -437,6 +444,21 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       matchingState?.room_id &&
       !isGodotWaitingForPartner,
   );
+
+  // binding_cancel_reason 是一次性訊號：後端只要回過一次，就會把這位使用者記成
+  // 已通知（matcher.py::mark_cancel_notice_seen），下一次輪詢就不會再帶了。所以
+  // **每一條**讀 /api/matching/status/ 的路徑都必須處理它——漏掉任何一條，只要
+  // 那條剛好搶先讀到（重新整理、或 currentIssue 換了 identity 讓初次抓取重跑），
+  // 作廢原因就永遠消失，使用者只會發現自己莫名其妙被退回一般配對模式。
+  // 回傳值代表「這次有沒有收到作廢通知」，讓呼叫端決定要不要繼續原本的流程。
+  const applyBindingCancelNotice = useCallback((data) => {
+    if (!data?.binding_cancel_reason) {
+      return false;
+    }
+    setShowSurvey(false);
+    setBindingNotice(bindingCancelMessage(data.binding_cancel_reason));
+    return true;
+  }, []);
 
   // 使用者正在看這個聊天室時，不論訊息是輪詢拿到還是 WebSocket 推來的，
   // 都直接標記成已讀，側邊欄鈴鐺才不會在使用者明明就在對話中時還亮紅點。
@@ -1038,11 +1060,16 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
         const response = await api.get(`/api/matching/status/?topic_id=${id}`);
         if (!cancelled) {
           setMatchingState(response.data);
-          // Godot 綁定房：房已經建好（status 是 matched），但前測問卷還沒填，
-          // 所以不能只看 status === 'idle'——那個條件下 Godot 房永遠不會跳問卷。
-          setShowSurvey(
-            response.data.status === 'idle' || response.data.survey_required === true,
-          );
+          // 房間已經被裁決作廢的話，這條路徑可能就是那個一次性通知唯一的出口
+          // （見 applyBindingCancelNotice）。收到了就不要再往下判斷要不要跳問卷
+          // ——那份問卷送出去只會被 409 擋回來。
+          if (!applyBindingCancelNotice(response.data)) {
+            // Godot 綁定房：房已經建好（status 是 matched），但前測問卷還沒填，
+            // 所以不能只看 status === 'idle'——那個條件下 Godot 房永遠不會跳問卷。
+            setShowSurvey(
+              response.data.status === 'idle' || response.data.survey_required === true,
+            );
+          }
         }
       } catch (error) {
         if (!cancelled) {
@@ -1065,7 +1092,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     return () => {
       cancelled = true;
     };
-  }, [currentIssue, id, isMatchingMode]);
+  }, [applyBindingCancelNotice, currentIssue, id, isMatchingMode]);
 
   useEffect(() => {
     // 已經有 session 就不要還原：混合入口的分流端點與 fallback 端點都會當場
@@ -1255,14 +1282,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
         // binding_cancel_reason 是一次性訊號：只在裁決發生的那一次輪詢帶回來，
         // 下一次就沒有了（後端那時已經換成使用者的新狀態）。所以必須在收到的
         // 當下就反應，不能等之後再處理。
-        if (response.data.binding_cancel_reason) {
-          setShowSurvey(false);
-          setBindingNotice(
-            response.data.binding_cancel_reason === 'godot_partner_left'
-              ? '對方已退出配對，已為你轉回一般配對模式。'
-              : '前測問卷逾時，已為你轉回一般配對模式。',
-          );
-        }
+        applyBindingCancelNotice(response.data);
       } catch (error) {
         if (cancelled) {
           return;
@@ -1280,6 +1300,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       window.clearInterval(pollTimer);
     };
   }, [
+    applyBindingCancelNotice,
     id,
     isMatchChatReady,
     isMatchingMode,
@@ -2120,11 +2141,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
         if (error?.response?.status === 409) {
           // 房間在送出過程中被作廢了。關掉問卷並說明，不要停在一份送不出去的表單。
           setShowSurvey(false);
-          setBindingNotice(
-            reason === 'godot_partner_left'
-              ? '對方已退出配對，已為你轉回一般配對模式。'
-              : '前測問卷逾時，已為你轉回一般配對模式。',
-          );
+          setBindingNotice(bindingCancelMessage(reason));
           return;
         }
         setMatchingError(
