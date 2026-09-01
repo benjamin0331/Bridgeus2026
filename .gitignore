@@ -36,6 +36,9 @@ backend/staticfiles/
 backend/.cache/
 backend/media/
 
+# HuggingFace 等模型快取也可能被建在專案根目錄（看啟動時的 cwd）。
+.cache/
+
 # ChromaDB 也可能被建在專案根目錄（看啟動時的 cwd）。
 chroma_data/
 
