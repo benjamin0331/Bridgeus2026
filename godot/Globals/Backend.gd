@@ -161,6 +161,17 @@ func get_issues(callback := Callable()) -> void:
 			callback.call(code, data)
 	)
 
+# --- 公共政策網路參與平臺提案（見 backend/api/views.py::PolicyIdeaListView）----
+# 讀 join.gov.tw 的提案快照。data 是陣列
+# [{external_id,section,rank,title,url,endorse_count,endorse_goal,...},...]。需登入。
+# section 目前只有 "hot" / "latest"；消費者是第二隻教學青蛙的台詞（npc_frog2.gd）。
+# 資料不是即時爬的：後端存的是快照，換內容要重跑爬蟲＋ manage.py import_join_ideas。
+func get_policy_ideas(section: String, limit: int, callback := Callable()) -> void:
+	_http_get("/policy-ideas/?section=%s&limit=%d" % [section, limit], true, func(code, data):
+		if callback.is_valid():
+			callback.call(code, data)
+	)
+
 # --- 頭銜 Titles（見 godot-backend-integration.md §3.1）--------------------
 # 讀自己擁有的頭銜清單＋目前選哪個，順便帶回等級。需登入。
 # data 形如 {"owned":[{"id":1,"name":"探索者"},...], "selected_id":1, "color":"#2680d9",

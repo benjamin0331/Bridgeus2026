@@ -50,6 +50,7 @@ from .models import (
     MessageReaction,
     PlatformDisplaySetting,
     PlatformFeedback,
+    PolicyIdea,
     PostDialogueResponse,
     Title,
     TopicDisplayOverride,
@@ -107,6 +108,7 @@ from .serializers import (
     PlatformDisplaySettingSerializer,
     PlatformFeedbackSerializer,
     PlatformFeedbackOutputSerializer,
+    PolicyIdeaSerializer,
     PostDialogueResponseConsentSerializer,
     PostDialogueResponseOutputSerializer,
     PostDialogueResponseSerializer,
@@ -1247,6 +1249,48 @@ class DialogueTopicTrendingView(APIView):
 
         serializer = DialogueTopicTrendingSerializer(rows, many=True)
         return Response(serializer.data)
+
+
+class PolicyIdeaListView(APIView):
+    """GET /api/policy-ideas/?section=hot&limit=5
+
+    公共政策網路參與平臺（join.gov.tw）的提案快照。資料由
+    `manage.py import_join_ideas` 匯入，見 PolicyIdea 的 docstring。
+
+    目前唯一的消費者是 Godot 大廳第二隻教學青蛙的台詞（npc_frog2.gd）——玩家
+    不知道要貼什麼議題的時候，給幾個真實世界正在被討論的題目當引子。
+
+    需要登入：跟 /issues/、/titles/me/ 一致，Godot client 拿的是主功能交接過來的
+    同一個 JWT。桌面開發沒有 token，青蛙那邊有備援台詞（見 npc_frog2.gd），
+    不會因為這支打不通就開不了對話。
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    # 一次最多給幾筆。上限存在的理由不是效能（快照本來就只有個位數筆），是
+    # 消費者：對話框一行放一則，超過幾則就變成一直按空白鍵的酷刑。
+    DEFAULT_LIMIT = 5
+    MAX_LIMIT = 20
+
+    def get(self, request):
+        section = request.query_params.get("section", PolicyIdea.Section.HOT)
+        if section not in PolicyIdea.Section.values:
+            return Response(
+                {"detail": "section 無效。"}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        raw_limit = request.query_params.get("limit")
+        try:
+            limit = int(raw_limit) if raw_limit is not None else self.DEFAULT_LIMIT
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "limit 需為整數。"}, status=status.HTTP_400_BAD_REQUEST
+            )
+        limit = max(1, min(limit, self.MAX_LIMIT))
+
+        # 排序照 rank，不重算——rank 就是平臺自己的「熱門」順序（見 PolicyIdea）。
+        ideas = PolicyIdea.objects.filter(section=section).order_by("rank")[:limit]
+        return Response(PolicyIdeaSerializer(ideas, many=True).data)
 
 
 class DialogueSurveyView(APIView):

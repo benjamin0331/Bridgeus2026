@@ -17,6 +17,7 @@ from .models import (
     MatchMessage,
     PlatformDisplaySetting,
     PlatformFeedback,
+    PolicyIdea,
     PostDialogueResponse,
 )
 from .permissions import RESEARCHER_GROUP_NAME
@@ -266,6 +267,31 @@ class DialogueTopicTrendingSerializer(serializers.Serializer):
     id = serializers.IntegerField()
     title = serializers.CharField(max_length=255)
     hits = serializers.IntegerField()
+
+
+class PolicyIdeaSerializer(serializers.ModelSerializer):
+    """join.gov.tw 提案的對外形狀。
+
+    刻意不吐 outline：目前唯一的消費者是 Godot 教學青蛙的對話框，一句台詞塞得下
+    的只有標題跟附議數，outline 動輒兩三百字。要用的時候再開，不要為了「有總比
+    沒有好」先塞進 payload——那是每次請求都要付的成本。
+    """
+
+    class Meta:
+        model = PolicyIdea
+        fields = [
+            "external_id",
+            "section",
+            "rank",
+            "title",
+            "url",
+            "endorse_count",
+            "endorse_goal",
+            "categories",
+            "organizations",
+            "publish_date",
+            "fetched_at",
+        ]
 
 
 class DialogueSurveyQuestionSerializer(serializers.Serializer):

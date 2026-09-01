@@ -37,7 +37,12 @@ func _on_body_exited(body: Node) -> void:
 func _on_talk_pressed() -> void:
 	var dm = get_tree().get_first_node_in_group("dialogue")
 	if dm:
-		dm.start_dialogue(_lines())
+		_start_talk(dm)
+
+# 開場。子類若要在開口之前先去後端拿東西，覆寫這支而不是 _on_talk_pressed——
+# 找對話框那段（group 查找 + null 檢查）沒有理由抄第二份。見 npc_frog2.gd。
+func _start_talk(dm) -> void:
+	dm.start_dialogue(_lines())
 
 # 子類（如 npc_frog2）覆寫這個換自己的台詞，其餘行為沿用。
 func _lines() -> Array[String]:

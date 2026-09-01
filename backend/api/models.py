@@ -1212,3 +1212,60 @@ class UserAchievement(models.Model):
 
     def __str__(self):
         return f"user={self.user_id} achievement={self.code}"
+
+
+class PolicyIdea(models.Model):
+    """公共政策網路參與平臺（join.gov.tw）提案的快照。
+
+    來源是爬蟲輸出的 JSON，由 `manage.py import_join_ideas` 匯入（見那支指令的
+    docstring）。**這是快照不是累積歷史**：同一個 section 每次匯入都會整批換掉，
+    所以「熱門前五名」永遠就是資料表裡那五筆，讀取端不必自己排序或截斷。
+
+    目前唯一的消費者是 Godot 大廳第二隻教學青蛙的台詞（見
+    godot/Entities/npc/npc_frog2.gd）——牠負責在玩家不知道要貼什麼議題的時候，
+    給幾個真實世界正在被討論的題目當引子。
+
+    為什麼要進資料表而不是讓 Django 直接讀那個 JSON：爬蟲輸出在開發者本機的
+    絕對路徑上，部署環境沒有那個檔；而且爬蟲之後會重跑，需要一個「換掉舊快照」
+    的明確動作，讀檔沒有這個語意。
+    """
+
+    class Section(models.TextChoices):
+        HOT = "hot", "熱門"
+        LATEST = "latest", "最新"
+
+    # join.gov.tw 自己的 uuid。同一則提案可能同時出現在熱門與最新，所以唯一性是
+    # (section, external_id) 而不是 external_id 自己。
+    external_id = models.CharField(max_length=64)
+    section = models.CharField(max_length=16, choices=Section.choices)
+    # 在該 section 裡的名次（0 起算），照爬蟲抓到的順序。排序依據是平臺自己的
+    # 演算法，我們不重算——重算會跟畫面上寫的「熱門」不是同一件事。
+    rank = models.PositiveIntegerField()
+
+    title = models.CharField(max_length=300)
+    outline = models.TextField(blank=True)
+    url = models.URLField(max_length=500)
+    endorse_count = models.PositiveIntegerField(default=0)
+    endorse_goal = models.PositiveIntegerField(default=0)
+    categories = models.JSONField(default=list, blank=True)
+    organizations = models.JSONField(default=list, blank=True)
+    publish_date = models.DateTimeField(null=True, blank=True)
+    # 爬蟲抓取的時間（JSON 的 fetchedAt），不是匯入時間——資料有多舊要看前者。
+    fetched_at = models.DateTimeField()
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["section", "external_id"], name="uniq_policy_idea_section_ext"
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["section", "rank"], name="policy_idea_section_rank"),
+        ]
+        ordering = ["section", "rank"]
+
+    def __str__(self):
+        return f"[{self.section}#{self.rank}] {self.title[:30]}"

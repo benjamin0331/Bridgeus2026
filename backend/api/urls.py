@@ -69,6 +69,8 @@ urlpatterns = [
     ),
     path('dialogue/topics/', views.DialogueTopicListView.as_view()),
     path('dialogue/topics/trending/', views.DialogueTopicTrendingView.as_view()),
+    # 公共政策網路參與平臺提案快照（Godot 第二隻教學青蛙的台詞來源）
+    path('policy-ideas/', views.PolicyIdeaListView.as_view()),
     path(
         'dialogue/topics/<int:topic_id>/survey/',
         views.DialogueSurveyView.as_view(),
