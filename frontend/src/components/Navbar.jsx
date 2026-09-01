@@ -2,7 +2,7 @@ function Navbar({ navigate, userName, onLogout, hideLogout = false }) {
   return (
     <nav className="top-navigation">
       <div className="brand-logo" onClick={() => navigate('/')} style={{ cursor: 'pointer' }}>
-        Take a Bridge
+        TakeAbridge
       </div>
       <div className="top-navigation-actions">
         <div className="user-profile-name">{userName}</div>
