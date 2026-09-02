@@ -67,7 +67,10 @@
 .ob-stage {
   display: flex;
   width: min(940px, 100%);
-  max-height: 100%;
+  /* 高度上限而不是固定值：內容短的時候面板貼合內容，下方不會留一片空白；
+     內容長（或字級放大）才在 660px 封頂，超出的部分由 .ob-scroll 捲動吸收。
+     用 height 寫死會讓短的投影片下面空一大塊。 */
+  max-height: min(660px, 100%);
   flex-direction: column;
   padding: 24px 26px 16px;
   border-radius: 28px;
@@ -124,7 +127,7 @@
 
 /* 主畫面全景：真實頁面裡這一格靠 flex 撐滿內容區，示意圖要自己給高度 */
 .ob-frame-overview .dashboard-grid {
-  height: 300px;
+  height: 264px;
   margin: 0;
   padding: 0;
   gap: 22px;
@@ -137,7 +140,7 @@
 
 /* 開放中主題單獨一張時放大一點 */
 .ob-frame-issues .issue-highlight-card {
-  height: 320px;
+  height: 280px;
   padding: 26px;
   border-radius: 30px;
 }
@@ -155,7 +158,7 @@
 .ob-frame-chat .topic-title { font-size: 22px; }
 
 .ob-frame-chat .ob-static-scroll {
-  max-height: 210px;
+  max-height: 180px;
   margin-bottom: 0;
   padding-bottom: 0;
   overflow: hidden;
@@ -163,7 +166,7 @@
 
 /* 語意樹面板：真實頁面裡它靠 flex 撐滿右欄，示意圖要自己給高度 */
 .ob-frame-ccnd .right-major-feature-box {
-  height: 360px;
+  height: 320px;
   border-radius: 22px;
   overflow: hidden;
 }
@@ -181,10 +184,10 @@
 
 .ob-lines {
   margin: 0;
-  padding-left: 18px;
+  padding-left: 20px;
   color: #57483b;
-  font-size: 14px;
-  line-height: 1.85;
+  font-size: 16px;
+  line-height: 1.8;
 }
 
 .ob-lines li + li { margin-top: 8px; }
@@ -254,16 +257,16 @@
 @media (max-width: 860px) {
   .ob-overlay { padding: 12px; }
 
-  .ob-stage { padding: 16px 14px 12px; }
+  .ob-stage { max-height: 100%; padding: 16px 14px 12px; }
 
   .ob-slide-visual { padding: 10px; }
 
   .ob-slide-copy { padding-top: 16px; }
   .ob-slide-copy h2 { font-size: 19px; }
 
-  .ob-lines { font-size: 13px; }
+  .ob-lines { font-size: 14.5px; }
 
-  .ob-frame-ccnd .right-major-feature-box { height: 300px; }
+  .ob-frame-ccnd .right-major-feature-box { height: 260px; }
 
   .ob-bar { flex-wrap: wrap; gap: 10px; }
   .ob-dots { order: 3; width: 100%; justify-content: center; }
