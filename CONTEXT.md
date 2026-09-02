@@ -9,6 +9,19 @@
 
 > 每完成一項未 commit 的工作就記在這；commit 後刪掉該行。
 
+- **一般使用者設定介面（新功能）**：設定頁 → 個人資料（顯示名稱、Email）。
+  - 後端：`MeView` 加 PATCH（`serializers.MeProfileUpdateSerializer`，白名單只有 `display_name` / `email`；email 唯一性 iexact 且排除自己、不可清空；改 email 會清掉 `email_verified_at`）；GET 多回 `email`（NULL 正規化成 `""`，避免前端 input 變 uncontrolled）
+  - 前端：`components/ProfileCard.jsx`＋`.css`；`SettingsPage.jsx` 非研究者疊兩張卡片（個人資料＋修改密碼），研究者分頁「帳號安全」改名「我的帳號」並同時放這兩張
+  - 測試：`api/tests_me_profile.py`（13 passed）
+  - 文件：`docs/BridgeUs_API_Spec.md`
+  - ⚠️ `display_name` 目前**哪裡都還沒顯示**（只有 /api/me/ 回給本人），知識庫署名是未來用途；ProfileCard 的提示文字照這個現況寫，不要先寫成「會出現在知識庫」
+- **一般使用者自助修改密碼（新功能）**：設定頁 → 帳號安全。
+  - 後端：`POST /api/me/password/`（`views.MePasswordChangeView` + `serializers.ChangePasswordSerializer`，驗 old_password／confirm／新舊不得相同）、限流 scope `change_password`（`THROTTLE_CHANGE_PASSWORD`，預設 5/min，依 user 計數）
+  - **裝了 `rest_framework_simplejwt.token_blacklist`**：改密碼與研究者 reset-password 都會作廢該帳號所有 outstanding refresh token（`api/token_revocation.py`），改完回一組新 token 讓當前裝置續用。⚠️ 拉到這版後要跑 `uv run python manage.py migrate token_blacklist`（dev DB 已跑過）。access token 不會即時失效，仍活到過期。
+  - 前端：`components/ChangePasswordCard.jsx`＋`.css`、`api/auth.js` 的 `changePassword()`（會把新 token 寫回 localStorage）、`SettingsPage.jsx`（非研究者顯示這張卡片取代「尚無設定項」；研究者多一個「帳號安全」分頁）
+  - 測試：`api/tests_change_password.py`（11 passed）
+  - 文件：`docs/BridgeUs_API_Spec.md`、`backend/README.md`、`backend/.env.example`
+  - 附帶：`.claude/launch.json` 加了 backend（8005）設定，供瀏覽器預覽用
 - **新增議題 104「手扶梯靠邊站討論」**：`api/dialogue_topics.py` 加 `TOPIC_CONFIGS[104]` + `SURVEY_CONFIGS[104]`（8 李克特 + Q9/Q10，反向題 2/4/6/8，高分＝支持一側站立一側通行）、6 個 CCND 錨點；測試 `api/tests_topic_escalator.py`（8 passed）。
   - **CCND 走 GPT 版**：104 不在 `semantic_tree._LOCAL_CLASSIFIER_MODULES`，`analyze_text_for_tree()` 自動落到 `analyze_with_openai()`。⚠️ 需要 `OPENAI_API_KEY`（目前 `.env` 兩份都沒有），否則這個議題的節點分析會回 `missing_openai_api_key`。
   - RAG collection 用 `escalator_standing_all` 佔位，目前是空的（AI 對話可用，只是沒有可引用來源）；之後灌資料進同名 collection 即生效。

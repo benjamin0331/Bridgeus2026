@@ -817,6 +817,75 @@ class PasswordResetSerializer(serializers.Serializer):
         return value
 
 
+class MeProfileUpdateSerializer(serializers.Serializer):
+    """使用者自己改自己的顯示名稱與 email（PATCH /api/me/）。
+
+    只列出可改的兩個欄位，其餘一律不理會——用白名單而不是 exclude：
+    username 是登入帳號也是研究資料的對應鍵，is_researcher / is_staff /
+    is_research_subject 更是「讓受試者自己填自己的實驗紀錄」那一類，
+    未來 User 加欄位時也不該預設變成可自助修改。
+
+    呼叫端必須用 context 傳入 user：email 的唯一性要排除自己，否則使用者
+    把原本的 email 原樣送回來會被自己擋下。
+    """
+
+    display_name = serializers.CharField(
+        max_length=50, required=False, allow_blank=True
+    )
+    # allow_blank=False：清空 email 等於把未來的信件重設管道關掉，而使用者
+    # 多半是誤刪。要換信箱就填新的；真的要拿掉請研究者處理。
+    email = serializers.EmailField(required=False, allow_blank=False)
+
+    def validate_email(self, value):
+        # iexact 而非精確比對，與註冊（accounts/serializers.py）同一套規則。
+        clash = User.objects.filter(email__iexact=value).exclude(
+            pk=self.context["user"].pk
+        )
+        if clash.exists():
+            raise serializers.ValidationError("這個 email 已經註冊過了。")
+        return value
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    """使用者自己改自己的密碼。
+
+    與 PasswordResetSerializer（研究者重設別人的）刻意分開：這裡多一道
+    old_password 驗證，而研究者本來就不知道對方的舊密碼。
+
+    呼叫端必須用 context 傳入 user，理由同 PasswordResetSerializer：
+    UserAttributeSimilarityValidator 拿不到 user 就會直接 return，等於
+    settings.AUTH_PASSWORD_VALIDATORS 的第一個 validator 從未生效。
+    """
+
+    old_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True)
+    new_password_confirm = serializers.CharField(write_only=True)
+
+    def validate_old_password(self, value):
+        user = self.context["user"]
+        if not user.check_password(value):
+            raise serializers.ValidationError("目前的密碼不正確。")
+        return value
+
+    def validate(self, attrs):
+        if attrs["new_password"] != attrs["new_password_confirm"]:
+            raise serializers.ValidationError(
+                {"new_password_confirm": "兩次輸入的新密碼不一致。"}
+            )
+
+        # 新舊相同就拒絕：使用者會以為自己換過了，實際上外流的那組仍然有效。
+        if attrs["new_password"] == attrs["old_password"]:
+            raise serializers.ValidationError(
+                {"new_password": "新密碼不能與目前的密碼相同。"}
+            )
+
+        try:
+            dj_validate_password(attrs["new_password"], user=self.context["user"])
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"new_password": list(exc.messages)})
+        return attrs
+
+
 class PlatformDisplaySettingSerializer(serializers.ModelSerializer):
     class Meta:
         model = PlatformDisplaySetting

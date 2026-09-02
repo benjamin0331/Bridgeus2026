@@ -1,0 +1,56 @@
+/* 只放這張卡片獨有的排版；框線、按鈕、提示字、錯誤字沿用 SettingsPage.css
+   既有的 .settings-create-form / .settings-hint / .settings-action-error。 */
+
+.profile-card {
+  max-width: 420px;
+}
+
+.profile-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.profile-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 14px;
+  color: #374151;
+}
+
+.profile-fields input {
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font: inherit;
+}
+
+.profile-fields input:disabled {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+.profile-fields .settings-hint {
+  margin-top: 0;
+  line-height: 1.5;
+}
+
+.profile-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.profile-actions button {
+  padding: 6px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.profile-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

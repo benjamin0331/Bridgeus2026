@@ -1,10 +1,14 @@
 import { useEffect, useState } from 'react';
 import api from '../api/client';
+import ChangePasswordCard from '../components/ChangePasswordCard';
+import ProfileCard from '../components/ProfileCard';
 import SettingsReviewTabs from '../components/SettingsReviewTabs';
 import './SettingsPage.css';
 
-// 設定頁。研究者帳號管理面板；一般個人設定之後再加。實際存取控制在後端
-// IsResearcher，這裡只決定顯示，非研究者看到佔位。
+// 設定頁。研究者看到研究者面板（顯示設定／影片／帳號管理）＋「我的帳號」；
+// 一般使用者只看到「我的帳號」（個人資料＋修改密碼）。兩邊共用同一組卡片，
+// 因為後端的 /api/me/ 系列只認 request.user，兩種身分沒有差別。實際存取
+// 控制在後端 IsResearcher，這裡只決定顯示。
 
 function formatTime(value) {
   if (!value) return '—';
@@ -19,6 +23,7 @@ const TABS = [
   { id: 'display', label: '顯示設定' },
   { id: 'videos', label: '影片管理' },
   { id: 'accounts', label: '帳號管理' },
+  { id: 'security', label: '我的帳號' },
 ];
 
 // 對應 apps.summary.models.VideoRecommendation.StanceDirection。後期影片
@@ -335,12 +340,17 @@ function SettingsPage({ user }) {
     void patchTopicSetting(topic.topic_id, { [field]: parsed });
   };
 
+  // 一般使用者沒有研究者那幾個面板，兩張卡片直接疊著就好，不需要分頁。
   if (!isResearcher) {
     return (
       <div className="settings-page-shell">
         <div className="settings-page">
-          <div className="settings-heading"><h1>設定</h1></div>
-          <div className="settings-empty-card">尚無設定項。</div>
+          <div className="settings-heading">
+            <h1>設定</h1>
+            <p>管理你的個人資料與帳號安全。</p>
+          </div>
+          <ProfileCard username={user?.username} />
+          <ChangePasswordCard username={user?.username} />
         </div>
       </div>
     );
@@ -716,6 +726,13 @@ function SettingsPage({ user }) {
         )}
       </div>
       </>
+      )}
+
+      {activeTab === 'security' && (
+        <>
+          <ProfileCard username={user?.username} />
+          <ChangePasswordCard username={user?.username} />
+        </>
       )}
       </div>
     </div>

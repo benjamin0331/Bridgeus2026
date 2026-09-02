@@ -40,3 +40,24 @@ export function register(payload) {
     });
   });
 }
+
+// 改密碼會讓後端作廢這個帳號既有的所有 refresh token（見
+// backend/api/token_revocation.py），所以回應裡附了一組新的。不換掉
+// localStorage 裡的舊 token，使用者會在 access token 過期後被自己剛做的
+// 操作登出——體感像是「改密碼把我踢出去了」。
+export function changePassword({ username, oldPassword, newPassword, newPasswordConfirm }) {
+  return api
+    .post('/api/me/password/', {
+      old_password: oldPassword,
+      new_password: newPassword,
+      new_password_confirm: newPasswordConfirm,
+    })
+    .then((response) => {
+      persistSession({
+        access: response.data.access,
+        refresh: response.data.refresh,
+        username,
+      });
+      return response.data;
+    });
+}

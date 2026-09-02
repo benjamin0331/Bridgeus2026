@@ -62,6 +62,8 @@ urlpatterns = [
     path('accounts/', views.AccountListCreateView.as_view()),
     path('accounts/<int:pk>/', views.AccountDetailView.as_view()),
     path('accounts/<int:pk>/reset-password/', views.AccountPasswordResetView.as_view()),
+    # 一般使用者自助改密碼（研究者也用同一支改自己的）
+    path('me/password/', views.MePasswordChangeView.as_view()),
     path('settings/display/', views.DisplaySettingsView.as_view()),
     path(
         'settings/display/topics/<int:topic_id>/',

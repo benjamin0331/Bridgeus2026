@@ -57,6 +57,65 @@ Refresh access token.
 
 ---
 
+### GET / PATCH `/api/me/`
+Own identity and profile. Auth required; always acts on `request.user`.
+
+**Response** `200`
+```json
+{
+  "id": "integer",
+  "username": "string",
+  "display_name": "string",
+  "email": "string",
+  "is_researcher": "boolean",
+  "entry_mode": "mixed | split"
+}
+```
+
+`email` is `""` when unset (researcher-created accounts have none). `is_researcher`
+and `entry_mode` are read from the DB on every call, not from the JWT claim.
+
+**PATCH request** — partial; only these two fields are writable.
+```json
+{ "display_name": "string", "email": "string" }
+```
+
+`display_name` may be blank (means "do not show"); `email` may not — clearing it
+would close off the future email-reset path. Email uniqueness is checked
+case-insensitively, excluding yourself. `username` and any role field are ignored
+rather than applied. Changing the email resets `email_verified_at`.
+
+**Errors** `400` field errors on `display_name` / `email`.
+
+---
+
+### POST `/api/me/password/`
+Signed-in user changes their own password. Auth required; rate limited per user
+(`THROTTLE_CHANGE_PASSWORD`, default `5/min`).
+
+**Request**
+```json
+{
+  "old_password": "string",
+  "new_password": "string",
+  "new_password_confirm": "string"
+}
+```
+
+**Response** `200`
+```json
+{ "detail": "密碼已更新。", "access": "string", "refresh": "string" }
+```
+
+Every refresh token the account already had is blacklisted, so other devices are
+signed out; the fresh pair in the response keeps the caller signed in. Access
+tokens issued earlier are not revoked and stay valid until they expire.
+
+**Errors** `400` field errors on `old_password` / `new_password` /
+`new_password_confirm`; `429` when throttled.
+
+---
+
 ## M2 — Topic Selection & Stance Measurement
 
 ### GET `/stance/topics/`

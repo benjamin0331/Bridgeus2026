@@ -93,6 +93,10 @@ INSTALLED_APPS = [
     'channels',
     'rest_framework',
     'rest_framework_simplejwt',
+    # 改密碼／重設密碼時要作廢對方既有的 refresh token（api/token_revocation.py）。
+    # 沒有這個 app，simplejwt 不會留下 OutstandingToken，舊 token 就會一直有效
+    # 到自然過期為止（refresh 預設 7 天），改密碼等於防不了已外流的憑證。
+    'rest_framework_simplejwt.token_blacklist',
     'accounts',
     'api',
     'chat',
@@ -283,6 +287,10 @@ REST_FRAMEWORK = {
         # 直接毀掉一次資料收集。本平台不是公開商業服務、URL 未對外宣傳，要防的
         # 是隨機掃描而非有組織的濫用；真的遇到濫用可用環境變數即時調低。
         'register': os.getenv('THROTTLE_REGISTER', '60/hour'),
+        # 驗 old_password 的端點等於一個密碼 oracle，必須限流。這個 scope 只掛在
+        # 已認證的 view 上，DRF 因此依 user id 計數而不是 IP——受試者集體在同一
+        # 場地共用 NAT 出口 IP，依 IP 計數會讓一個人試錯就鎖住整間教室。
+        'change_password': os.getenv('THROTTLE_CHANGE_PASSWORD', '5/min'),
     },
 }
 

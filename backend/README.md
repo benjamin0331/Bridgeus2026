@@ -212,6 +212,23 @@ ALLOW_NUMERIC_PASSWORDS=true
 
 Do not use permissive password settings in production.
 
+Signed-in users change their own password through `POST /api/me/password/`
+(`old_password` / `new_password` / `new_password_confirm`). It is rate limited by
+`THROTTLE_CHANGE_PASSWORD` (default `5/min`, counted per user).
+
+A successful change — and a researcher reset through
+`POST /api/accounts/<id>/reset-password/` — blacklists every outstanding refresh
+token for that account, so other devices must sign in again. This needs the
+`rest_framework_simplejwt.token_blacklist` app, so run `migrate` after pulling:
+
+```bash
+uv run python manage.py migrate token_blacklist
+```
+
+Access tokens are not revoked (they are verified by signature alone, without a DB
+lookup) and stay valid until they expire — shorten
+`JWT_ACCESS_TOKEN_LIFETIME_MINUTES` if that window matters for your deployment.
+
 ## Verification
 
 ```bash

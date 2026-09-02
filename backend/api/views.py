@@ -77,6 +77,7 @@ from .display_settings import (
 )
 from .timeline_access import LOCKED_DETAIL, timeline_unlock_state
 from .godot_tickets import issue_ticket, redeem_ticket
+from api.token_revocation import revoke_user_tokens
 from api.godot_binding import (
     BINDING_STATS_KEY,
     binding_cancel_reason,
@@ -87,6 +88,8 @@ from .serializers import (
     AccountCreateSerializer,
     AccountListSerializer,
     AccountUpdateSerializer,
+    ChangePasswordSerializer,
+    MeProfileUpdateSerializer,
     PasswordResetSerializer,
     AIConversationSerializer,
     DialogueEntrySerializer,
@@ -1726,25 +1729,59 @@ def _entry_gate_response(*, user, topic_id: int, target: str):
 
 
 class MeView(APIView):
-    """目前登入者的即時身分與入口模式。
+    """目前登入者的即時身分、個人資料與入口模式。
 
     前端不從 JWT 的 is_researcher claim 讀這些：那個 claim 是簽發當下的快照，
     使用者被降級後仍會隨著 refresh token 存活最長 7 天。這裡每次都查 DB。
+
+    PATCH 讓使用者改自己的 display_name 與 email，欄位白名單見
+    MeProfileUpdateSerializer。改別人的請走研究者的 /api/accounts/<id>/。
     """
 
     permission_classes = [permissions.IsAuthenticated]
 
+    def _payload(self, user):
+        is_researcher = user_is_researcher(user)
+        return {
+            "id": user.id,
+            "username": user.username,
+            "display_name": user.display_name,
+            # email 在 DB 可以是 NULL（研究者代開的帳號都沒有），但前端要拿它
+            # 當 <input value>，回 null 會讓 React 把 input 變成 uncontrolled。
+            "email": user.email or "",
+            "is_researcher": is_researcher,
+            "entry_mode": get_entry_mode(is_researcher=is_researcher),
+        }
+
     def get(self, request):
-        is_researcher = user_is_researcher(request.user)
-        return Response(
-            {
-                "id": request.user.id,
-                "username": request.user.username,
-                "display_name": request.user.display_name,
-                "is_researcher": is_researcher,
-                "entry_mode": get_entry_mode(is_researcher=is_researcher),
-            }
+        return Response(self._payload(request.user))
+
+    def patch(self, request):
+        serializer = MeProfileUpdateSerializer(
+            data=request.data, context={"user": request.user}
         )
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        user = request.user
+        updated = []
+
+        if "display_name" in data:
+            user.display_name = data["display_name"]
+            updated.append("display_name")
+
+        if "email" in data and data["email"] != user.email:
+            user.email = data["email"]
+            updated.append("email")
+            # 換了信箱，之前那次驗證就不算數了。這個欄位目前永遠是 None
+            # （驗證信還沒做），但等它啟用時漏掉這行就是一個安靜的漏洞。
+            user.email_verified_at = None
+            updated.append("email_verified_at")
+
+        if updated:
+            user.save(update_fields=updated)
+
+        return Response(self._payload(user))
 
 
 class DialogueSessionLatestView(APIView):
@@ -3206,7 +3243,47 @@ class AccountPasswordResetView(APIView):
         serializer.is_valid(raise_exception=True)
         target.set_password(serializer.validated_data["password"])
         target.save(update_fields=["password"])
+        # 重設密碼的情境常常是「這個帳號可能被別人用了」，舊 token 必須一起
+        # 作廢，否則對方還能靠既有的 refresh token 續命最多 7 天。
+        revoke_user_tokens(target)
         return Response({"detail": "密碼已重設。"})
+
+
+class MePasswordChangeView(APIView):
+    """POST /api/me/password/ — 使用者自己改自己的密碼。
+
+    與研究者的 AccountPasswordResetView 平行存在：這裡多驗 old_password，
+    而且只能改自己的（pk 不從 URL 來，直接用 request.user）。
+
+    成功後舊 token 全部作廢，同時回一組新的給前端接手——否則使用者一改完
+    密碼就會被自己的請求打成 401，體感像是「改密碼把我踢出去了」。
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "change_password"
+
+    def post(self, request):
+        serializer = ChangePasswordSerializer(
+            data=request.data, context={"user": request.user}
+        )
+        serializer.is_valid(raise_exception=True)
+
+        user = request.user
+        user.set_password(serializer.validated_data["new_password"])
+        user.save(update_fields=["password"])
+        revoke_user_tokens(user)
+
+        # 用登入用的同一個 serializer 發新 token，確保 is_researcher claim 存在；
+        # RefreshToken.for_user() 不帶那個 claim，前端解 token 會讀不到。
+        refresh = BridgeUsTokenObtainPairSerializer.get_token(user)
+        return Response(
+            {
+                "detail": "密碼已更新。",
+                "access": str(refresh.access_token),
+                "refresh": str(refresh),
+            }
+        )
 
 
 def _topic_display_row(topic_id: int, *, override=None) -> dict:
