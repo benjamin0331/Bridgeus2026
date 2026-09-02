@@ -108,7 +108,7 @@ CATALOG = (
         category="experience",
         name="求知若渴",
         how="首次開啟觀點知識庫",
-        description="每一個纍積的觀點，都來自前人的貢獻",
+        description="每一個累積的觀點，都來自前人的貢獻",
     ),
     # ── 立場變動 ──────────────────────────────────────────
     AchievementDef(
