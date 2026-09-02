@@ -327,7 +327,7 @@ function HistoryPage() {
   const timelineMessages = timelineMessagesFor(detail);
   // 樹狀圖只看「已提交」的位置，不受拖動中的 previewIndex 影響。
   const isViewingLatest = timelineIndex === null || timelineIndex === timelineMessages.length - 1;
-  // 看即時狀態時直接讀最新的 treePayload（例如剛按完「整理想法脈絡圖」會馬上反映）；
+  // 看即時狀態時直接讀最新的 treePayload（例如剛按完「整理知識網路認知圖」會馬上反映）；
   // 停在某個歷史時間點時，才顯示上次成功抓回來的歷史快照（timelineTreeData）。
   const displayedTreeData = isViewingLatest ? treePayload?.treeData || null : timelineTreeData;
 
@@ -503,7 +503,7 @@ function HistoryPage() {
               onClick={handleAnalyzeTree}
               disabled={isAnalyzing}
             >
-              {isAnalyzing ? '整理中...' : '整理想法脈絡圖'}
+              {isAnalyzing ? '整理中...' : '整理知識網路認知圖'}
             </button>
           )}
           {analysisError && detail && <span className="history-analysis-error">{analysisError}</span>}
