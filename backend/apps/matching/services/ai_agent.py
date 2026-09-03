@@ -25,8 +25,8 @@ from enum import Enum
 from pathlib import Path
 
 from langchain_chroma import Chroma
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate
 
 from core.chroma_utils import ensure_chroma_dir_writable
 from core.llm_provider import get_embeddings, get_llm
@@ -600,12 +600,6 @@ class DialogueAgent:
                 "+ ReplyStreamGate. collection=%s",
                 self._collection_name,
             )
-        self._prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", system_prompt_text),
-                ("human", "{user_message}"),
-            ]
-        )
 
         # Initialize retriever
         embeddings = get_embeddings()
@@ -643,74 +637,34 @@ class DialogueAgent:
             )
         return "\n\n".join(parts)
 
-    def respond(self, session: DialogueSession) -> str:
-        """
-        根據對話 session 狀態生成回應。
+    def _build_prompt(
+        self, session: DialogueSession, correction: str = ""
+    ) -> tuple[str, str]:
+        """Assemble the (system_text, user_text) pair sent to Claude.
 
-        Args:
-            session: 包含完整對話狀態的 DialogueSession
-
-        Returns:
-            AI 代理人回應文字
-        """
-        user_messages = [m for m in session.history if m.role == "user"]
-        if not user_messages:
-            raise ValueError("Session 中沒有使用者訊息。")
-        latest_msg = user_messages[-1].content
-
-        rag_context = self._retrieve_context(latest_msg)
-
-        prompt_vars = {
-            "topic": session.topic,
-            "topic_description": session.topic_description,
-            "agent_stance": session.agent_stance,
-            "agent_stance_summary": session.agent_stance_summary,
-            "user_stance_label": session.user_stance_label,
-            "user_stance_score": str(session.user_stance_score),
-            "user_initial_argument": session.user_initial_argument,
-            "rag_context": rag_context,
-            "conversation_history": session.format_history(
-                exclude_last=True, max_turns=self._max_history_turns
-            ),
-            "turn_count": str(session.turn_count),
-            "dialogue_phase": session.dialogue_phase.value,
-            "user_reasoning_mode": session.effective_reasoning_mode,
-            "user_message": latest_msg,
-        }
-
-        chain = self._prompt | self._llm | StrOutputParser()
-        try:
-            return chain.invoke(prompt_vars)
-        except Exception as exc:
-            # LLM API 失敗（rate limit、network、invalid key）時，
-            # 回傳 graceful 訊息讓 M4 能繼續維持 WebSocket 連線，
-            # 同時把原始例外往上拋供 caller 記錄 log。
-            raise RuntimeError(
-                f"DialogueAgent LLM 呼叫失敗（輪次 {session.turn_count}）：{exc}"
-            ) from exc
-
-    async def astream_respond(self, session: DialogueSession, correction: str = ""):
-        """Stream an AI reply for Django Channels while preserving session semantics.
+        Both reply paths — the WebSocket stream and the REST fallback — go
+        through here, so the prompt they send is byte-identical. Variables are
+        substituted by plain string replacement rather than a prompt template:
+        the assembled text carries JSON examples and other literal braces, which
+        a template engine would try to interpret.
 
         `correction` is appended to the user message on a contract-violation
         retry. At temperature 0.3 the output distribution is tight enough that
         replaying identical input reproduces the identical failure, so the input
-        has to change for the output to change. It is deliberately NOT written
-        into session.history — it is a transport-level correction, not something
-        the participant said, and it must never be replayed into later turns.
-        """
-        import anthropic
-        from asgiref.sync import sync_to_async
+        has to change for the output to change. RAG retrieval still runs on the
+        participant's own words, never on the correction text, so a retry hits
+        the same knowledge as the first try. The correction is deliberately NOT
+        written into session.history — it is a transport-level correction, not
+        something the participant said, and it must never be replayed into
+        later turns.
 
+        Synchronous: it performs Chroma retrieval. Async callers must wrap it
+        (`sync_to_async`) rather than awaiting it directly.
+        """
         user_messages = [m for m in session.history if m.role == "user"]
         if not user_messages:
             raise ValueError("Session 中沒有使用者訊息。")
         latest_msg = user_messages[-1].content
-
-        # RAG retrieval always runs on the participant's own words, never on the
-        # correction text, so a retry hits the same knowledge as the first try.
-        rag_context = await sync_to_async(self._retrieve_context)(latest_msg)
-        api_message = f"{latest_msg}{correction}" if correction else latest_msg
 
         prompt_vars = {
             "topic": session.topic,
@@ -720,7 +674,7 @@ class DialogueAgent:
             "user_stance_label": session.user_stance_label,
             "user_stance_score": str(session.user_stance_score),
             "user_initial_argument": session.user_initial_argument,
-            "rag_context": rag_context,
+            "rag_context": self._retrieve_context(latest_msg),
             "conversation_history": session.format_history(
                 exclude_last=True, max_turns=self._max_history_turns
             ),
@@ -737,6 +691,53 @@ class DialogueAgent:
         # 模型背誦會截斷也會編。要在瀏覽器看就把 system_text 當一個 WS frame 送出去。
         if os.getenv("DUMP_SYSTEM_PROMPT"):
             print(f"\n===== SYSTEM PROMPT (turn {session.turn_count}) =====\n{system_text}\n=====\n")
+
+        user_text = f"{latest_msg}{correction}" if correction else latest_msg
+        return system_text, user_text
+
+    def respond(self, session: DialogueSession, correction: str = "") -> str:
+        """
+        根據對話 session 狀態生成回應（非串流）。
+
+        WebSocket 開不起來時前端會退回 REST，走的就是這條。Prompt 由
+        `_build_prompt()` 組裝，與 `astream_respond()` 完全同一份。
+
+        Args:
+            session: 包含完整對話狀態的 DialogueSession
+            correction: 契約違規重試時附加在使用者訊息後的修正提示
+
+        Returns:
+            AI 代理人回應文字
+        """
+        system_text, user_text = self._build_prompt(session, correction)
+
+        chain = self._llm | StrOutputParser()
+        try:
+            return chain.invoke(
+                [SystemMessage(content=system_text), HumanMessage(content=user_text)]
+            )
+        except Exception as exc:
+            # LLM API 失敗（rate limit、network、invalid key）時，
+            # 回傳 graceful 訊息讓 M4 能繼續維持 WebSocket 連線，
+            # 同時把原始例外往上拋供 caller 記錄 log。
+            raise RuntimeError(
+                f"DialogueAgent LLM 呼叫失敗（輪次 {session.turn_count}）：{exc}"
+            ) from exc
+
+    async def astream_respond(self, session: DialogueSession, correction: str = ""):
+        """Stream an AI reply for Django Channels while preserving session semantics.
+
+        Prompt assembly (including the `correction` semantics) lives in
+        `_build_prompt()`, shared with the non-streaming `respond()` path.
+        """
+        import anthropic
+        from asgiref.sync import sync_to_async
+
+        # _build_prompt() does blocking Chroma retrieval, so it has to be
+        # off-loaded from the event loop.
+        system_text, api_message = await sync_to_async(self._build_prompt)(
+            session, correction
+        )
 
         client = anthropic.AsyncAnthropic()
         # NOTE: assistant prefill (a trailing {"role": "assistant", "content":
