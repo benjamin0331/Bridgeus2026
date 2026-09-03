@@ -15,6 +15,8 @@ const EMPTY_DETAIL_TEXT = '點選語意節點後，這裡會顯示完整原始�
 
 // 對應 ConversationTreePanel.css 的 node-breathe-* 動畫：2s * 3 iterations。
 const BREATHING_DURATION_MS = 6000;
+// 對應 ConversationTreePanel.css 的 node-ripple 動畫：2s * 3 iterations。
+const RIPPLE_DURATION_MS = 6000;
 
 function cleanText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
@@ -576,9 +578,21 @@ function ConversationTreePanel({
   const svgRef = useRef(null);
   const detailRef = useRef(null);
   const zoomTransformRef = useRef(null);
+  // Node ids are only unique *within* one tree (the backend generates them
+  // as a per-tree counter — agent_1, agent_2... — see
+  // _max_generated_counter in semantic_tree.py), so the same id string shows
+  // up in every conversation. These maps are refs and outlive prop changes,
+  // so a caller that swaps `treeData`/`trees` to a *different* conversation
+  // without remounting (e.g. selecting another entry in HistoryPage) would
+  // compare the new conversation's nodes against mention counts left over
+  // from the previous one, silently suppressing ripple/breathing. Callers
+  // that can point this panel at a different conversation must pass
+  // `key={<conversation id>}` so React remounts fresh maps (and resets
+  // selection/zoom) instead of reusing this instance's state.
   const litNodeStanceRef = useRef(new Map());
   const breathingUntilRef = useRef(new Map());
   const nodeMentionCountRef = useRef(new Map());
+  const ripplingUntilRef = useRef(new Map());
   const treeEntries = useMemo(
     () => normalizeTreeEntries(trees, treeData, topicTitle),
     [topicTitle, treeData, trees],
@@ -733,10 +747,19 @@ function ConversationTreePanel({
       });
       node.classed('is-breathing', (item) => breathingIds.has(item.data.id));
 
-      // A node ripples whenever it's brand new (no prior mention-count entry)
-      // or whenever it just gained another message (i.e. was mentioned again
-      // in this analysis pass). Tracked per tree entry, same as the lit-state
-      // map above, so switching tabs can't cross-contaminate the counts.
+      // A node ripples for RIPPLE_DURATION_MS after it's brand new (no prior
+      // mention-count entry) or after it just gained another message (i.e.
+      // was mentioned again in this analysis pass). Tracked per tree entry,
+      // same as the lit-state map above, so switching tabs can't
+      // cross-contaminate the counts.
+      // The deadline (not just "count grew this pass") is what's tracked for
+      // the same reason as breathingUntilRef above: CCND updates tear down
+      // and rebuild the whole SVG on *any* tree change, not just this node's
+      // own — without a deadline, a rebuild triggered by an unrelated node
+      // (or the other participant's tree) would immediately see the mention
+      // count unchanged and drop is-rippling before the animation ever gets
+      // to play out, which is also why it used to appear unable to coincide
+      // with is-breathing even when both should fire together.
       const rippleIds = new Set();
       root.descendants().forEach((item) => {
         if (item.data.type !== 'point') return;
@@ -744,19 +767,31 @@ function ConversationTreePanel({
         const mentionCount = nodeMessages(item.data).length;
         const previousMentionCount = nodeMentionCountRef.current.get(mentionKey);
         if (previousMentionCount === undefined || mentionCount > previousMentionCount) {
-          rippleIds.add(item.data.id);
+          ripplingUntilRef.current.set(mentionKey, now + RIPPLE_DURATION_MS);
         }
         nodeMentionCountRef.current.set(mentionKey, mentionCount);
+        const ripplingUntil = ripplingUntilRef.current.get(mentionKey);
+        if (ripplingUntil && now < ripplingUntil) {
+          rippleIds.add(item.data.id);
+        } else {
+          ripplingUntilRef.current.delete(mentionKey);
+        }
       });
       node.classed('is-rippling', (item) => rippleIds.has(item.data.id));
 
+      appendNodeShape(node);
+
+      // Ripple ring must paint AFTER (on top of) the node shape: point-node
+      // shapes are solid, opaque fills the same size as the ripple's base
+      // radius, so a ring painted underneath stays hidden until it expands
+      // past the shape's edge — and for stance nodes the ring's stroke color
+      // matches the shape's fill exactly, so even the part that escapes
+      // blends in. On top, the ring is visible from the first frame.
       node
         .filter((item) => item.data.type === 'point')
         .append('circle')
         .attr('class', 'conversation-tree-node-ripple')
         .attr('r', nodeSize('point').radius);
-
-      appendNodeShape(node);
 
       node
         .append('text')

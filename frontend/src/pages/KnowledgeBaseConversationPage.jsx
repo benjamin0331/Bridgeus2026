@@ -116,6 +116,7 @@ const KnowledgeBaseConversationPage = () => {
 
           <section className="kb-conversation-tree-panel">
             <ConversationTreePanel
+              key={viewpointId}
               topicTitle={conversation.topic_title}
               treeData={conversation.semantic_tree?.treeData ?? null}
               trees={conversation.semantic_tree?.trees ?? []}
