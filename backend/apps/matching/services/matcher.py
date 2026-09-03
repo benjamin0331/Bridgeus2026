@@ -69,6 +69,19 @@ def _as_metric_decimal(score: float | Decimal) -> Decimal:
     return Decimal(str(score)).quantize(Decimal("0.0001"))
 
 
+def _match_bound_profile(*, match, user_id: int, topic_id: int):
+    """這場配對綁定的那一份前測；沒有綁定紀錄才退回這個人最新的一份。
+
+    前測問卷是 append-only 的，所以「最新一份」跟「這場當初用的那份」在受試者
+    事後重填之後就不是同一列了。退回 latest_for() 只是為了讓 MatchQueueEntry
+    被清掉的舊資料仍算得出數字，不是預期路徑。
+    """
+    profile = UserStanceProfile.for_match(match_id=match.id, user_id=user_id)
+    if profile is not None:
+        return profile
+    return UserStanceProfile.latest_for(user_id=user_id, topic_id=topic_id)
+
+
 def _can_enter_human_matching(stance_category: str) -> bool:
     return bool(candidate_categories_for(stance_category))
 
@@ -470,7 +483,15 @@ def enqueue_for_matching(
     survey_answers: dict,
     survey_open_answers: dict,
     restart_existing_match: bool = False,
+    reuse_profile: UserStanceProfile | None = None,
 ) -> MatchingState:
+    """把這個人排進配對佇列，需要時建立配對。
+
+    reuse_profile：呼叫端手上已經有「這一次作答」對應的那一列時傳進來，這支就
+    不再新增一列。給的是內部重新排隊的路徑（例如 Godot 房作廢後退回一般模式）
+    ——那不是受試者又填了一次問卷，憑空多一列會讓研究資料看起來像重填過。
+    受試者真的送出問卷的路徑不要傳，讓它照常留下新的一列。
+    """
     decimal_score = _as_decimal(stance_score)
     q9_embedding = build_q9_embedding(survey_open_answers)
     now = timezone.now()
@@ -518,16 +539,17 @@ def enqueue_for_matching(
                 match=active_match,
             )
 
-        profile, _ = UserStanceProfile.objects.update_or_create(
+        # append-only：每次填問卷都是新的一列，不覆寫上一次的作答（見
+        # UserStanceProfile docstring）。這一場配對用的是哪一列，由下面
+        # queue_entry.profile 綁死，所以之後再填幾次都不會動到已成立的配對。
+        profile = reuse_profile or UserStanceProfile.objects.create(
             user=user,
             topic_id=topic_id,
-            defaults={
-                "stance_score": decimal_score,
-                "stance_category": stance_category,
-                "survey_answers": survey_answers,
-                "survey_open_answers": survey_open_answers,
-                "q9_embedding": q9_embedding,
-            },
+            stance_score=decimal_score,
+            stance_category=stance_category,
+            survey_answers=survey_answers,
+            survey_open_answers=survey_open_answers,
+            q9_embedding=q9_embedding,
         )
 
         if not _can_enter_human_matching(stance_category):
@@ -670,16 +692,16 @@ def record_godot_survey(
             return None
         if user.id not in (locked.user_a_id, locked.user_b_id):
             return None
-        profile, _ = UserStanceProfile.objects.update_or_create(
+        # append-only，理由同 enqueue_for_matching。重填時下面那筆 entry 會改指
+        # 到這一列，舊的那列留著但不再是任何一場對話的依據。
+        profile = UserStanceProfile.objects.create(
             user=user,
             topic_id=topic_id,
-            defaults={
-                "stance_score": decimal_score,
-                "stance_category": stance_category,
-                "survey_answers": survey_answers,
-                "survey_open_answers": survey_open_answers,
-                "q9_embedding": q9_embedding,
-            },
+            stance_score=decimal_score,
+            stance_category=stance_category,
+            survey_answers=survey_answers,
+            survey_open_answers=survey_open_answers,
+            q9_embedding=q9_embedding,
         )
 
         entry = MatchQueueEntry.objects.filter(
@@ -714,12 +736,15 @@ def record_godot_survey(
             # 依據——配對是遊戲內的木樁決定的，不是演算法挑的。但不能永遠留欄位
             # 預設的 0：真實的 semantic_distance 也可能是 0，留著就跟階段四消滅的
             # 4.00 佔位值一樣，分析時分不出「沒算」還是「算出來是 0」。
-            profile_a = UserStanceProfile.objects.filter(
-                user_id=locked.user_a_id, topic_id=topic_id
-            ).first()
-            profile_b = UserStanceProfile.objects.filter(
-                user_id=locked.user_b_id, topic_id=topic_id
-            ).first()
+            # 綁這場房的 entry.profile，不是「這個人最新的一份」——問卷現在是
+            # append-only，兩者在對方之後又重填問卷時就不是同一列了，那會讓這場
+            # 房的 semantic_distance 用到一份跟本場無關的 Q9 向量。
+            profile_a = _match_bound_profile(
+                match=locked, user_id=locked.user_a_id, topic_id=topic_id
+            )
+            profile_b = _match_bound_profile(
+                match=locked, user_id=locked.user_b_id, topic_id=topic_id
+            )
             metrics = calculate_match_score(
                 requester_score=locked.user_a_score,
                 candidate_score=locked.user_b_score,
@@ -892,11 +917,7 @@ def _godot_return_to_normal(*, user_id: int, topic_id: int, match) -> None:
     """
     from api.models import DialogueEntryAssignment
 
-    profile = (
-        UserStanceProfile.objects.filter(user_id=user_id, topic_id=topic_id)
-        .order_by("-updated_at", "-id")
-        .first()
-    )
+    profile = UserStanceProfile.latest_for(user_id=user_id, topic_id=topic_id)
     if profile is None:
         return
 
@@ -918,6 +939,9 @@ def _godot_return_to_normal(*, user_id: int, topic_id: int, match) -> None:
             stance_category=profile.stance_category,
             survey_answers=profile.survey_answers,
             survey_open_answers=profile.survey_open_answers,
+            # 這是系統把人搬回一般佇列，不是受試者又填了一次問卷——沿用他原本
+            # 那一列，不要在 append-only 的問卷歷史裡憑空多一筆假的重填紀錄。
+            reuse_profile=profile,
         )
         route = DialogueEntryAssignment.Route.MATCH
     else:
@@ -1031,11 +1055,7 @@ def get_matching_state(*, user, topic_id: int) -> MatchingState:
             binding_cancel_reason=godot_cancel_reason,
         )
 
-    profile = (
-        UserStanceProfile.objects.filter(user=user, topic_id=topic_id)
-        .order_by("-updated_at", "-id")
-        .first()
-    )
+    profile = UserStanceProfile.latest_for(user_id=user.id, topic_id=topic_id)
     if profile and not _can_enter_human_matching(profile.stance_category):
         return MatchingState(
             status=AI_RECOMMENDED_STATUS,

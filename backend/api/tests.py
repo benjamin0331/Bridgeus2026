@@ -1351,10 +1351,11 @@ class StanceProfileReuseApiTests(APITestCase):
         self.assertEqual(reuse_response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(reuse_response.data["stance_score"], 7.0)
         self.assertEqual(reuse_response.data["stance_category"], "support")
-        # Still one canonical profile per user+topic.
+        # 前測是 append-only：沿用上次答案開新對話也留下自己的一列，這樣
+        # 「這一場當時用的是哪一份前測」才有紀錄可查。
         self.assertEqual(
             UserStanceProfile.objects.filter(user=self.user, topic_id=102).count(),
-            1,
+            2,
         )
 
 

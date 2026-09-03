@@ -101,6 +101,60 @@ class MatchingAnalysisStabilityTests(TestCase):
 
         assert result == {"relevance_score": 0.34, "is_off_topic": True}
 
+    def test_stance_drift_baseline_is_the_profile_bound_to_this_match(self):
+        """受試者事後重填問卷，不能改變已結束對話的漂移基準線。
+
+        前測是 append-only：若這裡改讀「最新一列」，那一場的 q9_embedding 就會
+        換成一份跟本場無關的向量，算出來的 drift 直接失真。
+        """
+        from api.models import MatchQueueEntry
+
+        at_match_time = UserStanceProfile.objects.create(
+            user=self.user_a,
+            topic_id=103,
+            stance_score=6.0,
+            stance_category=UserStanceProfile.StanceCategory.SUPPORT,
+            q9_embedding=_embedding(1),
+        )
+        MatchQueueEntry.objects.create(
+            user=self.user_a,
+            topic_id=103,
+            profile=at_match_time,
+            stance_score=6.0,
+            status=MatchQueueEntry.Status.MATCHED,
+            match=self.match,
+        )
+        UserStanceProfile.objects.create(
+            user=self.user_a,
+            topic_id=103,
+            stance_score=2.0,
+            stance_category=UserStanceProfile.StanceCategory.OPPOSE,
+            q9_embedding=_embedding(9),
+        )
+
+        seen_baselines = []
+
+        def capture(mean, baseline):
+            seen_baselines.append(list(baseline))
+            return 0.2
+
+        self._message("一個觀點")
+        with (
+            patch(
+                "apps.matching.services.hh_analysis._mean_embedding",
+                return_value=_embedding(1),
+            ),
+            patch(
+                "apps.matching.services.hh_analysis.cosine_distance",
+                side_effect=capture,
+            ),
+        ):
+            calculate_match_stance_drift(
+                match_id=self.match.id, user_id=self.user_a.id
+            )
+
+        assert seen_baselines == [_embedding(1)]
+
     def test_stance_drift_uses_cumulative_messages_instead_of_only_the_latest(self):
         UserStanceProfile.objects.create(
             user=self.user_a,

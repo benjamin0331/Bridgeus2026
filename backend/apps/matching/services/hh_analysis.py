@@ -61,11 +61,12 @@ def calculate_match_stance_drift(*, match_id: int, user_id: int) -> dict:
     from api.models import DialogueMatch, MatchMessage, MatchStanceDrift, UserStanceProfile
 
     match = DialogueMatch.objects.get(id=match_id)
-    profile = (
-        UserStanceProfile.objects.filter(user_id=user_id, topic_id=match.topic_id)
-        .order_by("-updated_at", "-id")
-        .first()
-    )
+    # 基準線必須是「這場配對成立當下」那一份前測的 Q9 向量。前測問卷是
+    # append-only 的：改用最新一份的話，受試者為了下一場對話重填問卷之後，
+    # 這場已結束對話的漂移就會拿一條無關的基準線去比，數值直接失真。
+    profile = UserStanceProfile.for_match(
+        match_id=match_id, user_id=user_id
+    ) or UserStanceProfile.latest_for(user_id=user_id, topic_id=match.topic_id)
     if not profile or profile.q9_embedding is None:
         return {"drift_value": 0.0, "direction": "stable"}
 

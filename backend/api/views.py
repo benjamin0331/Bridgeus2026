@@ -497,8 +497,9 @@ def _display_stance_category(
     實驗資料的呈現。已存的分類才是這場對話當初實際被分到的組別。
 
     優先序：分流指派 > 立場問卷 > 即時重算。DialogueEntryAssignment 是分流
-    當下的權威紀錄，還一併存了當時生效的門檻；UserStanceProfile 會在受試者
-    為了新對話重填問卷時被覆寫，所以退為第二順位。
+    當下的權威紀錄，還一併存了當時生效的門檻；UserStanceProfile 這裡只能取
+    最新一列（這支拿不到「是哪一場」的脈絡），受試者重填問卷後它就不再是當初
+    那一份，所以退為第二順位。
     """
     try:
         topic_id = int(topic_id)
@@ -518,6 +519,7 @@ def _display_stance_category(
 
         stored = (
             UserStanceProfile.objects.filter(user_id=user_id, topic_id=topic_id)
+            .order_by(*UserStanceProfile.LATEST_ORDERING)
             .values_list("stance_category", flat=True)
             .first()
         )
@@ -634,7 +636,7 @@ def _build_topic_config(
     }
 
 
-def _upsert_user_stance_profile(
+def _record_user_stance_profile(
     *,
     user,
     topic_id: int,
@@ -643,29 +645,28 @@ def _upsert_user_stance_profile(
     user_stance_score: float,
     q9_embedding,
 ) -> UserStanceProfile:
-    """Persist the user's latest pre-survey stance for a topic.
+    """把這一次的前測作答存成新的一列，回傳它。
 
-    Shared canonical store (per user+topic) so a later "new dialogue" can offer
-    to reuse the previous pre-survey answers instead of re-filling them. Matching
-    already upserts this via ``enqueue_for_matching``; this keeps the AI-mode flow
-    in sync so AI-only users also have a reusable profile.
+    append-only（見 UserStanceProfile docstring）：不覆寫上一次的作答，否則
+    上一場對話的 s_pre 依據就沒了。「下一場要不要沿用上次答案」由
+    DialogueStanceProfileView 取最新一列來提供，不需要靠覆寫來維持。
+
+    這場 AI 對話實際用的那一份會另外整份快照進 DialogueSessionRecord
+    .survey_context，所以之後再填幾次都不會動到它。
     """
     stance_category = resolve_stance_category(
         topic_id=topic_id,
         user_stance_score=user_stance_score,
     )
-    profile, _ = UserStanceProfile.objects.update_or_create(
+    return UserStanceProfile.objects.create(
         user=user,
         topic_id=topic_id,
-        defaults={
-            "stance_score": user_stance_score,
-            "stance_category": stance_category,
-            "survey_answers": survey_answers,
-            "survey_open_answers": survey_open_answers,
-            "q9_embedding": q9_embedding,
-        },
+        stance_score=user_stance_score,
+        stance_category=stance_category,
+        survey_answers=survey_answers,
+        survey_open_answers=survey_open_answers,
+        q9_embedding=q9_embedding,
     )
-    return profile
 
 
 def _get_other_user(match: DialogueMatch, *, user_id: int):
@@ -1336,10 +1337,8 @@ class DialogueStanceProfileView(APIView):
 
         # request.user 是 stateless TokenUser：直接丟進 filter 會讓 Django 誤觸
         # TokenUser.__getattr__ 回傳的 resolve_expression=None 而崩潰，改用 id 過濾。
-        profile = (
-            UserStanceProfile.objects.filter(user_id=request.user.id, topic_id=topic_id)
-            .order_by("-updated_at", "-id")
-            .first()
+        profile = UserStanceProfile.latest_for(
+            user_id=request.user.id, topic_id=topic_id
         )
         if profile is None:
             return Response({"exists": False, "topic_id": topic_id})
@@ -1366,6 +1365,7 @@ def _create_ai_dialogue_session(
     topic_title: str | None = None,
     topic_description: str | None = None,
     user_initial_argument: str | None = None,
+    record_stance_profile: bool = True,
 ) -> dict:
     """建立一場 AI 對話 session，回傳 API 回應用的 payload。
 
@@ -1399,9 +1399,11 @@ def _create_ai_dialogue_session(
         user_initial_argument=user_initial_argument,
     )
 
-    # 只有問卷真的填了才寫 profile，避免用空答案的中立預設值蓋掉真實立場。
-    if survey_answers:
-        _upsert_user_stance_profile(
+    # 只有問卷真的填了才寫 profile，避免把空答案的中立預設值也記成一次作答。
+    # record_stance_profile=False 是「這次的答案是從既有那一列讀出來的」的路徑
+    # （逾時 fallback），前測歷史裡不該多一筆看起來像重填的紀錄。
+    if survey_answers and record_stance_profile:
+        _record_user_stance_profile(
             user=user,
             topic_id=topic_id,
             survey_answers=survey_answers,
@@ -1642,9 +1644,9 @@ class DialogueEntryFallbackView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        profile = UserStanceProfile.objects.filter(
-            user=request.user, topic_id=topic_id
-        ).first()
+        profile = UserStanceProfile.latest_for(
+            user_id=request.user.id, topic_id=topic_id
+        )
         if profile is None:
             return Response(
                 {"detail": "找不到立場問卷紀錄，請重新填寫。"},
@@ -1677,6 +1679,8 @@ class DialogueEntryFallbackView(APIView):
             topic_id=topic_id,
             survey_answers=profile.survey_answers or {},
             survey_open_answers=profile.survey_open_answers or {},
+            # 答案就是從 profile 讀出來的，不是受試者又填了一次。
+            record_stance_profile=False,
         )
         return Response({"route": "ai", **payload}, status=status.HTTP_201_CREATED)
 
@@ -3993,9 +3997,7 @@ class MatchingRoomOpeningView(APIView):
 
 
 def _opening_participant_context(*, user_id: int, topic_id: int) -> dict:
-    profile = UserStanceProfile.objects.filter(
-        user_id=user_id, topic_id=topic_id
-    ).first()
+    profile = UserStanceProfile.latest_for(user_id=user_id, topic_id=topic_id)
     if not profile:
         return {"q9": "", "q10": "", "stance_label": ""}
 

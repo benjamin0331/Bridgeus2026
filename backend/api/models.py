@@ -106,6 +106,23 @@ class DialogueSessionRecord(models.Model):
 
 
 class UserStanceProfile(models.Model):
+    """前測立場問卷的一次作答。**append-only**：同一位使用者、同一個議題每填一次
+    就新增一列，舊的那幾列原樣保留。
+
+    以前這張表是 per user+topic 唯一、用 update_or_create 覆寫的「現況」，於是
+    受試者為了下一場對話重填問卷時，上一場當時用的 survey_answers /
+    survey_open_answers / q9_embedding 就被蓋掉了——那份資料正是該場對話的
+    s_pre 依據，蓋掉之後 D1↔Q10 的向量比較與立場漂移基準線都對不回去。
+
+    「這一場對話用的是哪一份前測」由各自的綁定關係決定，不是靠時間推：
+      * H-H：MatchQueueEntry.profile（FK，配對成立當下就綁死了）
+      * H-AI：DialogueSessionRecord.survey_context 在開場時就整份快照下來
+
+    只有在「這個人現在的立場是什麼」這種現況查詢才該取最新一列，一律走
+    latest_for()，不要自己寫沒有 order_by 的 .first()——多列之後那會回傳
+    資料庫高興給的任何一列。
+    """
+
     class StanceCategory(models.TextChoices):
         SUPPORT = "support", "支持"
         NEUTRAL = "neutral", "中立"
@@ -131,15 +148,56 @@ class UserStanceProfile(models.Model):
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(
-                fields=["user", "topic_id"],
-                name="uniq_stance_profile_user_topic",
-            ),
             models.CheckConstraint(
                 condition=Q(stance_score__gte=1) & Q(stance_score__lte=7),
                 name="stance_score_between_1_and_7",
             ),
         ]
+        indexes = [
+            models.Index(
+                fields=["user", "topic_id", "-created_at"],
+                name="stance_profile_latest_idx",
+            ),
+        ]
+
+    # 「最新一列」的唯一定義。created_at 同秒相撞時再用 id 決勝，讓結果穩定。
+    LATEST_ORDERING = ("-created_at", "-id")
+
+    @classmethod
+    def for_match(cls, *, match_id: int, user_id: int):
+        """這場 H-H 配對成立當下，這位參與者用的是哪一份前測。
+
+        MatchQueueEntry.profile 是配對當下就綁死的 FK，所以問卷改成 append-only
+        之後，這支跟 latest_for() 在「受試者事後又重填問卷」時會分歧——凡是要
+        回答「這場對話的 s_pre / Q9 基準線是什麼」的地方都該用這支。
+
+        找不到綁定（Godot 綁定房以外的舊資料、或 entry 被清掉）回傳 None，由
+        呼叫端決定要不要退回 latest_for()。
+        """
+        entry = (
+            MatchQueueEntry.objects.filter(
+                match_id=match_id,
+                user_id=user_id,
+                status=MatchQueueEntry.Status.MATCHED,
+            )
+            .select_related("profile")
+            .order_by("-matched_at", "-id")
+            .first()
+        )
+        return entry.profile if entry else None
+
+    @classmethod
+    def latest_for(cls, *, user_id: int, topic_id: int):
+        """這個人在這個議題最後一次填的前測；沒填過回傳 None。
+
+        現況查詢專用。要拿「某一場對話當時用的那一份」請走該場的綁定關係
+        （見 class docstring），不要用這支。
+        """
+        return (
+            cls.objects.filter(user_id=user_id, topic_id=topic_id)
+            .order_by(*cls.LATEST_ORDERING)
+            .first()
+        )
 
     def __str__(self):
         return (

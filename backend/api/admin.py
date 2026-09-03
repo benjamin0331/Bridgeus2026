@@ -76,6 +76,12 @@ class MatchInputGateStatAdmin(admin.ModelAdmin):
 
 @admin.register(UserStanceProfile)
 class UserStanceProfileAdmin(admin.ModelAdmin):
+    """前測問卷是 append-only 的，同一位使用者同一個議題會有多列（每填一次一列）。
+
+    預設照 created_at 由新到舊排，最上面那列才是「現在的立場」；下面的是這個人
+    先前每一場對話當時用的那一份，都要留著。
+    """
+
     list_display = (
         "id",
         "user",
@@ -83,10 +89,11 @@ class UserStanceProfileAdmin(admin.ModelAdmin):
         "stance_score",
         "stance_category",
         "has_q9_embedding",
-        "updated_at",
+        "created_at",
     )
     list_filter = ("topic_id", "stance_category")
     search_fields = ("user__username",)
+    ordering = ("-created_at", "-id")
 
     def has_q9_embedding(self, obj):
         return obj.q9_embedding is not None
