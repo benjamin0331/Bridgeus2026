@@ -163,6 +163,7 @@ class ReplyStreamGate:
         self._buf = ""
         self._judgment_closed = False
         self._open = False
+        self._reply_started = False
         self._closed = False
         self._judgment_raw = ""
         self.reply = ""
@@ -222,6 +223,14 @@ class ReplyStreamGate:
             else:
                 out = ""
 
+        # prompt 第十節的範例把回應寫在 <reply> 的下一行,模型照做,於是第一個
+        # chunk 是 "\n"。原樣推給前端就是開頭一個空行。開閘後尚未吐出任何實質
+        # 字元前一律 lstrip,之後不再處理——正文中間的換行是模型的分段意圖。
+        if not self._reply_started:
+            out = out.lstrip()
+            if out:
+                self._reply_started = True
+
         self.reply += out
         return out
 
@@ -239,6 +248,10 @@ class ReplyStreamGate:
         if not self._open:
             return "", False       # 從未開閘 → fail closed
         out, self._buf = self._buf, ""
+        if not self._reply_started:
+            out = out.lstrip()
+            if out:
+                self._reply_started = True
         self.reply += out
 
         self.leak_pattern = self._detect_leak(self.reply)

@@ -424,3 +424,48 @@ def test_salvage_leaves_clean_text_recoverable():
     assert salvaged is not None
     assert salvaged.startswith("真正的爭點")
     assert detect_judgment_leak(salvaged) is None
+
+
+# ── 開頭空白 ──────────────────────────────────────────────────────────
+#
+# prompt 第十節示範的格式把回應寫在 <reply> 的下一行,模型照做,所以開閘後
+# 第一個字元通常是 "\n"。前端逐 chunk 原樣渲染,那個換行就成了畫面上的空行。
+
+
+def _drain_chunks(chunks: list[str]) -> str:
+    gate = ReplyStreamGate()
+    out = "".join(gate.feed(chunk) for chunk in chunks)
+    tail, ok = gate.finish()
+    assert ok
+    return out + tail
+
+
+def test_newline_after_reply_tag_is_not_pushed_to_the_frontend():
+    assert _drain_chunks([
+        f"<judgment>{_JUDGMENT_BODY}</judgment>\n<reply>\n核電的爭點在核廢處置。",
+        "</reply>",
+    ]) == "核電的爭點在核廢處置。"
+
+
+def test_leading_whitespace_is_stripped_across_a_chunk_boundary():
+    """The tag and the whitespace after it can arrive in separate chunks."""
+    assert _drain_chunks([
+        f"<judgment>{_JUDGMENT_BODY}</judgment>",
+        "<reply>",
+        "\n",
+        "  核電的爭點在核廢處置。",
+        "</reply>",
+    ]) == "核電的爭點在核廢處置。"
+
+
+def test_blank_lines_inside_the_reply_body_are_preserved():
+    """Only the opening whitespace is noise; paragraph breaks are intent."""
+    assert _drain_chunks([
+        f"<judgment>{_JUDGMENT_BODY}</judgment><reply>\n第一段。\n\n第二段。</reply>",
+    ]) == "第一段。\n\n第二段。"
+
+
+def test_leading_whitespace_is_stripped_when_the_body_only_arrives_at_finish():
+    """A reply short enough to stay inside the </reply> lookahead buffer never
+    passes through feed()'s emit path — finish() has to strip it too."""
+    assert _drain_chunks([f"<judgment>{_JUDGMENT_BODY}</judgment><reply>\n短"]) == "短"
