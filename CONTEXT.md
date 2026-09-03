@@ -9,7 +9,7 @@
 
 > 每完成一項未 commit 的工作就記在這；commit 後刪掉該行。
 
-（目前無）
+（目前無）；`scripts/gen_arch_pptx.py`＋`docs/architecture_slide.pptx`：精簡版去背 PPT 架構圖（元件可拖動）
 
 
 _（未追蹤的資料/設定檔 `.claude/`、`chroma_data/`、`*.csv`、`0530…txt` 不納入 commit。）_
