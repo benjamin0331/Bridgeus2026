@@ -299,11 +299,18 @@
 }
 
 /* Ripple: a ring that expands outward and fades whenever a point node is
-   brand new or just picked up another message (re-mentioned). The circle
-   sits behind the node shape at rest (opacity 0, no size cost); `is-rippling`
-   is only ever applied for the render where the mention count actually grew
-   (see mention-count tracking in ConversationTreePanel.jsx), so later
-   re-renders with no new mention don't replay it. */
+   brand new or just picked up another message (re-mentioned). The circle is
+   painted on top of the node shape (see ConversationTreePanel.jsx) so the
+   ring is visible from the first frame — point shapes are solid opaque
+   fills the same size as the ring's base radius, so a ring painted
+   underneath would stay hidden until it expanded past the shape's edge, and
+   for stance nodes the ring's stroke exactly matches the shape's fill so
+   even the part that escaped used to blend in. At rest it costs nothing
+   (opacity 0). `is-rippling` stays on the node until a 6s deadline passes
+   (see ripplingUntilRef in ConversationTreePanel.jsx), same reasoning as
+   `is-breathing` above — CCND rebuilds the whole SVG on any tree change, so
+   "only the render where the count grew" would get wiped by an unrelated
+   rebuild before it's visible. */
 @keyframes node-ripple {
   0% {
     opacity: 0.6;

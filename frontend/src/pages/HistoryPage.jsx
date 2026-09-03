@@ -509,6 +509,7 @@ function HistoryPage() {
           {analysisError && detail && <span className="history-analysis-error">{analysisError}</span>}
         </div>
         <ConversationTreePanel
+          key={detail ? `${detail.kind}:${detail.id}` : 'empty'}
           topicTitle={detail?.topic_title || '想法脈絡圖'}
           treeData={displayedTreeData}
           trees={isViewingLatest ? treePayload?.trees || EMPTY_TREES : EMPTY_TREES}

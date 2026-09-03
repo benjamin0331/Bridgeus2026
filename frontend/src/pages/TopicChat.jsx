@@ -3336,6 +3336,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       <aside className={`chat-right-function-area${isRightPanelOpen ? ' panel-open' : ''}`}>
         <div className="right-major-feature-box">
           <ConversationTreePanel
+            key={semanticTreePayloadKey(semanticTreePayload)}
             topicTitle={currentIssue?.title || '未知的領域'}
             treeData={semanticTreePayload?.treeData || null}
             trees={semanticTreePayload?.trees || []}
