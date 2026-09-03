@@ -7,8 +7,11 @@
   display: flex;
   align-items: center;
   gap: 14px;
-  width: 320px;
-  max-width: calc(100vw - 32px);
+  /* 寬度跟著內容長：描述固定單行（見 .achievement-toast-desc），短的成就
+     貼合文字、長的到 560px 封頂。寫死 320px 會讓十七字以上的描述折成兩行。 */
+  width: auto;
+  min-width: 320px;
+  max-width: min(560px, calc(100vw - 32px));
   padding: 14px 16px 14px 18px;
   border: 1px solid rgba(117, 96, 78, 0.18);
   border-radius: 14px;
@@ -64,6 +67,10 @@
   color: #5d4c3e;
   font-size: 15px;
   line-height: 1.55;
+  /* 不折行：超過 560px 上限的極長描述以 ellipsis 收尾 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .achievement-toast-close {

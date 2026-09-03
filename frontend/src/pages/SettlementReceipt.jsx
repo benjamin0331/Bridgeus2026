@@ -30,35 +30,6 @@ function describeCentrism(value) {
   return value < 0 ? '更靠近中立（去極化）' : '更遠離中立（更極化）';
 }
 
-// 評級只看與立場方向無關的投入型量表，避免獎勵改立場而污染實驗。
-// ponytail: 門檻憑自評量表偏高的經驗值，太鬆/太嚴改這裡即可。
-const ENGAGEMENT_AXES = [
-  { key: 'exp_reflection_1', label: '反思Ⅰ' },
-  { key: 'exp_reflection_2', label: '反思Ⅱ' },
-  { key: 'exp_quality_1', label: '品質Ⅰ' },
-  { key: 'exp_quality_2', label: '品質Ⅱ' },
-  { key: 'ccnd_attention', label: '注意' },
-  { key: 'ccnd_awareness', label: '覺察' },
-  { key: 'ccnd_influence', label: '調整' },
-];
-
-const GRADE_TIERS = [
-  { min: 6.0, grade: 'S', title: '深度思辨者' },
-  { min: 5.0, grade: 'A', title: '用心對話者' },
-  { min: 4.0, grade: 'B', title: '認真參與者' },
-  { min: 0, grade: 'C', title: '初心探索者' },
-];
-
-function computeGrade(data) {
-  const scores = ENGAGEMENT_AXES
-    .map((axis) => Number(data[axis.key]))
-    .filter((v) => Number.isFinite(v));
-  if (scores.length === 0) return { grade: '✓', title: '完成對話', average: null };
-  const average = scores.reduce((s, v) => s + v, 0) / scores.length;
-  const tier = GRADE_TIERS.find((t) => average >= t.min) || GRADE_TIERS.at(-1);
-  return { grade: tier.grade, title: tier.title, average };
-}
-
 // 數字 0→目標的跳動；animate=false 時直接顯示終值（給匯出用）。
 function useCountUp(target, animate) {
   const [display, setDisplay] = useState(animate ? 0 : target);
@@ -165,55 +136,6 @@ function DivergingBar({ value, range = 3, leftColor, rightColor, leftLabel, righ
   );
 }
 
-// 7 軸思辨投入雷達
-function EngagementRadar({ data }) {
-  const size = 220;
-  const c = size / 2;
-  const R = 78;
-  const axes = ENGAGEMENT_AXES.map((axis, i) => {
-    const raw = Number(data[axis.key]);
-    const value = Number.isFinite(raw) ? raw : 0;
-    const angle = (Math.PI * 2 * i) / ENGAGEMENT_AXES.length - Math.PI / 2;
-    const r = (Math.min(Math.max(value, 0), 7) / 7) * R;
-    return {
-      ...axis,
-      value,
-      angle,
-      x: c + Math.cos(angle) * r,
-      y: c + Math.sin(angle) * r,
-      lx: c + Math.cos(angle) * (R + 16),
-      ly: c + Math.sin(angle) * (R + 16),
-      gx: c + Math.cos(angle) * R,
-      gy: c + Math.sin(angle) * R,
-    };
-  });
-  const poly = axes.map((a) => `${a.x.toFixed(1)},${a.y.toFixed(1)}`).join(' ');
-
-  return (
-    <svg className="sr-chart" viewBox={`0 0 ${size} ${size}`} role="img" aria-label="思辨投入雷達">
-      {[0.25, 0.5, 0.75, 1].map((ring) => (
-        <circle key={ring} cx={c} cy={c} r={R * ring} fill="none" stroke="#e3dacd" strokeWidth="1" />
-      ))}
-      {axes.map((a) => (
-        <line key={a.key} x1={c} y1={c} x2={a.gx} y2={a.gy} stroke="#e3dacd" strokeWidth="1" />
-      ))}
-      <polygon points={poly} fill="rgba(176,85,64,0.16)" stroke={SEAL} strokeWidth="2" strokeLinejoin="round" />
-      {axes.map((a) => (
-        <circle key={a.key} cx={a.x} cy={a.y} r="3" fill={SEAL} />
-      ))}
-      {axes.map((a) => (
-        <text
-          key={a.key} x={a.lx} y={a.ly}
-          textAnchor={Math.abs(a.lx - c) < 8 ? 'middle' : a.lx > c ? 'start' : 'end'}
-          dominantBaseline="middle" fontSize="10" fill={MUTED}
-        >
-          {a.label}
-        </text>
-      ))}
-    </svg>
-  );
-}
-
 // 讚 vs 倒讚 甜甜圈（識別靠圖示+數字，不靠顏色）
 function ReactionsDonut({ likes, dislikes }) {
   const total = likes + dislikes;
@@ -302,23 +224,6 @@ function PageStance({ data, animate }) {
   );
 }
 
-function PageEngagement({ data }) {
-  const { grade, title } = computeGrade(data);
-  return (
-    <div className="sr-page">
-      <div className="sr-section-title">思辨投入</div>
-      <div className={`sr-grade sr-grade-${grade}`}>
-        <div className="sr-seal">{grade}</div>
-        <div className="sr-grade-text">
-          <span className="sr-grade-caption">思辨投入評級</span>
-          <span className="sr-grade-title">「{title}」</span>
-        </div>
-      </div>
-      <EngagementRadar data={data} />
-    </div>
-  );
-}
-
 function PageExtras({ data, reactions }) {
   const isHH = data.experiment_condition === 'hh';
   const judgment = data.opponent_judgment; // 1真人 2AI 3不確定
@@ -346,11 +251,10 @@ function PageExtras({ data, reactions }) {
   );
 }
 
-// 收據本體（可重複用於檢視與匯出）；export=true 時把三頁全展開、不動畫。
+// 收據本體（可重複用於檢視與匯出）；export=true 時把每一頁全展開、不動畫。
 function ReceiptBody({ data, reactions, page, export: isExport }) {
   const pages = [
     <PageStance key="s" data={data} animate={!isExport} />,
-    <PageEngagement key="e" data={data} />,
     <PageExtras key="x" data={data} reactions={reactions} />,
   ];
   // 後端補的 topic_title 是議題名；舊資料或未知議題才退回 id。
