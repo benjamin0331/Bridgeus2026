@@ -835,6 +835,10 @@ class MeProfileUpdateSerializer(serializers.Serializer):
     # allow_blank=False：清空 email 等於把未來的信件重設管道關掉，而使用者
     # 多半是誤刪。要換信箱就填新的；真的要拿掉請研究者處理。
     email = serializers.EmailField(required=False, allow_blank=False)
+    # 新手導覽看完了沒。不是「個人資料」但同屬「只關於自己、改壞了也只影響
+    # 自己」那一類，塞在這裡比為了一個布林值再開一支 endpoint 划算。
+    # False 會把時間戳清掉，等於讓導覽下次登入再自動跳一次。
+    onboarding_completed = serializers.BooleanField(required=False)
 
     def validate_email(self, value):
         # iexact 而非精確比對，與註冊（accounts/serializers.py）同一套規則。

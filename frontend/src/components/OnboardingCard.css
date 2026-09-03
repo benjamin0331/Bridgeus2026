@@ -1,0 +1,16 @@
+/* 只放這張卡片獨有的排版；框線、按鈕、提示字沿用 SettingsPage.css 既有的
+   .settings-create-form / .settings-hint，跟 ProfileCard 同一個做法。 */
+
+.onboarding-card {
+  max-width: 420px;
+}
+
+.onboarding-card-hint {
+  margin-top: 0;
+  line-height: 1.5;
+}
+
+.onboarding-card-actions {
+  display: flex;
+  margin-top: 12px;
+}

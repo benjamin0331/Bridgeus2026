@@ -68,22 +68,30 @@ Own identity and profile. Auth required; always acts on `request.user`.
   "display_name": "string",
   "email": "string",
   "is_researcher": "boolean",
-  "entry_mode": "mixed | split"
+  "entry_mode": "mixed | split",
+  "onboarding_completed": "boolean"
 }
 ```
 
 `email` is `""` when unset (researcher-created accounts have none). `is_researcher`
 and `entry_mode` are read from the DB on every call, not from the JWT claim.
+`onboarding_completed` is `User.onboarding_completed_at is not None` — the frontend
+only auto-opens the onboarding tour when it comes back explicitly `false`.
 
-**PATCH request** — partial; only these two fields are writable.
+**PATCH request** — partial; only these three fields are writable.
 ```json
-{ "display_name": "string", "email": "string" }
+{ "display_name": "string", "email": "string", "onboarding_completed": "boolean" }
 ```
 
 `display_name` may be blank (means "do not show"); `email` may not — clearing it
 would close off the future email-reset path. Email uniqueness is checked
 case-insensitively, excluding yourself. `username` and any role field are ignored
 rather than applied. Changing the email resets `email_verified_at`.
+
+`onboarding_completed: true` stamps `onboarding_completed_at` **only if it is still
+NULL**, so the timestamp always records the first completion — replaying the tour
+from the settings page re-sends `true` and does not overwrite it. Sending `false`
+clears the timestamp, which makes the tour auto-open again on the next login.
 
 **Errors** `400` field errors on `display_name` / `email`.
 

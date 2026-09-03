@@ -9,6 +9,12 @@
 
 > 每完成一項未 commit 的工作就記在這；commit 後刪掉該行。
 
+- **新手導覽只跳一次 + 設定頁可重看（新功能）**：合併 `feat/Ceeeuu` 帶進來的 `OnboardingTour` 原本每次進站都跳，改成第一次登入才自動跳。
+  - 後端：`accounts.User` 加 `onboarding_completed_at`（migration `accounts/0005`）；`MeView` GET 多回 `onboarding_completed`（布林），PATCH 白名單加 `onboarding_completed`（`MeProfileUpdateSerializer`）。⚠️ `True` **只在欄位還是 NULL 時**才蓋時間戳——設定頁重看關掉時也會送 `True`，會覆寫的話「第一次看完的時間」就沒了；送 `False` 則清空，等於讓導覽下次登入再自動跳。
+  - 前端：`OnboardingTour` 改成受控（拿掉永遠 `return true` 的 `shouldOpenOnMount()`，開關改由 `App.jsx` 條件渲染，所以每次開都是全新掛載）；`App.jsx` 的 `/api/me/` effect 順便讀旗標，**只有 `=== false` 才自動開**（請求失敗或舊版後端回 undefined 時寧可不跳）；`autoTourShownRef` 擋掉同一次登入內重複自動開，登出時連同 `isTourOpen` 一起重設（共用機器）；新增 `components/OnboardingCard.jsx`＋`.css`，`SettingsPage` 一般使用者與研究者「我的帳號」分頁各放一張。
+  - 測試：`api/tests_me_profile.py` 的 `MeOnboardingFlagTests`（5 個；整檔 18 passed）
+  - 文件：`docs/BridgeUs_API_Spec.md`
+  - ⚠️ 拉到這版後要跑 `uv run python manage.py migrate accounts`（dev DB 已跑過）
 - **一般使用者設定介面（新功能）**：設定頁 → 個人資料（顯示名稱、Email）。
   - 後端：`MeView` 加 PATCH（`serializers.MeProfileUpdateSerializer`，白名單只有 `display_name` / `email`；email 唯一性 iexact 且排除自己、不可清空；改 email 會清掉 `email_verified_at`）；GET 多回 `email`（NULL 正規化成 `""`，避免前端 input 變 uncontrolled）
   - 前端：`components/ProfileCard.jsx`＋`.css`；`SettingsPage.jsx` 非研究者疊兩張卡片（個人資料＋修改密碼），研究者分頁「帳號安全」改名「我的帳號」並同時放這兩張

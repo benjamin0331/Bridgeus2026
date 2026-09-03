@@ -103,6 +103,14 @@ function App() {
   // 所以 null 只代表「還在等」，不會永久卡住。TopicChatRoute 靠這個分辨。
   const [entryMode, setEntryMode] = useState(null);
 
+  // 新手導覽。開關集中在這裡而不是元件自己記，因為「看過了」存在後端
+  // （User.onboarding_completed_at），換裝置或清瀏覽器資料都要算數。
+  const [isTourOpen, setIsTourOpen] = useState(false);
+  // 這次登入期間已經自動跳過導覽了沒。/api/me/ 的 effect 依賴 user，
+  // 沒有這道閘的話，任何一次重新 fetch（例如換頁重掛）都會在使用者關掉
+  // 之後又把它打開——因為標記完成的 PATCH 未必比下一次 GET 早落庫。
+  const autoTourShownRef = useRef(false);
+
   // 待跳的解鎖通知佇列。後端以 UserAchievement.notified_at 為準，跳完才 ack，
   // 所以重整不會重跳，換瀏覽器也不會。
   const [toastQueue, setToastQueue] = useState([]);
@@ -175,8 +183,23 @@ function App() {
     // 同 code 的新解鎖被誤判成「已經跳過了」而永遠不顯示。
     acknowledgedRef.current = new Set();
     setEntryMode('split');
+    // 同樣是共用機器的問題：不重設的話，下一位（還沒看過導覽的）登入者
+    // 會被上一位的「這次登入已經跳過了」擋掉，永遠等不到自動導覽。
+    autoTourShownRef.current = false;
+    setIsTourOpen(false);
     navigate('/', { replace: true });
   }, [navigate]);
+
+  const openTour = useCallback(() => setIsTourOpen(true), []);
+
+  const closeTour = useCallback(() => {
+    setIsTourOpen(false);
+    // 標記看過。後端只在第一次蓋時間戳，所以從設定頁重看再關掉不會覆寫
+    // 原本那個時間，重送也是安全的。失敗就算了——最壞的情況是下次登入
+    // 再跳一次導覽，不值得為它擋住畫面或跳錯誤訊息。
+    api.patch('/api/me/', { onboarding_completed: true })
+      .catch((error) => console.warn('標記新手導覽完成失敗：', error?.message ?? error));
+  }, []);
 
   useEffect(() => {
     if (user) {
@@ -240,8 +263,15 @@ function App() {
     const fetchEntryMode = async () => {
       try {
         const response = await api.get('/api/me/');
-        if (!cancelled) {
-          setEntryMode(response.data?.entry_mode === 'mixed' ? 'mixed' : 'split');
+        if (cancelled) return;
+        setEntryMode(response.data?.entry_mode === 'mixed' ? 'mixed' : 'split');
+
+        // 只在後端明確說「還沒看過」時才自動開。=== false 而不是 falsy：
+        // 舊版後端或欄位缺漏時是 undefined，那種情況寧可不跳——每次登入都
+        // 被整片全螢幕蓋住，比漏跳一次難受得多。
+        if (response.data?.onboarding_completed === false && !autoTourShownRef.current) {
+          autoTourShownRef.current = true;
+          setIsTourOpen(true);
         }
       } catch (error) {
         console.error('Failed to load entry mode:', error);
@@ -324,7 +354,10 @@ function App() {
                   實際存取控制一律在後端 IsResearcher——一般參與者帳號打開這
                   條路徑只會看到 403 錯誤訊息。 */}
               <Route path="/viewpoint-review" element={<ViewpointReviewPage user={user} />} />
-              <Route path="/settings" element={<SettingsPage user={user} />} />
+              <Route
+                path="/settings"
+                element={<SettingsPage user={user} onReplayTour={openTour} />}
+              />
               <Route path="/chat" element={<GodotLobby />} />
             </Routes>
           </div>
@@ -332,9 +365,12 @@ function App() {
           <Sidebar navigate={navigate} isTopicPage={isTopicPage} />
         </div>
 
-        {/* 首次登入的新手指引（假介面，不碰任何 API）。放在最外層而不是 HomePage
-            裡面，是因為它要蓋住整個畫面，包含側邊功能欄與導覽列。 */}
-        <OnboardingTour userName={user.name || user.username} />
+        {/* 新手指引的投影片是假介面，不碰任何 API。放在最外層而不是 HomePage
+            裡面，是因為它要蓋住整個畫面，包含側邊功能欄與導覽列——也因此
+            從設定頁按「重看」時，設定頁本身也會被蓋住。 */}
+        {isTourOpen && (
+          <OnboardingTour userName={user.name || user.username} onClose={closeTour} />
+        )}
 
         <AchievementToast
           key={unlockedToast?.code}

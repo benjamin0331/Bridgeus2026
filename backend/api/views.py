@@ -1751,6 +1751,8 @@ class MeView(APIView):
             "email": user.email or "",
             "is_researcher": is_researcher,
             "entry_mode": get_entry_mode(is_researcher=is_researcher),
+            # 前端只需要「要不要自動跳導覽」，回布林而不是時間戳。
+            "onboarding_completed": user.onboarding_completed_at is not None,
         }
 
     def get(self, request):
@@ -1777,6 +1779,17 @@ class MeView(APIView):
             # （驗證信還沒做），但等它啟用時漏掉這行就是一個安靜的漏洞。
             user.email_verified_at = None
             updated.append("email_verified_at")
+
+        if "onboarding_completed" in data:
+            if not data["onboarding_completed"]:
+                user.onboarding_completed_at = None
+                updated.append("onboarding_completed_at")
+            elif user.onboarding_completed_at is None:
+                # 只在第一次蓋時間戳。設定頁的「重看導覽」關掉時也會送 True，
+                # 重送就覆寫的話，第一次看完的時間（研究上有意義的那個）會被
+                # 最後一次重看的時間取代。
+                user.onboarding_completed_at = timezone.now()
+                updated.append("onboarding_completed_at")
 
         if updated:
             user.save(update_fields=updated)

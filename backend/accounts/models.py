@@ -29,6 +29,12 @@ class User(AbstractUser):
     # 存的是簽署當下的版本字串，日後改版不會動到既有紀錄。
     consent_version = models.CharField(max_length=32, blank=True)
 
+    # 第一次看完新手導覽（OnboardingTour）的時間；NULL = 還沒看過，登入後
+    # 會自動跳出來。放這裡而不是 localStorage：受試者可能換裝置或清瀏覽器
+    # 資料，而「自動跳出來」只該發生一次。設定頁的「重看導覽」是手動開啟，
+    # 不會動這個欄位，所以重看之後下次登入也不會又自動跳。
+    onboarding_completed_at = models.DateTimeField(null=True, blank=True)
+
     class Meta(AbstractUser.Meta):
         db_table = "auth_user"
 

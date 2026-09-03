@@ -143,3 +143,55 @@ class MeProfileUpdateTests(APITestCase):
         self.client.force_authenticate(user=None)
         response = self.client.patch(URL, {"display_name": "小華"}, format="json")
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class MeOnboardingFlagTests(APITestCase):
+    """新手導覽的「看過了」旗標（GET/PATCH /api/me/）。
+
+    存在 User 而不是 localStorage：受試者可能換裝置或清瀏覽器資料，而導覽
+    只該在還沒看過時自動跳出來。設定頁的「重看導覽」是手動開啟、不碰這個
+    旗標——手動重看跟「還沒看過」是兩件事，清掉會讓下次登入又自動跳。
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="newbie", password=PASSWORD)
+        self.client.force_authenticate(user=self.user)
+
+    def test_new_account_has_not_completed_onboarding(self):
+        response = self.client.get(URL)
+        self.assertFalse(response.data["onboarding_completed"])
+
+    def test_marking_complete_stamps_the_timestamp(self):
+        response = self.client.patch(URL, {"onboarding_completed": True}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["onboarding_completed"])
+        self.user.refresh_from_db()
+        self.assertIsNotNone(self.user.onboarding_completed_at)
+
+    def test_marking_complete_twice_keeps_the_first_timestamp(self):
+        # 第一次看完的時間才是研究上有意義的那一個，重送不該蓋掉它。
+        self.client.patch(URL, {"onboarding_completed": True}, format="json")
+        self.user.refresh_from_db()
+        first = self.user.onboarding_completed_at
+
+        self.client.patch(URL, {"onboarding_completed": True}, format="json")
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.onboarding_completed_at, first)
+
+    def test_can_be_reset_so_the_tour_auto_opens_again(self):
+        self.user.onboarding_completed_at = timezone.now()
+        self.user.save(update_fields=["onboarding_completed_at"])
+
+        response = self.client.patch(URL, {"onboarding_completed": False}, format="json")
+        self.assertFalse(response.data["onboarding_completed"])
+        self.user.refresh_from_db()
+        self.assertIsNone(self.user.onboarding_completed_at)
+
+    def test_other_fields_survive_an_onboarding_only_patch(self):
+        self.user.display_name = "小明"
+        self.user.save(update_fields=["display_name"])
+
+        response = self.client.patch(URL, {"onboarding_completed": True}, format="json")
+        self.assertEqual(response.data["display_name"], "小明")
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.display_name, "小明")

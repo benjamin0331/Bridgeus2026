@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../api/client';
 import ChangePasswordCard from '../components/ChangePasswordCard';
+import OnboardingCard from '../components/OnboardingCard';
 import ProfileCard from '../components/ProfileCard';
 import SettingsReviewTabs from '../components/SettingsReviewTabs';
 import './SettingsPage.css';
@@ -35,7 +36,7 @@ const VIDEO_STANCE_OPTIONS = [
   { value: 'oppose', label: '反對' },
 ];
 
-function SettingsPage({ user }) {
+function SettingsPage({ user, onReplayTour }) {
   const isResearcher = Boolean(user?.isResearcher);
   const [activeTab, setActiveTab] = useState('display');
 
@@ -347,10 +348,11 @@ function SettingsPage({ user }) {
         <div className="settings-page">
           <div className="settings-heading">
             <h1>設定</h1>
-            <p>管理你的個人資料與帳號安全。</p>
+            <p>管理你的個人資料與帳號安全，或重看新手導覽。</p>
           </div>
           <ProfileCard username={user?.username} />
           <ChangePasswordCard username={user?.username} />
+          <OnboardingCard onReplayTour={onReplayTour} />
         </div>
       </div>
     );
@@ -732,6 +734,7 @@ function SettingsPage({ user }) {
         <>
           <ProfileCard username={user?.username} />
           <ChangePasswordCard username={user?.username} />
+          <OnboardingCard onReplayTour={onReplayTour} />
         </>
       )}
       </div>

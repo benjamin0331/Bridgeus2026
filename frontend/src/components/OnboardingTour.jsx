@@ -11,15 +11,12 @@ import '../pages/HomePage.css';
 import '../pages/KnowledgeBase.css';
 import '../pages/TopicChat.css';
 
-// 首次登入的新手指引。整段是「假介面」——不會真的進聊天室、不打任何 API，
-// 所以受試者在還沒填立場問卷之前就能安全地看完。
+// 首次登入的新手指引。投影片本身是「假介面」——不會真的進聊天室、不打任何
+// API，所以受試者在還沒填立場問卷之前就能安全地看完。
 //
-// 目前是「每次進入都會出現」。等後端加上「這個帳號已完成導覽」的欄位之後，
-// 把 shouldOpenOnMount() 換成讀那個欄位、並在 close() 裡打 API 標記完成即可，
-// 其餘邏輯都不用動。
-function shouldOpenOnMount() {
-  return true;
-}
+// 開關由 App.jsx 決定：第一次登入自動開，之後只能從設定頁手動重看。這個
+// 元件不自己記「看過了沒」，因為那存在後端 User.onboarding_completed_at
+// ——換裝置或清瀏覽器資料都要算數。
 
 /* ── 各張投影片的示意圖：全部沿用真實頁面的元件與 class ─────────────────── */
 
@@ -295,21 +292,28 @@ const SLIDE_MOCKS = [
 const SLIDES = COPY.slides.map((copy, i) => ({ ...copy, Mock: SLIDE_MOCKS[i] }));
 /* ── 主元件 ───────────────────────────────────────────────────────────── */
 
-function OnboardingTour({ userName }) {
-  // -1 = 歡迎頁，0..n-1 = 投影片，null = 不顯示
-  const [step, setStep] = useState(() => (shouldOpenOnMount() ? -1 : null));
+function OnboardingTour({ userName, onClose }) {
+  // -1 = 歡迎頁，0..n-1 = 投影片，null = 正在收尾（onClose 已送出，等外面
+  // 把這個元件拿掉）。App.jsx 是靠條件渲染開關這個元件的，所以每次重新打開
+  // 都是全新掛載，這個初始值就等於「從歡迎頁開始」，不需要另外重設。
+  const [step, setStep] = useState(-1);
 
   const close = useCallback(() => {
-    // 後端加上「已完成導覽」欄位之後，這裡要多打一支 API 把它標記起來
     setStep(null);
-  }, []);
+    onClose();
+  }, [onClose]);
 
+  // 最後一頁按「完成」跟中途關掉是同一件事，都要走 close() 通知外面標記
+  // 看過了。所以這裡不能用 setStep 的 functional form 直接把 step 設成
+  // null——那樣走完全程反而不會標記。
   const next = useCallback(() => {
-    setStep((s) => {
-      if (s === null) return null;
-      return s + 1 >= SLIDES.length ? null : s + 1;
-    });
-  }, []);
+    if (step === null) return;
+    if (step + 1 >= SLIDES.length) {
+      close();
+      return;
+    }
+    setStep(step + 1);
+  }, [step, close]);
 
   const back = useCallback(() => {
     setStep((s) => (s === null || s <= 0 ? s : s - 1));
