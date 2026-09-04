@@ -650,9 +650,42 @@ class PostDialogueResponseOutputSerializer(serializers.ModelSerializer):
         read_only=True,
     )
     pre_question_map = serializers.SerializerMethodField()
+    substantive_turn_count = serializers.SerializerMethodField()
 
     def get_s_post(self, obj):
         return obj.s_post()
+
+    def get_substantive_turn_count(self, obj):
+        """這場對話的實質發言輪數，給結算畫面的「參與度」軸用。
+
+        欄位本來就存在，只是分在兩張表：H-AI 在 DialogueSessionRecord、H-H 在
+        MatchInputGateStat（per match+user）。兩者都在後測送出時才被
+        input_gate_store 填上（見該模組），而結算畫面正好是後測送出後才顯示，
+        所以這裡讀到的一定是最終值。查不到就回 None，前端會把那一軸留空。
+        """
+        from .models import DialogueSessionRecord, MatchInputGateStat
+
+        if obj.session_id:
+            record = (
+                DialogueSessionRecord.objects
+                .filter(session_id=obj.session_id)
+                .only("substantive_turn_count")
+                .first()
+            )
+            if record is not None:
+                return record.substantive_turn_count
+
+        if obj.room_id:
+            stat = (
+                MatchInputGateStat.objects
+                .filter(match__room_id=obj.room_id, user_id=obj.user_id)
+                .only("substantive_turn_count")
+                .first()
+            )
+            if stat is not None:
+                return stat.substantive_turn_count
+
+        return None
 
     def get_pre_question_map(self, _obj):
         from .models import POST_LIKERT_TO_PRE_QUESTION
@@ -673,6 +706,7 @@ class PostDialogueResponseOutputSerializer(serializers.ModelSerializer):
             "post_open_comprehension", "post_open_feedback",
             "discomfort_flag", "consent_confirmed",
             "s_pre", "s_post", "delta_s", "stance_centrism",
+            "substantive_turn_count",
             "pre_question_map",
             "created_at",
         ]
