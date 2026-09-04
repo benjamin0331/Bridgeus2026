@@ -379,14 +379,6 @@
   background: linear-gradient(160deg, #f8fbf3 0%, #e6efe0 100%);
 }
 
-/* 離題提醒：不管訊息滾動到哪，都固定貼在對話區塊頂端，而不是隨訊息一起被往上推走。 */
-.match-assist-card.pinned {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  box-shadow: 0 16px 32px rgba(102, 73, 44, 0.22);
-}
-
 /* AI 開場卡片：一房共用一則，貼在對話紀錄最上面。刻意跟 assist 卡片
    （情緒改寫／離題提醒）分開配色——那些是介入，這則是開場資訊。 */
 .match-opening-card {
