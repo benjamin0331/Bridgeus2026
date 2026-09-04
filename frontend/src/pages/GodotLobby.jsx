@@ -138,7 +138,7 @@ export default function GodotLobby() {
           onLoad={handleLoad}
           allow="microphone"
           className="godot-lobby-frame"
-          title="BridgeUs 虛擬大廳"
+          title="TakeAbridge 虛擬大廳"
         />
       )}
     </div>

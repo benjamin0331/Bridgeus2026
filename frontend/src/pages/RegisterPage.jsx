@@ -71,7 +71,7 @@ function RegisterPage({ setUser }) {
       <div className="register-card">
         <div className="register-header">
           <h1>建立帳號</h1>
-          <p>歡迎加入 BridgeUs</p>
+          <p>歡迎加入 TakeAbridge</p>
         </div>
 
         {generalError && <div className="register-error">{generalError}</div>}

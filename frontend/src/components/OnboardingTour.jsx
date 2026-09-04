@@ -130,7 +130,7 @@ function MockChat() {
         <div className="message-row">
           <div className="message-user-info">
             <img src="/logo.png" alt="" className="message-avatar" />
-            <span className="message-username">BridgeUs</span>
+            <span className="message-username">TakeAbridge</span>
           </div>
           <div className="message-bubble">
             核廢料的選址問題確實是台灣核電爭議的核心卡點，現有核電廠的用過燃料池已經快要滿了
