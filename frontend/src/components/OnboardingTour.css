@@ -241,6 +241,11 @@
 .ob-btn:disabled { opacity: 0.35; cursor: default; transform: none; }
 .ob-btn:focus-visible { outline: 2px solid #c98134; outline-offset: 2px; }
 
+.ob-bar-end { display: flex; align-items: center; gap: 12px; }
+
+/* 最後一頁才出現的小提示，語氣比按鈕輕一階 */
+.ob-replay-hint { font-size: 12px; color: #9a8674; }
+
 .ob-dots { display: flex; gap: 7px; }
 
 .ob-dot-nav {
@@ -270,4 +275,6 @@
 
   .ob-bar { flex-wrap: wrap; gap: 10px; }
   .ob-dots { order: 3; width: 100%; justify-content: center; }
+  .ob-bar-end { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+  .ob-replay-hint { font-size: 11px; }
 }

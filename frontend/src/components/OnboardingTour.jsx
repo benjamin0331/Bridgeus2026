@@ -224,6 +224,9 @@ const COPY = {
     done: '開始使用',
   },
 
+  // 最後一頁「開始使用」旁的小提示（設定頁的重看功能還沒做，這裡先只放文字）
+  replayHint: '想再看一次？之後可以在設定中重新開啟新手指引',
+
   slides: [
     {
       title: '主畫面',
@@ -402,9 +405,12 @@ function OnboardingTour({ userName }) {
             ))}
           </div>
 
-          <button type="button" className="ob-btn ob-btn-primary" onClick={next}>
-            {isLast ? COPY.buttons.done : COPY.buttons.next}
-          </button>
+          <div className="ob-bar-end">
+            {isLast && <span className="ob-replay-hint">{COPY.replayHint}</span>}
+            <button type="button" className="ob-btn ob-btn-primary" onClick={next}>
+              {isLast ? COPY.buttons.done : COPY.buttons.next}
+            </button>
+          </div>
         </div>
       </div>
     </div>
