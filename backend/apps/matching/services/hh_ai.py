@@ -12,6 +12,8 @@ import random
 
 from asgiref.sync import sync_to_async
 
+from apps.matching.services.anonymity import assign_anonymous_ids
+
 logger = logging.getLogger(__name__)
 
 REPHRASE_FALLBACK = "你的發言可能帶有較強烈的情緒，建議修改後再發送。"
@@ -74,21 +76,64 @@ def rephrase_match_message(original_text: str, topic: str) -> tuple[str, bool]:
     return REPHRASE_FALLBACK, False
 
 
-def suggest_match_direction(match_id: int, topic: str) -> str:
+# 提示文字是要直接給參與者看的。prompt 裡怎麼標示發言者，模型就會怎麼抄，
+# 所以 transcript 一律用配對房的匿名代號，並且再加一句明講的禁令當第二道保險
+# ——連匿名代號都不該出現在提示裡，那是聊天室裡的顯示名，不是提示要指名的對象。
+_NO_NAMING_RULE = "提示內容不要提及任何參與者的名稱或代號。"
+
+# match 查不到時的退路。仍然不可以落回 sender_id：那是內部主鍵。
+_FALLBACK_SPEAKER_LABELS = ["參與者甲", "參與者乙"]
+
+
+def _room_anonymous_ids(match_id: int) -> dict[int, str]:
+    """{user_id: 匿名代號}；match 查不到時回空 dict 交給呼叫端退路處理。"""
+    from api.models import DialogueMatch
+
+    match = (
+        DialogueMatch.objects.filter(id=match_id)
+        .values("room_id", "user_a_id", "user_b_id")
+        .first()
+    )
+    if not match:
+        return {}
+    return assign_anonymous_ids(
+        match["room_id"], [match["user_a_id"], match["user_b_id"]]
+    )
+
+
+def _recent_transcript(match_id: int, limit: int = 6) -> str:
     from api.models import MatchMessage
 
     recent = list(
-        MatchMessage.objects.filter(match_id=match_id).order_by("-created_at")[:6]
+        MatchMessage.objects.filter(match_id=match_id).order_by("-created_at")[:limit]
     )
-    transcript = (
-        "\n".join(f"User {m.sender_id}: {m.content}" for m in reversed(recent))
-        if recent
-        else "(尚無對話紀錄)"
-    )
+    if not recent:
+        return "(尚無對話紀錄)"
+
+    names = _room_anonymous_ids(match_id)
+    fallback: dict[int, str] = {}
+    lines = []
+    for message in reversed(recent):
+        speaker = names.get(message.sender_id)
+        if speaker is None:
+            # 依首次出現順序配甲/乙，同一次呼叫內穩定；超出兩人（不該發生）
+            # 一律叫「參與者」，寧可含糊也不要露出主鍵。
+            speaker = fallback.setdefault(
+                message.sender_id,
+                _FALLBACK_SPEAKER_LABELS[len(fallback)]
+                if len(fallback) < len(_FALLBACK_SPEAKER_LABELS)
+                else "參與者",
+            )
+        lines.append(f"{speaker}：{message.content}")
+    return "\n".join(lines)
+
+
+def suggest_match_direction(match_id: int, topic: str) -> str:
+    transcript = _recent_transcript(match_id)
     prompt = (
         f"以下是關於「{topic}」的對話紀錄，目前對話停滯，"
         "請提供一個新的討論角度或問題，引導雙方深入交流。"
-        "只回傳建議文字，不要加任何說明。\n\n"
+        f"只回傳建議文字，不要加任何說明。{_NO_NAMING_RULE}\n\n"
         f"{transcript}"
     )
     result = _call_claude(prompt)
@@ -96,20 +141,11 @@ def suggest_match_direction(match_id: int, topic: str) -> str:
 
 
 def redirect_match_to_topic(match_id: int, topic: str) -> str:
-    from api.models import MatchMessage
-
-    recent = list(
-        MatchMessage.objects.filter(match_id=match_id).order_by("-created_at")[:6]
-    )
-    transcript = (
-        "\n".join(f"User {m.sender_id}: {m.content}" for m in reversed(recent))
-        if recent
-        else "(尚無對話紀錄)"
-    )
+    transcript = _recent_transcript(match_id)
     prompt = (
         f"以下是關於「{topic}」的對話紀錄，對話似乎偏離主題，"
         "請生成一則提示，溫和地引導討論回到議題。"
-        "只回傳提示文字，不要加任何說明。\n\n"
+        f"只回傳提示文字，不要加任何說明。{_NO_NAMING_RULE}\n\n"
         f"{transcript}"
     )
     result = _call_claude(prompt)
