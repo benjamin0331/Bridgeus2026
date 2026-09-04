@@ -9,6 +9,17 @@
 
 > 每完成一項未 commit 的工作就記在這；commit 後刪掉該行。
 
+- **GPT 備案（新功能）**：演示當天 Anthropic 出事時，改一個 env 就整套切到 OpenAI。
+  - `core/llm_provider.py` **真正實作** `LLM_PROVIDER`（`claude` 預設／`openai` 備案，認不得的值一律回 claude）；新增 `active_provider()`／`active_model_name()`／`chat_max_tokens()`。Embedding **不跟著切**（換掉會讓立場向量／CCND／drift 的新舊資料不可比較）。
+  - 涵蓋範圍＝所有 LLM 呼叫：H-AI 對話（`ai_agent.astream_respond` 加 `_astream_openai` 分支，走 LangChain astream；Claude 那條原封不動保留原生 client 與 `cache_control` 提示快取）、REST fallback `respond()`、AI 開場（本來就走 `get_llm`）、H-H 介入提示（`hh_ai._call_claude` → `_call_llm`，舊名保留為別名）、M6 摘要（`assemble.generate_ai_summary`）。
+  - **刻意不做自動 failover**：一場對話中途換模型，實驗操作就變了一半。切換是人為決定 + 重啟。
+  - `AIConversation` 加 `llm_provider`／`llm_model`（migration `api/0038`），WS 與 REST 兩條路都會寫；空字串＝加欄位之前的舊資料（一律 Claude）。⚠️ 拉到這版要跑 `uv run python manage.py migrate api`（dev DB 已跑過）
+  - 新指令 `uv run python manage.py llm_smoke_test [--turns N] [--topic-id 102]`：實際打 API 跑幾輪，量**輸出契約一次過的比率**。GPT 對系統 prompt 第十節的遵守度是這件事最大的未知數，違約＝每輪多打一次 API。**演示前務必用 `LLM_PROVIDER=openai` 跑一次。**
+  - 依賴：新增 `langchain-openai`；`uv add` 連帶把 `langchain-core` 1.3.0 → 1.6.1。
+  - 文件：`.env.example`（`LLM_PROVIDER`／`OPENAI_CHAT_MODEL`／`OPENAI_CHAT_MAX_TOKENS`）
+  - 附帶修正：`OPENAI_API_KEY` 其實**早就設好了**（本檔先前記載「兩份 .env 都沒有」是錯的），所以議題 104 的 CCND 走 GPT 版應該是通的。
+  - ⚠️ `OPENAI_CHAT_MODEL` 預設值 `gpt-4o` 只是佔位，請依帳號實際可用的模型調整。
+
 - **小 bug 修正四項（WS 斷線／改名／問卷捲動／離題匿名）**：
   - **H-AI 送出後看不到回覆、重新整理才看得到**：回覆其實已生成也落庫，只是那一幀推進了一條半死的連線。三層修法：
     ① 後端生成期間每 10 秒推 `agent_heartbeat`（`_GENERATION_HEARTBEAT_SECONDS`），消除 `agent_thinking`→`agent_stream` 之間數十秒的靜默，中間層才不會把連線收掉；
@@ -77,7 +88,7 @@ BridgeUs（橋得攏）— AI 驅動的去極化對話平台。
 | Package | uv（Python 3.13.5） |
 | ASGI | uvicorn |
 
-**環境變數（.env）：** `LLM_PROVIDER`(claude/gemini/openai)、`ANTHROPIC_API_KEY`/`GOOGLE_API_KEY`、`DB_ENGINE`(sqlite/postgres)、`USE_REDIS_CACHE`、`USE_REDIS_CHANNEL`(H-H 多 worker 必開)、`REDIS_URL`、`CLAUDE_CHAT_MODEL`(預設 `claude-sonnet-4-6`)。
+**環境變數（.env）：** `LLM_PROVIDER`(claude/openai，預設 claude；2026-09-04 才真正實作，之前這行是錯的——當時程式碼寫死 Claude)、`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`、`DB_ENGINE`(sqlite/postgres)、`USE_REDIS_CACHE`、`USE_REDIS_CHANNEL`(H-H 多 worker 必開)、`REDIS_URL`、`CLAUDE_CHAT_MODEL`(預設 `claude-sonnet-4-6`)。
 
 **ChromaDB 知識庫：** Collection `nuclear_energy_all`（1449 chunks：新聞 184 + 法律 230 + PTT 40）。
 

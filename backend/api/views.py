@@ -5,6 +5,8 @@ from datetime import timedelta
 from decimal import Decimal
 from difflib import SequenceMatcher
 from functools import lru_cache
+
+from core.llm_provider import active_model_name, active_provider
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
@@ -2129,12 +2131,16 @@ class DialogueSessionReplyView(APIView):
         saved_turn.internal_judgment = gate.judgment
         saved_turn.contract_violated = False
         saved_turn.dialogue_phase = session.dialogue_phase.value
+        saved_turn.llm_provider = active_provider()
+        saved_turn.llm_model = active_model_name()
         saved_turn.save(
             update_fields=[
                 "ai_response",
                 "internal_judgment",
                 "contract_violated",
                 "dialogue_phase",
+                "llm_provider",
+                "llm_model",
             ]
         )
         stance_drift = _update_ai_session_stance_drift(

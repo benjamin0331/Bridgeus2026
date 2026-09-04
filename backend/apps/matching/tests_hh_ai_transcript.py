@@ -41,7 +41,7 @@ class MatchTranscriptAnonymityTests(TestCase):
 
     def _captured_prompt(self, func):
         with patch(
-            "apps.matching.services.hh_ai._call_claude", return_value="提示"
+            "apps.matching.services.hh_ai._call_llm", return_value="提示"
         ) as call:
             func(self.match.id, "核能發電")
         self.assertTrue(call.called)

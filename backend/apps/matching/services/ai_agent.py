@@ -29,7 +29,13 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import StrOutputParser
 
 from core.chroma_utils import ensure_chroma_dir_writable
-from core.llm_provider import get_embeddings, get_llm
+from core.llm_provider import (
+    OPENAI,
+    active_provider,
+    chat_max_tokens,
+    get_embeddings,
+    get_llm,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -632,8 +638,14 @@ class DialogueAgent:
             search_kwargs={"k": self._retriever_k}
         )
 
-        # Initialize LLM
-        self._llm = get_llm(temperature=self._temperature)
+        # Initialize LLM。max_tokens 明講：LangChain 的預設比串流路徑的
+        # 1536 小，不指定的話 REST fallback 會在 WS 不會截斷的地方截斷。
+        # 注意 DialogueAgent 本身有快取（views.get_dialogue_agent），所以
+        # 切換 LLM_PROVIDER 一定要重啟服務才會生效——這是刻意的，見
+        # core/llm_provider.py 的 docstring。
+        self._llm = get_llm(
+            temperature=self._temperature, max_tokens=chat_max_tokens()
+        )
 
     def _retrieve_context(self, query: str) -> str:
         """從 ChromaDB 檢索相關知識，格式化為 prompt 可用的字串。"""
@@ -743,7 +755,6 @@ class DialogueAgent:
         Prompt assembly (including the `correction` semantics) lives in
         `_build_prompt()`, shared with the non-streaming `respond()` path.
         """
-        import anthropic
         from asgiref.sync import sync_to_async
 
         # _build_prompt() does blocking Chroma retrieval, so it has to be
@@ -751,6 +762,13 @@ class DialogueAgent:
         system_text, api_message = await sync_to_async(self._build_prompt)(
             session, correction
         )
+
+        if active_provider() == OPENAI:
+            async for chunk in self._astream_openai(system_text, api_message):
+                yield chunk
+            return
+
+        import anthropic
 
         client = anthropic.AsyncAnthropic()
         # NOTE: assistant prefill (a trailing {"role": "assistant", "content":
@@ -777,6 +795,34 @@ class DialogueAgent:
             messages=[{"role": "user", "content": api_message}],
         ) as stream:
             async for text in stream.text_stream:
+                yield text
+
+    async def _astream_openai(self, system_text: str, api_message: str):
+        """LLM_PROVIDER=openai 時的備案路徑。
+
+        走 LangChain 的 astream，跟 Anthropic 那條一樣是「一段一段吐字」，
+        呼叫端（ReplyStreamGate）看到的介面完全相同。
+
+        兩點跟 Claude 路徑不同，是 provider 本身的差異、不是實作偷懶：
+        - 沒有 cache_control：OpenAI 沒有等價的手動提示快取控制，system prompt
+          （含 RAG context 與歷史）每一輪都是全額計費。
+        - 輸出契約（<judgment>/<reply>）只靠 system prompt 第十節約束，跟
+          Claude 路徑一樣沒有 prefill 可用；遵守度要靠冒煙測試先量過。
+        """
+        messages = [
+            SystemMessage(content=system_text),
+            HumanMessage(content=api_message),
+        ]
+        async for chunk in self._llm.astream(messages):
+            text = chunk.content
+            if isinstance(text, list):
+                # 某些 LangChain 版本回 content block 陣列，取出文字段即可。
+                text = "".join(
+                    part.get("text", "")
+                    for part in text
+                    if isinstance(part, dict)
+                )
+            if text:
                 yield text
 
     def respond_simple(self, user_message: str) -> str:

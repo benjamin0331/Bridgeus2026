@@ -31,6 +31,11 @@ class AIConversation(models.Model):
     # 是合法的對話輪次，還是無脈絡的低訊息量輸入。
     ai_turn_is_question = models.BooleanField(default=False)
     dialogue_phase = models.CharField(max_length=32, blank=True)
+    # 這一輪實際由哪家模型生成。LLM_PROVIDER 切到備案（GPT）之後，資料上必須
+    # 分得出哪些對話是備案跑的——不然這批樣本的實驗操作就不可考了。
+    # 空字串＝這筆是加欄位之前寫的（一律是 Claude）。
+    llm_provider = models.CharField(max_length=32, blank=True, default="")
+    llm_model = models.CharField(max_length=64, blank=True, default="")
     # 384-dim embedding of user_prompt (paraphrase-multilingual-MiniLM-L12-v2);
     # populated at write time so stance-drift can read it instead of re-encoding
     # every turn on each message. Mirrors MatchMessage.embedding.

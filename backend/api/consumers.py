@@ -50,6 +50,8 @@ from apps.matching.services.topic_relevance import (
     aget_topic_anchor_embedding,
     get_topic_relevance_policy,
 )
+from core.llm_provider import active_model_name, active_provider
+
 from chat.services.embedding import aget_embedding
 from chat.services.emotion import aget_analyze_emotion
 from chat.services.filter import check_content_sync
@@ -622,6 +624,8 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
         saved_turn.ai_turn_is_question = ai_turn_is_question(
             ai_response, internal_judgment
         )
+        saved_turn.llm_provider = active_provider()
+        saved_turn.llm_model = active_model_name()
         try:
             await saved_turn.asave(
                 update_fields=[
@@ -630,6 +634,8 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
                     "contract_violated",
                     "ai_turn_is_question",
                     "dialogue_phase",
+                    "llm_provider",
+                    "llm_model",
                 ]
             )
         except Exception:

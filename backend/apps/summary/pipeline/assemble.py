@@ -17,7 +17,6 @@ ccnd_semantic_dist / ccnd_stance_shift 都是「這則發言本身帶來多少�
 """
 
 import logging
-import os
 
 from api.display_settings import resolve_stance_category
 from api.models import DialogueMatch, MatchStanceDrift
@@ -151,14 +150,12 @@ def generate_ai_summary(messages: list[dict], *, topic_title: str) -> str | None
     """呼叫 Claude 幫這場已審核通過的對話寫一段簡短摘要，給知識庫「對話詳情」
     頁最上方用（取代原本逐字稿直接複製貼上的 _build_summary_text）。
 
-    沒設 ANTHROPIC_API_KEY，或呼叫失敗（額度、逾時、API 錯誤等），回傳 None，
-    由呼叫端自行 fallback 回 _build_summary_text() 的逐字稿版本——不能讓知識庫
-    頁面因為 AI 摘要生成失敗就整頁掛掉。
-    """
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        return None
+    呼叫失敗（沒有 API key、額度、逾時、API 錯誤等）回傳 None，由呼叫端自行
+    fallback 回 _build_summary_text() 的逐字稿版本——不能讓知識庫頁面因為 AI
+    摘要生成失敗就整頁掛掉。
 
+    用哪家模型由 LLM_PROVIDER 決定（預設 Claude，備案 OpenAI）。
+    """
     transcript = "\n".join(f"{msg['side'].upper()}: {msg['content']}" for msg in messages)
     prompt = (
         f"以下是一場關於「{topic_title}」的雙人討論逐字稿，A、B 分別代表兩位匿名參與者。"
@@ -166,20 +163,21 @@ def generate_ai_summary(messages: list[dict], *, topic_title: str) -> str | None
         "分歧所在，不要加任何前言、標題或說明文字，只回傳摘要本文。\n\n"
         f"{transcript}"
     )
-    try:
-        import anthropic
+    from core.llm_provider import get_llm
 
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model=os.getenv("CLAUDE_CHAT_MODEL", "claude-sonnet-4-6"),
-            max_tokens=400,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = response.content[0].text.strip()
-        return text or None
+    try:
+        response = get_llm(temperature=0.3, max_tokens=400).invoke(prompt)
     except Exception:
-        logger.exception("Claude API call failed while generating KB conversation AI summary.")
+        logger.exception("LLM call failed while generating KB conversation AI summary.")
         return None
+
+    text = getattr(response, "content", None)
+    if isinstance(text, list):
+        text = "".join(
+            part.get("text", "") for part in text if isinstance(part, dict)
+        )
+    text = (text or "").strip()
+    return text or None
 
 
 def _stance_shift_magnitude(match: DialogueMatch) -> float | None:

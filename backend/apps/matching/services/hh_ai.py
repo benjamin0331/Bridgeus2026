@@ -42,24 +42,28 @@ def hh_ai_assist_enabled() -> bool:
     return _env_bool("H_H_AI_ASSIST_ENABLED", False)
 
 
-def _call_claude(prompt: str, *, max_tokens: int = 256) -> str | None:
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        return None
+def _call_llm(prompt: str, *, max_tokens: int = 256) -> str | None:
+    """走 LLM_PROVIDER 指定的那家（預設 Claude，備案 OpenAI）。
+
+    失敗一律回 None：三個呼叫端都有靜態 fallback 文字，H-H 的介入提示寧可
+    退成罐頭句，也不能因為 API 掛了就讓對話室卡住。
+    """
+    from core.llm_provider import get_llm
 
     try:
-        import anthropic
-
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model=os.getenv("CLAUDE_CHAT_MODEL", "claude-sonnet-4-6"),
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.content[0].text.strip()
+        llm = get_llm(temperature=0.3, max_tokens=max_tokens)
+        response = llm.invoke(prompt)
     except Exception:
-        logger.exception("Claude API call failed in H-H AI assist.")
+        logger.exception("LLM call failed in H-H AI assist.")
         return None
+
+    text = getattr(response, "content", None)
+    if isinstance(text, list):
+        text = "".join(
+            part.get("text", "") for part in text if isinstance(part, dict)
+        )
+    text = (text or "").strip()
+    return text or None
 
 
 def rephrase_match_message(original_text: str, topic: str) -> tuple[str, bool]:
@@ -70,7 +74,7 @@ def rephrase_match_message(original_text: str, topic: str) -> tuple[str, bool]:
         "只回傳重述後的文字，不要加任何說明或前言。\n\n"
         f"原文：{original_text}"
     )
-    result = _call_claude(prompt)
+    result = _call_llm(prompt)
     if result:
         return result, True
     return REPHRASE_FALLBACK, False
@@ -136,7 +140,7 @@ def suggest_match_direction(match_id: int, topic: str) -> str:
         f"只回傳建議文字，不要加任何說明。{_NO_NAMING_RULE}\n\n"
         f"{transcript}"
     )
-    result = _call_claude(prompt)
+    result = _call_llm(prompt)
     return result if result else random.choice(_DIRECTION_FALLBACKS)
 
 
@@ -148,7 +152,7 @@ def redirect_match_to_topic(match_id: int, topic: str) -> str:
         f"只回傳提示文字，不要加任何說明。{_NO_NAMING_RULE}\n\n"
         f"{transcript}"
     )
-    result = _call_claude(prompt)
+    result = _call_llm(prompt)
     return result if result else random.choice(_REDIRECT_FALLBACKS)
 
 
