@@ -18,7 +18,8 @@
   background-color: #f7f3f0;
   border-radius: 40px;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
-  padding: 40px;
+  /* 上下比左右窄：頁首頁尾都是固定高度，省下來的直接給中間的題目區 */
+  padding: 24px 32px 20px;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
@@ -47,7 +48,44 @@
 /* Header — fixed inside the card */
 .pq-header {
   flex-shrink: 0;
-  margin-bottom: 20px;
+  margin-bottom: 12px;
+}
+
+.pq-header-top {
+  margin-bottom: 10px;
+}
+
+/* 標題與作答指示同一列，以基線對齊 */
+.pq-title-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+}
+
+.pq-title-line h2 {
+  margin-bottom: 0;
+}
+
+.pq-title-line .pq-subtitle {
+  margin-bottom: 0;
+}
+
+/* 進度徽章 + 圓點同一列；第二頁之後關閉鈕也擠進來靠右 */
+.pq-progress-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.pq-progress-row .pq-close-btn {
+  margin-left: auto;
+}
+
+.pq-progress-row .pq-step-badge {
+  margin: 0;
 }
 
 .pq-header-top {
@@ -58,9 +96,9 @@
 }
 
 .pq-header h2 {
-  font-size: 26px;
+  font-size: 21px;
   font-weight: bold;
-  margin-bottom: 6px;
+  margin-bottom: 2px;
   color: #1a1a1a;
 }
 
@@ -88,8 +126,8 @@
 
 .pq-subtitle {
   color: #888;
-  font-size: 13px;
-  margin-bottom: 16px;
+  font-size: 12px;
+  margin-bottom: 10px;
 }
 
 .pq-step-badge {
@@ -339,7 +377,7 @@
 /* Footer — fixed at bottom of card, never scrolls away */
 .pq-footer {
   flex-shrink: 0;
-  padding-top: 20px;
+  padding-top: 12px;
   display: flex;
   flex-direction: column;
   gap: 12px;

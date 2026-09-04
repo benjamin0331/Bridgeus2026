@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import api from '../api/client';
 import SettlementReceipt from './SettlementReceipt';
@@ -363,6 +363,13 @@ export default function PostQuestionnairePage() {
     }
   };
 
+  // 換頁後把題目區捲回最上面。使用者通常是捲到底看完最後一題才按「下一步」，
+  // 不重置的話新一頁會停在半空中，得自己把捲軸拉回去。
+  const bodyRef = useRef(null);
+  useEffect(() => {
+    bodyRef.current?.scrollTo({ top: 0 });
+  }, [step]);
+
   const handleNext = () => {
     if (!canAdvance()) {
       setSubmitError('請填完本頁所有欄位再繼續。');
@@ -472,28 +479,42 @@ export default function PostQuestionnairePage() {
     );
   }
 
+  const closeButton = (
+    <button
+      type="button"
+      className="pq-close-btn"
+      onClick={handleClose}
+      aria-label="離開問卷並返回對話"
+      title="離開問卷並返回對話"
+    >
+      ×
+    </button>
+  );
+
   return (
     <div className="pq-page">
       <div className="pq-container">
+        {/* 頁首只在第一頁完整顯示：標題與作答指示看過一次就夠了，之後每一頁都
+            留著等於固定吃掉兩列高度。第二頁之後只剩徽章、進度點與離開鈕，
+            關閉鈕跟著併進進度列，不另外佔一行。 */}
         <div className="pq-header">
-          <div className="pq-header-top">
-            <h2>對話後問卷</h2>
-            <button
-              type="button"
-              className="pq-close-btn"
-              onClick={handleClose}
-              aria-label="離開問卷並返回對話"
-              title="離開問卷並返回對話"
-            >
-              ×
-            </button>
+          {step === 0 && (
+            <div className="pq-header-top">
+              <div className="pq-title-line">
+                <h2>對話後問卷</h2>
+                <p className="pq-subtitle">感謝你的參與！請依序回答以下問題。</p>
+              </div>
+              {closeButton}
+            </div>
+          )}
+          <div className="pq-progress-row">
+            <div className="pq-step-badge">{getStepLabel()}</div>
+            <StepIndicator current={step} total={actualSteps} />
+            {step > 0 && closeButton}
           </div>
-          <p className="pq-subtitle">感謝你的參與！請依序回答以下問題。</p>
-          <div className="pq-step-badge">{getStepLabel()}</div>
-          <StepIndicator current={step} total={actualSteps} />
         </div>
 
-        <div className="pq-body">
+        <div className="pq-body" ref={bodyRef}>
           {step === 0 && (
             <StepC1
               answers={c1Answers}
