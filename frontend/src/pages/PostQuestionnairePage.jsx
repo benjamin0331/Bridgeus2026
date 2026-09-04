@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import api from '../api/client';
 import SettlementReceipt from './SettlementReceipt';
@@ -327,6 +327,17 @@ export default function PostQuestionnairePage() {
   const [submitError, setSubmitError] = useState('');
   const [result, setResult] = useState(null);
 
+  // 換頁時回到最上面。.pq-page 是 overflow:hidden，捲動的是卡片本身
+  // （.pq-container）與內文（.pq-body）兩層，所以 window.scrollTo 沒用，
+  // 兩個容器都要歸零——只歸零其中一個，另一層會留在上一頁的捲動位置。
+  const containerRef = useRef(null);
+  const bodyRef = useRef(null);
+
+  useEffect(() => {
+    containerRef.current?.scrollTo({ top: 0 });
+    bodyRef.current?.scrollTo({ top: 0 });
+  }, [step]);
+
   // H-H 組跳過 C-4，實際步驟比較少
   // Steps: 0=C1, 1=C2, 2=C3, 3=C4(ai only)/D(hh), 4=D(ai)/E(hh), 5=E(ai)
   const actualSteps = isHH ? 5 : TOTAL_STEPS;
@@ -474,7 +485,7 @@ export default function PostQuestionnairePage() {
 
   return (
     <div className="pq-page">
-      <div className="pq-container">
+      <div className="pq-container" ref={containerRef}>
         <div className="pq-header">
           <div className="pq-header-top">
             <h2>對話後問卷</h2>
@@ -493,7 +504,7 @@ export default function PostQuestionnairePage() {
           <StepIndicator current={step} total={actualSteps} />
         </div>
 
-        <div className="pq-body">
+        <div className="pq-body" ref={bodyRef}>
           {step === 0 && (
             <StepC1
               answers={c1Answers}
