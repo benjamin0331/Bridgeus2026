@@ -1106,3 +1106,113 @@ async def test_match_room_pushes_sender_drift_after_each_message():
 
     await comm_a.disconnect()
     await comm_b.disconnect()
+
+
+class DelayedStreamingDialogueAgent:
+    """回覆前先卡一段時間，讓測試有機會在「生成中」把連線斷掉。"""
+
+    def __init__(self, delay: float = 0.3):
+        self.delay = delay
+
+    async def astream_respond(self, session, correction: str = ""):
+        await asyncio.sleep(self.delay)
+        yield (
+            "<judgment>開啟新方向。結構 A。</judgment>"
+            f"<reply>AI reply to: {session.history[-1].content}</reply>"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+@override_settings(CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
+async def test_disconnect_mid_generation_still_persists_the_reply():
+    """斷線不能讓這一輪回覆消失。
+
+    舊版在 disconnect 直接 cancel 掉 worker，AIConversation 會永遠停在
+    ai_response 空白——使用者送出了訊息卻等不到回覆，重新整理也救不回來。
+    現在改成讓它跑完落庫，前端重連後補抓 session history 就看得到。
+    """
+    from BridgeUs_Django.asgi import application
+    from apps.matching.services.ai_agent import DialogueSession
+
+    user = await create_user(username="ai_ws_drop_user", password="secret123")
+    session_id = uuid4().hex
+    session = DialogueSession(
+        topic="台灣核能議題討論",
+        topic_description="討論台灣是否應使用核能。",
+        agent_stance="較反對核電",
+        agent_stance_summary="以反方角度提出核安與核廢料疑慮。",
+        user_stance_label="較支持核電",
+        user_stance_score=6.5,
+    )
+    await sync_to_async(cache.set)(
+        f"dialogue_session:{session_id}",
+        {
+            "user_id": user.id,
+            "session_id": session_id,
+            "topic_id": 102,
+            "topic_title": "台灣核能議題討論",
+            "collection_name": "nuclear_energy_all",
+            "survey_context": {"q9_embedding": make_test_embedding(1)},
+            "session": session.to_dict(),
+        },
+    )
+
+    token = await _access_token_for(user)
+    communicator = WebsocketCommunicator(
+        application,
+        f"/ws/dialogue/{session_id}/?token={token}",
+    )
+
+    with (
+        patch(
+            "api.views.get_dialogue_agent",
+            return_value=DelayedStreamingDialogueAgent(delay=0.3),
+        ),
+        patch(
+            "api.consumers.aget_embedding",
+            new=AsyncMock(return_value=make_test_embedding(-1)),
+        ),
+    ):
+        connected, _ = await communicator.connect()
+        assert connected
+
+        await communicator.send_json_to(
+            {"type": "user_message", "content": "核能真的比較穩定嗎？"}
+        )
+        # 收到 agent_thinking 就代表已經進入生成，這時斷線。
+        # 這裡的等待放得比同檔其他測試寬：第一次推播前要先起執行緒、建 DB 連線，
+        # 慢一點的機器超過 3 秒是常態，卡在這裡跟被測行為無關。
+        assert await communicator.receive_json_from(timeout=30) == {
+            "type": "agent_thinking"
+        }
+        await communicator.disconnect()
+
+        saved_turn = None
+        for _ in range(300):
+            await asyncio.sleep(0.1)
+            saved_turn = await AIConversation.objects.filter(
+                session_id=session_id
+            ).afirst()
+            if saved_turn is not None and saved_turn.ai_response:
+                break
+
+    assert saved_turn is not None
+    assert saved_turn.ai_response == "AI reply to: 核能真的比較穩定嗎？"
+
+    # 那一輪也要進 session history，前端重連才補得回來。
+    # history 的寫回發生在 ai_response 落庫「之後」幾行，所以上面那個迴圈跳出時
+    # 它還不一定寫好了——這裡要自己再等一次，不能直接斷言。
+    roles = []
+    for _ in range(100):
+        session_record = await sync_to_async(cache.get)(f"dialogue_session:{session_id}")
+        roles = [
+            message["role"]
+            for message in (session_record or {}).get("session", {}).get("history", [])
+        ]
+        if roles:
+            break
+        await asyncio.sleep(0.1)
+
+    assert roles, "斷線那一輪的發言沒有寫回 session history"
+    assert roles[-1] == "agent"

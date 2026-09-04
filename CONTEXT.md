@@ -9,6 +9,19 @@
 
 > 每完成一項未 commit 的工作就記在這；commit 後刪掉該行。
 
+- **小 bug 修正四項（WS 斷線／改名／問卷捲動／離題匿名）**：
+  - **H-AI 送出後看不到回覆、重新整理才看得到**：回覆其實已生成也落庫，只是那一幀推進了一條半死的連線。三層修法：
+    ① 後端生成期間每 10 秒推 `agent_heartbeat`（`_GENERATION_HEARTBEAT_SECONDS`），消除 `agent_thinking`→`agent_stream` 之間數十秒的靜默，中間層才不會把連線收掉；
+    ② `DialogueStreamConsumer.disconnect` **不再 cancel** 生成中的 worker（改用 `_STOP_WORKER` 哨兵 + `_detached_turn_workers` 續命），讓那一輪跑完並寫進 DB／history；覆寫 `send()` 在斷線後靜音，避免推不出去的訊息把已完成的一輪記成錯誤；
+    ③ 前端 `TopicChat.jsx` 加看門狗：連續 30 秒沒心跳（或收到 close）就改用 `GET /api/dialogue/sessions/<id>/` 把那一則取回貼上，並解除卡住的送出狀態，不再顯示「請重新整理」。`staleAiTurnRef` 擋掉之後補送的 socket 事件避免重複泡泡。
+    附帶：`get_dialogue_agent` 加 `lru_cache(maxsize=8)`（原本每則訊息都重建 Chroma retriever，阻塞 event loop；代價是知識庫重建要重啟服務），並用 `sync_to_async(..., thread_sensitive=False)` 移出 event loop；H-H 配對房 WS 掉線改用 `matchWsEpoch` 自動重連（訊息本來就有 3 秒輪詢兜底，但 AI 介入提示只走 WS）。
+    測試：`api/tests_websocket.py::test_disconnect_mid_generation_still_persists_the_reply`（1 passed）
+  - **全站改名 TakeAbridge**：登入／註冊封面、`index.html` title、聊天室 AI 顯示名、Godot `config/name`（側邊欄本來就已經是這個名字）
+  - **後測問卷換頁回到最上面**：`.pq-container` 與 `.pq-body` 兩層都要歸零（`.pq-page` 是 overflow:hidden，`window.scrollTo` 無效）
+  - **H-H 離題／僵局提示不再出現「USER 3」**：`hh_ai.py` 的 transcript 從 `User {sender_id}` 改成配對房匿名代號（`_recent_transcript` / `_room_anonymous_ids`），prompt 另加「不要提及任何參與者的名稱或代號」。測試 `apps/matching/tests_hh_ai_transcript.py`（5 項，連同既有 tests_anonymity 共 11 passed）
+  - **離題提醒卡片不再 sticky**：拿掉 `.match-assist-card.pinned`，與情緒改寫卡片一致隨對話流排版
+  - ⚠️ 這台機器跑 WS 測試會大量假失敗（`receive_json_from(timeout=3)` 太短、rate limit 1.5 秒窗口），`api/tests_input_gate_ws.py` 在 **baseline 就 17 failed / 6 passed**；已用 stash 控制組比對過，本次改動沒有造成迴歸
+
 - **新手導覽只跳一次 + 設定頁可重看（新功能）**：合併 `feat/Ceeeuu` 帶進來的 `OnboardingTour` 原本每次進站都跳，改成第一次登入才自動跳。
   - 後端：`accounts.User` 加 `onboarding_completed_at`（migration `accounts/0005`）；`MeView` GET 多回 `onboarding_completed`（布林），PATCH 白名單加 `onboarding_completed`（`MeProfileUpdateSerializer`）。⚠️ `True` **只在欄位還是 NULL 時**才蓋時間戳——設定頁重看關掉時也會送 `True`，會覆寫的話「第一次看完的時間」就沒了；送 `False` 則清空，等於讓導覽下次登入再自動跳。
   - 前端：`OnboardingTour` 改成受控（拿掉永遠 `return true` 的 `shouldOpenOnMount()`，開關改由 `App.jsx` 條件渲染，所以每次開都是全新掛載）；`App.jsx` 的 `/api/me/` effect 順便讀旗標，**只有 `=== false` 才自動開**（請求失敗或舊版後端回 undefined 時寧可不跳）；`autoTourShownRef` 擋掉同一次登入內重複自動開，登出時連同 `isTourOpen` 一起重設（共用機器）；新增 `components/OnboardingCard.jsx`＋`.css`，`SettingsPage` 一般使用者與研究者「我的帳號」分頁各放一張。

@@ -1186,6 +1186,15 @@ def _get_dialogue_runtime():
 
 @lru_cache(maxsize=8)
 def get_dialogue_agent(collection_name: str):
+    """每個 collection 共用一個 DialogueAgent。
+
+    DialogueAgent.__init__ 會開 Chroma、載 embedding 模型、讀 prompt 檔，全是
+    同步阻塞 I/O。原本每則訊息都 new 一個，等於在 WebSocket 的 event loop 上
+    做一次檔案系統往返——ping/pong 跟著被延後，長對話容易被判定沒有回應而斷線。
+
+    快取安全性：實例本身無對話狀態（session 一律由參數傳入），只帶 retriever /
+    llm / prompt 三個唯讀設定。代價是知識庫重建後要重啟服務才會生效。
+    """
     DialogueAgent, _, _ = _get_dialogue_runtime()
     return DialogueAgent(collection_name=collection_name)
 

@@ -75,6 +75,19 @@ _CONTRACT_CORRECTION = """
 """
 logger = logging.getLogger(__name__)
 
+# 佇列的收工信號。用哨兵而不是 cancel()：見 DialogueStreamConsumer.disconnect()。
+_STOP_WORKER = object()
+
+# 生成期間的心跳間隔。回覆是整段驗證完才送出的（見 _stream_gated_response），
+# 中間有一段數十秒的靜默：瀏覽器與中間層會把這種連線當成沒在用而收掉，而兩邊
+# 都要等到下一次寫入才會發現——那正是「訊息送出去看不到回覆、重新整理才看得到」
+# 的成因（回覆已經生成也存檔了，只是那一幀推進了一條死掉的連線）。
+_GENERATION_HEARTBEAT_SECONDS = 10.0
+
+# 斷線後仍在跑完最後一輪的 worker。asyncio 只持有 task 的弱參考，consumer 被
+# 回收後沒人抓著它就可能被 GC 掉，那一輪回覆會無聲消失——這裡替它續命到跑完。
+_detached_turn_workers: set[asyncio.Task] = set()
+
 # Emotion interception only fires when the message is aimed at the other person.
 # A high-arousal statement of fact ("核電其實很危險") should not be intercepted;
 # an attack ("你根本不懂") should. Gating on a second-person pronoun keeps recall
@@ -143,18 +156,40 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
             await self.close(code=4004)
             return
 
+        self._closed = False
         self.message_queue = asyncio.Queue()
         self.response_worker = asyncio.create_task(self._process_message_queue())
         await self.accept()
 
     async def disconnect(self, close_code):
+        self._closed = True
         worker = getattr(self, "response_worker", None)
-        if worker is not None:
-            worker.cancel()
-            try:
-                await worker
-            except asyncio.CancelledError:
-                pass
+        if worker is None or worker.done():
+            return
+
+        # 刻意不 cancel()：斷線時那一輪 LLM 可能已經在跑，砍掉的話
+        # AIConversation 會永遠停在 ai_response 空白——使用者送了訊息卻等不到
+        # 回覆，連重新整理都救不回來（前端回報的「AI 訊息出不來」就是這個）。
+        # 改成放它跑完並落庫，重連或重新整理時就能從 history 補上。推不出去的
+        # WebSocket 訊息由覆寫過的 send() 吞掉。
+        # 哨兵讓迴圈在當前這輪結束後收工；worker 正卡在 queue.get() 時也會醒來，
+        # 所以不會有永遠等不到訊息的殘留 task。
+        self.message_queue.put_nowait(_STOP_WORKER)
+        _detached_turn_workers.add(worker)
+        worker.add_done_callback(_detached_turn_workers.discard)
+
+    async def send(self, *args, **kwargs):
+        """斷線後的推播一律靜音。
+
+        _process_message_queue 會在斷線後把最後一輪跑完（見 disconnect），那條
+        路徑上的每個 send 都會失敗；讓它們拋例外會把「已經算完、也存好了」的一
+        輪誤記成錯誤。"""
+        if getattr(self, "_closed", False):
+            return
+        try:
+            await super().send(*args, **kwargs)
+        except Exception:
+            self._closed = True
 
     async def receive(self, text_data=None, bytes_data=None):
         if not text_data:
@@ -182,6 +217,9 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
     async def _process_message_queue(self):
         while True:
             user_message = await self.message_queue.get()
+            if user_message is _STOP_WORKER:
+                self.message_queue.task_done()
+                return
             try:
                 await self._stream_response(user_message)
             except asyncio.CancelledError:
@@ -195,6 +233,9 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
                 await self._send_error("目前無法處理這則訊息，已繼續處理後續訊息。")
             finally:
                 self.message_queue.task_done()
+            if self._closed:
+                # 斷線後只補完手上這一輪；佇列裡還沒開始的訊息不再處理。
+                return
 
     # ── Input gate ──────────────────────────────────────────────────────────
     # Everything below runs BEFORE _stream_response, which is the only place
@@ -328,13 +369,19 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
             dialogue_phase=session.dialogue_phase.value,
         )
 
-        agent = get_dialogue_agent(session_record["collection_name"])
+        # 首次建立會開 Chroma／載模型，是同步阻塞 I/O，不能擋在 event loop 上。
+        # thread_sensitive=False：這裡不碰 Django ORM，不需要跟其他 sync 呼叫
+        # 共用同一條 thread；用預設的 True 會排進共用 executor 而卡死整輪回覆。
+        agent = await sync_to_async(get_dialogue_agent, thread_sensitive=False)(
+            session_record["collection_name"]
+        )
         turn_id = saved_turn.id if saved_turn is not None else None
 
         # The whole reply is held back until it passes validation, so tell the
         # client something is happening before the first API call.
         await self.send(json.dumps({"type": "agent_thinking"}))
 
+        heartbeat = asyncio.create_task(self._send_generation_heartbeat())
         try:
             gate, contract_ok = await self._stream_gated_response(agent, session)
             first_gate = gate
@@ -372,6 +419,8 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
             )
             await self._send_error("AI 回應中斷，請重試。")
             return
+        finally:
+            heartbeat.cancel()
 
         if contract_ok:
             visible_reply = gate.reply
@@ -438,6 +487,21 @@ class DialogueStreamConsumer(AsyncWebsocketConsumer):
 
         _, contract_ok = gate.finish()
         return gate, contract_ok
+
+    async def _send_generation_heartbeat(self):
+        """生成期間定期送出心跳，直到被取消。
+
+        兼兩個用途：讓中間層知道這條連線還在用（不要收掉），以及讓前端能區分
+        「還在想」與「連線已經死了」——心跳一停，前端的看門狗就會改用 REST 把
+        那一輪的回覆取回來。送不出去時覆寫過的 send() 會把連線標記成已關閉，
+        後續推播自動靜音，但生成與落庫照常完成。
+        """
+        try:
+            while True:
+                await asyncio.sleep(_GENERATION_HEARTBEAT_SECONDS)
+                await self.send(json.dumps({"type": "agent_heartbeat"}))
+        except asyncio.CancelledError:
+            raise
 
     async def _send_reply(self, text: str):
         await self.send(

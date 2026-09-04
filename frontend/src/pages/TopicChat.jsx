@@ -10,6 +10,8 @@ import { useNotifications } from '../context/NotificationsContext';
 import { useMatchingHeartbeat } from '../context/MatchingHeartbeatContext';
 
 const MATCHING_POLL_INTERVAL_MS = 3000;
+// 配對房 WebSocket 掉線後的重連間隔。訊息有輪詢兜底，所以不必更積極。
+const MATCH_WS_RECONNECT_DELAY_MS = 3000;
 const MATCH_SCROLL_BOTTOM_THRESHOLD_PX = 96;
 const MATCH_SELF_NAME = '我';
 const MATCH_PARTNER_NAME = '匿名對話者';
@@ -109,7 +111,7 @@ function mapHistoryToMessages(history, userName) {
     return {
       id: `${message.role}-${index}`,
       type: isAgent ? 'agent' : 'user',
-      userName: isAgent ? 'BridgeUs' : userName,
+      userName: isAgent ? 'TakeAbridge' : userName,
       text: message.content,
       // Only the AI reply (opponent) is reactable, and only once we know its
       // AIConversation turn id.
@@ -398,6 +400,8 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
   const [isMatchMessagesLoading, setIsMatchMessagesLoading] = useState(false);
   const [isMatchSending, setIsMatchSending] = useState(false);
   const [matchChatError, setMatchChatError] = useState('');
+  // 配對房 WebSocket 掉線重連的觸發器（見 connectMatchWebSocket 的 onclose）。
+  const [matchWsEpoch, setMatchWsEpoch] = useState(0);
   const [matchAssistNotice, setMatchAssistNotice] = useState(null);
   const [pendingMatchSuggestion, setPendingMatchSuggestion] = useState(null);
   const [matchSuggestionDraft, setMatchSuggestionDraft] = useState(null);
@@ -430,6 +434,15 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
   const explicitSurveyReopenRef = useRef(false);
   const cancelQueueRequestSentRef = useRef(false);
   const isChatPageMountedRef = useRef(true);
+  // 斷線後要回頭補抓那一輪 AI 回覆的計時器與重連計時器（見 recoverPendingAiReply
+  // 與 connectMatchWebSocket 的 onclose）。
+  const aiReplyRecoveryTimerRef = useRef(null);
+  const aiReplyWatchdogTimerRef = useRef(null);
+  // 這一輪已經改用 REST 取回了，socket 之後若補送事件一律忽略。
+  const staleAiTurnRef = useRef(false);
+  // onclose 是在 React 之外觸發的，拿不到當下的 messages，用 ref 同步一份。
+  const messagesRef = useRef([]);
+  const matchReconnectTimerRef = useRef(null);
   const shouldAutoScrollAiRef = useRef(true);
   const shouldAutoScrollMatchRef = useRef(true);
   const semanticTreeAnalyzeSignatureRef = useRef('');
@@ -709,6 +722,11 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
   }, [focusChatInput, scrollMessagesToBottom]);
 
   const closeMatchWebSocket = useCallback((socket = matchWsRef.current) => {
+    // 主動關閉時要一併取消排隊中的重連，否則剛離開房間又會被接回去。
+    if (matchReconnectTimerRef.current) {
+      window.clearTimeout(matchReconnectTimerRef.current);
+      matchReconnectTimerRef.current = null;
+    }
     if (!socket) {
       return;
     }
@@ -805,10 +823,30 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     };
 
     socket.onclose = () => {
-      if (matchWsRef.current === socket) {
-        matchWsRef.current = null;
-        matchWsRoomIdRef.current = null;
+      if (matchWsRef.current !== socket) {
+        // 已經被 closeMatchWebSocket 換掉／收掉，不是掉線。
+        return;
       }
+      matchWsRef.current = null;
+      matchWsRoomIdRef.current = null;
+
+      // 訊息本身有 3 秒輪詢兜底，但 AI 介入提示（離題／僵局／改寫）只走
+      // WebSocket，不重連的話這間房剩下的時間就再也收不到任何提示。
+      if (!isChatPageMountedRef.current) {
+        return;
+      }
+      if (matchReconnectTimerRef.current) {
+        window.clearTimeout(matchReconnectTimerRef.current);
+      }
+      // 不在這裡直接重連：把 epoch 加一，讓下面那個建立連線的 effect 重跑，
+      // 房號／是否還在聊天室這些條件一律由它統一判斷，只有一個地方會開 socket。
+      matchReconnectTimerRef.current = window.setTimeout(() => {
+        matchReconnectTimerRef.current = null;
+        if (!isChatPageMountedRef.current) {
+          return;
+        }
+        setMatchWsEpoch((epoch) => epoch + 1);
+      }, MATCH_WS_RECONNECT_DELAY_MS);
     };
 
     return socket;
@@ -817,6 +855,10 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
   useEffect(() => {
     isSendingRef.current = isSending;
   }, [isSending]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   // 冷卻倒數。計數在後端，這裡只負責把輸入框停用到倒數結束；
   // 重新整理頁面不會繞過冷卻，後端仍會擋下第一則訊息並重推 input_cooldown。
@@ -840,6 +882,18 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       wsSessionIdRef.current = null;
       if (aiSendCooldownTimerRef.current) {
         window.clearTimeout(aiSendCooldownTimerRef.current);
+      }
+      if (aiReplyRecoveryTimerRef.current) {
+        window.clearInterval(aiReplyRecoveryTimerRef.current);
+        aiReplyRecoveryTimerRef.current = null;
+      }
+      if (aiReplyWatchdogTimerRef.current) {
+        window.clearTimeout(aiReplyWatchdogTimerRef.current);
+        aiReplyWatchdogTimerRef.current = null;
+      }
+      if (matchReconnectTimerRef.current) {
+        window.clearTimeout(matchReconnectTimerRef.current);
+        matchReconnectTimerRef.current = null;
       }
       closeMatchWebSocket();
     };
@@ -1250,6 +1304,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     closeMatchWebSocket,
     connectMatchWebSocket,
     isMatchChatReady,
+    matchWsEpoch,
     matchingState?.room_id,
     showSurvey,
   ]);
@@ -1766,6 +1821,109 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     return nextCount;
   };
 
+  // 送出去的訊息看不到 AI 回覆、重新整理卻又看得到——這是使用者實際回報的症狀。
+  // 成因是連線已經半死（瀏覽器／中間層在那段長靜默裡把它收掉了）但兩邊都還沒
+  // 察覺：後端照樣把回覆推出去、照樣落庫，前端卻永遠收不到那一幀，而且連
+  // onclose 都不一定會觸發。既然回覆一定在 DB 裡，這裡就直接回頭跟後端要。
+  //
+  // 兩個進入點：onclose（有收到關閉事件）與送出後的等待逾時（半死連線沒有事件）。
+  const AI_REPLY_RECOVERY_INTERVAL_MS = 3000;
+  const AI_REPLY_RECOVERY_MAX_ATTEMPTS = 20;   // 約 60 秒，涵蓋契約重試的第二次呼叫
+  // 逾時多久才開始懷疑連線死了。後端生成期間每 10 秒送一次 agent_heartbeat，
+  // 收到就會把這個計時器往後推，所以這裡等於「連續三次沒心跳」，跟回覆本身
+  // 生成多久無關。
+  const AI_REPLY_WATCHDOG_MS = 30000;
+
+  // 「這一輪的回覆補上來了沒」的基準值。串流已經送到一半時畫面上那顆泡泡也算
+  // 一則 agent 訊息，不扣掉的話 DB 裡的數量會跟畫面一樣多，補抓會誤判成沒回覆。
+  const pendingReplyBaselineAgentCount = () =>
+    messagesRef.current.filter((message) => message.type === 'agent').length -
+    (currentAgentMsgIdRef.current ? 1 : 0);
+
+  const recoverPendingAiReply = (activeSessionId, baselineAgentCount, { dropSocket = false } = {}) => {
+    if (!activeSessionId) {
+      return;
+    }
+    if (aiReplyRecoveryTimerRef.current) {
+      window.clearInterval(aiReplyRecoveryTimerRef.current);
+    }
+
+    let attempts = 0;
+    const stop = () => {
+      window.clearInterval(aiReplyRecoveryTimerRef.current);
+      aiReplyRecoveryTimerRef.current = null;
+    };
+
+    aiReplyRecoveryTimerRef.current = window.setInterval(async () => {
+      if (!isChatPageMountedRef.current) {
+        stop();
+        return;
+      }
+
+      attempts += 1;
+      try {
+        const response = await api.get(`/api/dialogue/sessions/${activeSessionId}/`);
+        const history = Array.isArray(response.data?.history) ? response.data.history : [];
+        const agentCount = history.filter((message) => message.role === 'agent').length;
+        if (agentCount > baselineAgentCount) {
+          stop();
+          if (dropSocket) {
+            // 這條路是「等不到回覆」才走的，socket 已經不可信；先關掉並讓這一輪
+            // 的後續事件失效，避免它稍後又補一顆重複的泡泡。下一次送出會重開。
+            staleAiTurnRef.current = true;
+            wsRef.current?.close();
+            wsRef.current = null;
+            wsSessionIdRef.current = null;
+          }
+          pendingAiReplyCountRef.current = 0;
+          currentAgentMsgIdRef.current = null;
+          setIsAgentThinking(false);
+          setIsAgentStreaming(false);
+          setIsSending(false);
+          setMessages(mapHistoryToMessages(history, displayUserName));
+          shouldAutoScrollAiRef.current = true;
+          setChatError('');
+          return;
+        }
+      } catch {
+        // 撈不到就當作還沒好，繼續等下一次。
+      }
+
+      if (attempts >= AI_REPLY_RECOVERY_MAX_ATTEMPTS) {
+        stop();
+        pendingAiReplyCountRef.current = 0;
+        setIsAgentThinking(false);
+        setIsAgentStreaming(false);
+        setIsSending(false);
+        setChatError('連線中斷，這一則回覆取回失敗，請重新整理頁面看看。');
+      }
+    }, AI_REPLY_RECOVERY_INTERVAL_MS);
+  };
+
+  // 送出後啟動：時間到還在等回覆，就當作那一幀已經掉了，直接去 DB 撈。
+  const armPendingAiReplyWatchdog = (activeSessionId) => {
+    if (aiReplyWatchdogTimerRef.current) {
+      window.clearTimeout(aiReplyWatchdogTimerRef.current);
+    }
+    aiReplyWatchdogTimerRef.current = window.setTimeout(() => {
+      aiReplyWatchdogTimerRef.current = null;
+      if (!isChatPageMountedRef.current || !isSendingRef.current) {
+        return;
+      }
+      setChatError('等太久了，正在直接向伺服器取回這一則回覆...');
+      recoverPendingAiReply(activeSessionId, pendingReplyBaselineAgentCount(), {
+        dropSocket: true,
+      });
+    }, AI_REPLY_WATCHDOG_MS);
+  };
+
+  const disarmPendingAiReplyWatchdog = () => {
+    if (aiReplyWatchdogTimerRef.current) {
+      window.clearTimeout(aiReplyWatchdogTimerRef.current);
+      aiReplyWatchdogTimerRef.current = null;
+    }
+  };
+
   const connectDialogueWebSocket = (activeSessionId) => {
     const token = localStorage.getItem('access');
     if (!token) {
@@ -1780,6 +1938,19 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       try {
         data = JSON.parse(event.data);
       } catch {
+        return;
+      }
+
+      if (staleAiTurnRef.current) {
+        // 這一輪已經用 REST 取回並且畫面也更新過了，socket 補送的事件只會製造
+        // 重複泡泡。下一次送出會把旗標清掉。
+        return;
+      }
+
+      if (data.type === 'agent_heartbeat') {
+        // 後端還在生成，而且這條連線是通的。把看門狗往後推，慢一點的回覆
+        // （例如契約重試多打一次 API）才不會被誤判成掉線。
+        armPendingAiReplyWatchdog(activeSessionId);
         return;
       }
 
@@ -1811,7 +1982,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
             {
               id: newMessageId,
               type: 'agent',
-              userName: 'BridgeUs',
+              userName: 'TakeAbridge',
               text: data.content,
             },
           ];
@@ -1820,6 +1991,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       }
 
       if (data.type === 'agent_stream_end') {
+        disarmPendingAiReplyWatchdog();
         const streamedMessageId = currentAgentMsgIdRef.current;
         const turnId = data.turn_id ?? null;
         if (streamedMessageId && turnId) {
@@ -1849,6 +2021,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       // nextCount > 0，把 isSending 重新設回 true——訊息明明已經顯示完了，
       // 「正在整理回應...」的泡泡卻又卡住不會消失。
       if (data.type === 'input_blocked') {
+        disarmPendingAiReplyWatchdog();
         currentAgentMsgIdRef.current = null;
         setIsAgentThinking(false);
         setIsAgentStreaming(false);
@@ -1862,7 +2035,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
             appendOrCoalesce(prev, {
               id: `gate-${Date.now()}`,
               type: 'agent',
-              userName: 'BridgeUs',
+              userName: 'TakeAbridge',
               text: data.content,
             }),
           );
@@ -1871,6 +2044,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       }
 
       if (data.type === 'input_cooldown') {
+        disarmPendingAiReplyWatchdog();
         currentAgentMsgIdRef.current = null;
         setIsAgentThinking(false);
         setIsAgentStreaming(false);
@@ -1881,6 +2055,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       }
 
       if (data.type === 'rate_limited') {
+        disarmPendingAiReplyWatchdog();
         setIsAgentThinking(false);
         setIsAgentStreaming(false);
         updatePendingAiReplyCount(-1);
@@ -1889,6 +2064,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       }
 
       if (data.type === 'error') {
+        disarmPendingAiReplyWatchdog();
         currentAgentMsgIdRef.current = null;
         setIsAgentStreaming(false);
         setChatError(data.content || 'AI 回應中斷，請重試。');
@@ -1897,24 +2073,43 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     };
 
     socket.onerror = () => {
-      pendingAiReplyCountRef.current = 0;
-      setIsAgentStreaming(false);
-      setChatError('WebSocket 連線錯誤，請重新整理頁面。');
-      setIsSending(false);
+      // error 後面一定跟著 close，收拾與補救統一由 onclose 做——這裡若先寫入
+      // 「請重新整理」，會蓋掉 onclose 的「正在取回」而讓使用者白白重整。
+      if (!isSendingRef.current) {
+        setChatError('WebSocket 連線錯誤，將改用備援方式送出。');
+      }
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       if (wsRef.current === socket) {
         wsRef.current = null;
         wsSessionIdRef.current = null;
       }
 
-      if (isSendingRef.current) {
-        pendingAiReplyCountRef.current = 0;
-        setIsAgentStreaming(false);
-        setChatError('連線中斷，請重新整理頁面。');
-        setIsSending(false);
+      if (!isSendingRef.current) {
+        return;
       }
+
+      // 基準值要在清掉 currentAgentMsgIdRef 之前算，否則串流到一半就斷線的那顆
+      // 泡泡會被算進基準，補抓永遠等不到「多出一則」。
+      const baselineAgentCount = pendingReplyBaselineAgentCount();
+
+      // 這一輪的送出狀態一定要解除，否則輸入框永遠卡在 disabled。
+      pendingAiReplyCountRef.current = 0;
+      currentAgentMsgIdRef.current = null;
+      setIsAgentStreaming(false);
+      setIsAgentThinking(false);
+      setIsSending(false);
+
+      if (event?.code === 4001) {
+        // 後端拒絕 token（access token 預設 60 分鐘）。重連只會再被拒一次。
+        setChatError('登入已過期，請重新登入。');
+        return;
+      }
+
+      disarmPendingAiReplyWatchdog();
+      setChatError('連線中斷，正在取回這一則回覆...');
+      recoverPendingAiReply(activeSessionId, baselineAgentCount);
     };
 
     wsRef.current = socket;
@@ -2002,7 +2197,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
           appendOrCoalesce(prev, {
             id: `gate-${Date.now()}`,
             type: 'agent',
-            userName: 'BridgeUs',
+            userName: 'TakeAbridge',
             text: response.data.reply,
           }),
         );
@@ -2398,6 +2593,13 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     ]);
     setInputValue('');
     setChatError('');
+    // 使用者已經往下送新的一則了，上一輪的補抓輪詢就別再改畫面。
+    if (aiReplyRecoveryTimerRef.current) {
+      window.clearInterval(aiReplyRecoveryTimerRef.current);
+      aiReplyRecoveryTimerRef.current = null;
+    }
+    disarmPendingAiReplyWatchdog();
+    staleAiTurnRef.current = false;
 
     let activeSessionId = null;
     let queuedReply = false;
@@ -2419,6 +2621,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       updatePendingAiReplyCount(1);
       queuedReply = true;
       socket.send(JSON.stringify({ type: 'user_message', content: text }));
+      armPendingAiReplyWatchdog(activeSessionId);
     } catch (socketError) {
       if (queuedReply) {
         updatePendingAiReplyCount(-1);
@@ -2814,11 +3017,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
             </div>
           )}
           {pendingMatchSuggestion && (
-            <div
-              className={`match-assist-card${
-                pendingMatchSuggestion.category === 'redirect' ? ' pinned' : ''
-              }`}
-            >
+            <div className="match-assist-card">
               <div className="match-assist-content">
                 <span className="match-assist-label">
                   {formatSuggestionCategory(pendingMatchSuggestion.category)}
@@ -3199,7 +3398,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
                 <div className="message-row">
                   <div className="message-user-info">
                     <img src="/logo.png" alt="Avatar" className="message-avatar" />
-                    <span className="message-username">BridgeUs</span>
+                    <span className="message-username">TakeAbridge</span>
                   </div>
                   <div className="message-bubble agent-thinking-bubble">
                     正在依你的問卷準備開場...
@@ -3229,7 +3428,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
                 <div className="message-row">
                   <div className="message-user-info">
                     <img src="/logo.png" alt="Avatar" className="message-avatar" />
-                    <span className="message-username">BridgeUs</span>
+                    <span className="message-username">TakeAbridge</span>
                   </div>
                   <div className="message-bubble agent-thinking-bubble">
                     {isAgentThinking ? (
