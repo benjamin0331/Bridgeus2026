@@ -4,7 +4,8 @@ import api from '../api/client';
 import './KnowledgeBase.css';
 
 const TRENDING_DISPLAY_LIMIT = 4;
-const TOP_CONVERSATIONS_LIMIT = 5;
+// 首頁每個議題的「熱門對話」小卡預設顯示這麼多筆，其餘走「觀看更多」。
+const TOP_CONVERSATIONS_LIMIT = 3;
 
 // stance_direction 目前後端沒有固定的中文對照表，這裡只涵蓋已知會出現的值，
 // 其餘（例如空字串）就照原樣顯示，不強行翻譯。
@@ -223,6 +224,11 @@ const KnowledgeBase = () => {
   return (
     <div className="kb-container">
       <div className="kb-left-section">
+        <button type="button" className="kb-back-btn" onClick={() => navigate('/')}>
+          <img src="/back-arrow.svg" alt="" className="kb-back-icon" />
+          返回首頁
+        </button>
+
         {/* 議題選擇 */}
         <div className="kb-topic-select">
           <div className="kb-section-title">選擇議題</div>
@@ -242,10 +248,10 @@ const KnowledgeBase = () => {
           </div>
         </div>
 
-        {/* 熱門對話 Top 5：選定議題後才顯示 */}
+        {/* 熱門對話小卡：選定議題後才顯示，預設 TOP_CONVERSATIONS_LIMIT 筆 */}
         <section className="kb-highlights-section">
           <div className="kb-section-title">
-            {selectedTopic ? `「${selectedTopic.title}」熱門對話 Top 5` : '熱門對話'}
+            {selectedTopic ? `「${selectedTopic.title}」熱門對話` : '熱門對話'}
           </div>
 
           {!selectedTopicId ? (
