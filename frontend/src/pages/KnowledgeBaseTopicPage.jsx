@@ -1,9 +1,14 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import api from '../api/client';
+import { getDialogueTopics } from '../api/dialogueTopics';
+import { BROWSE_FETCH_SIZE, CARDS_PER_PAGE, browseCache, browseCacheKey } from './kbBrowseCache';
+import { prefetchConversation } from './kbConversationCache';
 import './KnowledgeBase.css';
 
-const PAGE_SIZE = 12;
+// 對應 KnowledgeBase.jsx 的 ALL_TOPIC_ID：從首頁「全部」分類點「觀看更多」
+// 進來時，路由參數會是這個字串，不對應任何真實 topic_id。
+const ALL_TOPIC_ID = 'all';
 
 const STANCE_LABELS = {
   pro: '支持',
@@ -19,9 +24,9 @@ const SPEAKER_SIDE_LABELS = { a: 'A方', b: 'B方' };
 // 同一場對話（同一個聊天室）常常會產生好幾筆觀點，依 dialogue_summary_id
 // 分組後一起顯示，而不是打散成看起來互不相關的獨立卡片。保留原本依分數
 // 排序後的先後順序（Map 的插入順序 = 第一次出現該 summary_id 的順序）。
-// 注意：分組只在「目前這一頁」內做——分頁本身還是照原本每頁 12 筆觀點
-// 算，不是每頁 12 場對話，同一場對話的觀點如果剛好被分頁切開，還是會
-// 分別出現在不同頁。
+// 注意：分組只在「目前這一頁」內做——分頁本身還是照每頁 PAGE_SIZE 筆
+// 觀點算，不是每頁 PAGE_SIZE 場對話，同一場對話的觀點如果剛好被分頁切開，
+// 還是會分別出現在不同頁。
 function groupViewpointsBySummary(viewpoints) {
   const groups = [];
   const bySummaryId = new Map();
@@ -41,69 +46,94 @@ function groupViewpointsBySummary(viewpoints) {
 const KnowledgeBaseTopicPage = () => {
   const { topicId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [page, setPage] = useState(1);
-  const [results, setResults] = useState([]);
-  const [count, setCount] = useState(0);
-  const [loaded, setLoaded] = useState(false);
-  const [topicTitle, setTopicTitle] = useState('');
+  const [results, setResults] = useState(() => browseCache.get(browseCacheKey(topicId)) ?? []);
+  const [loaded, setLoaded] = useState(() => browseCache.has(browseCacheKey(topicId)));
+  // 首頁「觀看更多」按鈕會把標題塞在 navigation state 裡，有的話就直接用、
+  // 省掉一支 /api/dialogue/topics/ 請求；深連結／重新整理時 state 為空才去抓。
+  const [topicTitle, setTopicTitle] = useState(location.state?.topicTitle || '');
   // 同一場對話分組後預設折疊，只顯示分數最高的第一筆；點箭頭才展開看其他筆。
   const [expandedGroupIds, setExpandedGroupIds] = useState(() => new Set());
 
+  // 換議題時（React Router 會沿用同一個元件實例，不是重新掛載）在 render 階段
+  // 就把 results / loaded / page 對齊新議題——這是 React 官方「prop 變了就重置
+  // state」的寫法，不放進 effect 以免多一輪 render。
+  const [trackedTopicId, setTrackedTopicId] = useState(topicId);
+  if (topicId !== trackedTopicId) {
+    setTrackedTopicId(topicId);
+    setResults(browseCache.get(browseCacheKey(topicId)) ?? []);
+    setLoaded(browseCache.has(browseCacheKey(topicId)));
+    setPage(1);
+  }
+
+  useEffect(() => {
+    if (topicId === ALL_TOPIC_ID || location.state?.topicTitle) return undefined;
+
+    let cancelled = false;
+
+    getDialogueTopics().then((list) => {
+      if (cancelled) return;
+      const match = list.find((topic) => String(topic.id) === String(topicId));
+      if (match) setTopicTitle(match.title);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [topicId, location.state]);
+
+  // 一次抓回整個議題的觀點，背景刷新快取。翻頁不再打 API，由前端依「卡片」
+  // 切頁（見下方 visibleGroups）。快取命中時上面 render 階段已經先把畫面填好，
+  // 這裡只負責把資料抓新。
   useEffect(() => {
     let cancelled = false;
 
+    // "全部"不帶 topic_id：browse 端點本來就支援跨議題（見後端
+    // KnowledgeBaseViewpointBrowseView docstring）。
+    const topicParams = topicId === ALL_TOPIC_ID ? {} : { topic_id: topicId };
+    const key = browseCacheKey(topicId);
+
     api
-      .get('/api/dialogue/topics/')
-      .then((response) => {
-        if (cancelled) return;
-        const topics = Array.isArray(response.data) ? response.data : [];
-        const match = topics.find((topic) => String(topic.id) === String(topicId));
-        if (match) setTopicTitle(match.title);
+      .get('/api/summary/viewpoints/browse/', {
+        params: { ...topicParams, page: 1, page_size: BROWSE_FETCH_SIZE },
       })
-      .catch(() => {});
+      .then((response) => {
+        const rows = Array.isArray(response.data?.results) ? response.data.results : [];
+        browseCache.set(key, rows);
+        if (!cancelled) {
+          setResults(rows);
+          setLoaded(true);
+        }
+      })
+      .catch(() => {
+        // 背景重抓失敗時，有舊快取就繼續沿用、不要清空畫面。
+        if (!cancelled && !browseCache.has(key)) {
+          setResults([]);
+          setLoaded(true);
+        }
+      });
 
     return () => {
       cancelled = true;
     };
   }, [topicId]);
 
-  useEffect(() => {
-    let cancelled = false;
+  const isAllTopics = topicId === ALL_TOPIC_ID;
+  // "全部"底下結果橫跨多個議題，不能像單一議題那樣借用第一筆結果的
+  // topic_title 當標題。
+  const displayTitle = isAllTopics ? '全部' : topicTitle || results[0]?.topic_title || '';
 
-    const loadPage = () => {
-      setLoaded(false);
-
-      api
-        .get('/api/summary/viewpoints/browse/', {
-          params: { topic_id: topicId, page, page_size: PAGE_SIZE },
-        })
-        .then((response) => {
-          if (cancelled) return;
-          setResults(Array.isArray(response.data?.results) ? response.data.results : []);
-          setCount(response.data?.count ?? 0);
-        })
-        .catch(() => {
-          if (!cancelled) {
-            setResults([]);
-            setCount(0);
-          }
-        })
-        .finally(() => {
-          if (!cancelled) setLoaded(true);
-        });
-    };
-
-    loadPage();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [topicId, page]);
-
-  const displayTitle = topicTitle || results[0]?.topic_title || '';
-  const totalPages = Math.max(1, Math.ceil(count / PAGE_SIZE));
-  const groupedResults = useMemo(() => groupViewpointsBySummary(results), [results]);
+  // 同一場對話分組成卡片後，依卡片數切頁：每頁固定 CARDS_PER_PAGE 張，
+  // 只有最後一頁可能不足。
+  const allGroups = useMemo(() => groupViewpointsBySummary(results), [results]);
+  const totalPages = Math.max(1, Math.ceil(allGroups.length / CARDS_PER_PAGE));
+  const safePage = Math.min(page, totalPages);
+  const visibleGroups = allGroups.slice(
+    (safePage - 1) * CARDS_PER_PAGE,
+    safePage * CARDS_PER_PAGE,
+  );
 
   const goToConversation = (viewpoint) => {
     navigate(`/kb/conversations/${viewpoint.id}`);
@@ -158,14 +188,20 @@ const KnowledgeBaseTopicPage = () => {
 
       <div className="kb-section-title">
         {displayTitle ? `「${displayTitle}」所有收錄對話` : '所有收錄對話'}
-        {count > 0 && <span className="kb-browse-count"> 共 {count} 筆</span>}
+        {allGroups.length > 0 && (
+          <span className="kb-browse-count"> 共 {allGroups.length} 場對話</span>
+        )}
       </div>
 
-      {loaded && results.length === 0 ? (
-        <div className="kb-empty-hint">這個議題目前還沒有通過審核的觀點內容</div>
+      {!loaded && results.length === 0 ? (
+        <div className="kb-empty-hint">載入中…</div>
+      ) : loaded && results.length === 0 ? (
+        <div className="kb-empty-hint">
+          {isAllTopics ? '目前還沒有通過審核的觀點內容' : '這個議題目前還沒有通過審核的觀點內容'}
+        </div>
       ) : (
         <div className="kb-highlights-grid">
-          {groupedResults.map((group) => {
+          {visibleGroups.map((group) => {
             const hasMultiple = group.viewpoints.length > 1;
             const isExpanded = expandedGroupIds.has(group.summaryId);
             const visibleViewpoints =
@@ -176,10 +212,15 @@ const KnowledgeBaseTopicPage = () => {
               className="kb-highlight-group-card"
               onClick={() => handleGroupCardClick(group, hasMultiple)}
               onDoubleClick={(e) => handleGroupCardDoubleClick(e, group, hasMultiple)}
+              onMouseEnter={() => prefetchConversation(group.viewpoints[0].id)}
+              onMouseDown={() => prefetchConversation(group.viewpoints[0].id)}
             >
               {visibleViewpoints.map((viewpoint) => (
                 <div key={viewpoint.id} className="kb-highlight-group-item">
                   <div className="kb-highlight-meta">
+                    {isAllTopics && viewpoint.topic_title && (
+                      <span className="kb-highlight-topic">{viewpoint.topic_title}</span>
+                    )}
                     {viewpoint.speaker_side && (
                       <span className="kb-highlight-side">
                         {SPEAKER_SIDE_LABELS[viewpoint.speaker_side] ?? viewpoint.speaker_side}
@@ -207,7 +248,7 @@ const KnowledgeBaseTopicPage = () => {
                       <p className="kb-highlight-quote-text">{viewpoint.ai_response_text}</p>
                     </div>
                   )}
-                  <div className="kb-highlight-footer">被引用 {viewpoint.citation_count} 次</div>
+                  <div className="kb-highlight-footer">被收藏 {viewpoint.favorite_count} 次</div>
                 </div>
               ))}
               {hasMultiple && (
@@ -235,18 +276,18 @@ const KnowledgeBaseTopicPage = () => {
         <div className="kb-pagination">
           <button
             type="button"
-            disabled={page <= 1}
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={safePage <= 1}
+            onClick={() => setPage(Math.max(1, safePage - 1))}
           >
             上一頁
           </button>
           <span>
-            第 {page} / {totalPages} 頁
+            第 {safePage} / {totalPages} 頁
           </span>
           <button
             type="button"
-            disabled={page >= totalPages}
-            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={safePage >= totalPages}
+            onClick={() => setPage(Math.min(totalPages, safePage + 1))}
           >
             下一頁
           </button>

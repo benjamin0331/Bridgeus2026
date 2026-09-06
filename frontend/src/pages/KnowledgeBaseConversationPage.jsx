@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import api from '../api/client';
 import ConversationTreePanel from '../components/ConversationTreePanel';
+import { conversationCache } from './kbConversationCache';
 import './KnowledgeBase.css';
 
 const STANCE_LABELS = {
@@ -35,31 +36,43 @@ const KnowledgeBaseConversationPage = () => {
   const { viewpointId } = useParams();
   const navigate = useNavigate();
 
-  const [conversation, setConversation] = useState(null);
-  const [loaded, setLoaded] = useState(false);
+  // hover 預抓命中時，一進頁面就有內容、不轉圈（見 kbConversationCache）。
+  const [conversation, setConversation] = useState(
+    () => conversationCache.get(String(viewpointId)) ?? null,
+  );
+  const [loaded, setLoaded] = useState(() => conversationCache.has(String(viewpointId)));
   const [error, setError] = useState(false);
+
+  // 換一筆觀點時（React Router 沿用同一個元件實例）在 render 階段對齊新的
+  // viewpointId——React 官方「prop 變了就重置 state」的寫法。
+  const [trackedId, setTrackedId] = useState(viewpointId);
+  if (viewpointId !== trackedId) {
+    setTrackedId(viewpointId);
+    setConversation(conversationCache.get(String(viewpointId)) ?? null);
+    setLoaded(conversationCache.has(String(viewpointId)));
+    setError(false);
+  }
 
   useEffect(() => {
     let cancelled = false;
+    const key = String(viewpointId);
 
-    const loadConversation = () => {
-      setLoaded(false);
-      setError(false);
-
-      api
-        .get(`/api/summary/viewpoints/${viewpointId}/conversation/`)
-        .then((response) => {
-          if (!cancelled) setConversation(response.data ?? null);
-        })
-        .catch(() => {
-          if (!cancelled) setError(true);
-        })
-        .finally(() => {
-          if (!cancelled) setLoaded(true);
-        });
-    };
-
-    loadConversation();
+    api
+      .get(`/api/summary/viewpoints/${key}/conversation/`)
+      .then((response) => {
+        conversationCache.set(key, response.data ?? null);
+        if (!cancelled) {
+          setConversation(response.data ?? null);
+          setLoaded(true);
+        }
+      })
+      .catch(() => {
+        // 背景重抓失敗時，有舊快取就繼續沿用、不要蓋成錯誤畫面。
+        if (!cancelled && !conversationCache.has(key)) {
+          setError(true);
+          setLoaded(true);
+        }
+      });
 
     return () => {
       cancelled = true;
@@ -153,7 +166,7 @@ const KnowledgeBaseConversationPage = () => {
                       <p className="kb-highlight-quote-text">{viewpoint.ai_response_text}</p>
                     </div>
                   )}
-                  <div className="kb-highlight-footer">被引用 {viewpoint.citation_count} 次</div>
+                  <div className="kb-highlight-footer">被收藏 {viewpoint.favorite_count} 次</div>
                 </div>
               ))}
             </div>

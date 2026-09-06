@@ -2,6 +2,7 @@ import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useFavorites } from '../hooks/useFavorites';
 import FavoriteStarButton from '../components/FavoriteStarButton';
+import { prefetchConversation } from './kbConversationCache';
 import '../pages/KnowledgeBase.css';
 import './FavoritesPage.css';
 
@@ -54,6 +55,8 @@ const FavoritesPage = () => {
                 key={viewpoint.id}
                 className="kb-highlight-card"
                 onClick={() => goToConversation(viewpoint)}
+                onMouseEnter={() => prefetchConversation(viewpoint.id)}
+                onMouseDown={() => prefetchConversation(viewpoint.id)}
               >
                 <div className="kb-highlight-meta">
                   {viewpoint.topic_title && (
@@ -75,7 +78,7 @@ const FavoritesPage = () => {
                   {viewpoint.viewpoint_summary || '（尚無摘要）'}
                 </p>
                 <div className="kb-highlight-footer">
-                  <span>被引用 {viewpoint.citation_count} 次</span>
+                  <span>被收藏 {viewpoint.favorite_count} 次</span>
                   <FavoriteStarButton
                     active={isViewpointFavorited(viewpoint.id)}
                     onToggle={() => toggleViewpointFavorite(viewpoint)}

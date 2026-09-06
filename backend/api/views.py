@@ -14,7 +14,17 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.cache import cache
 from django.db import IntegrityError, transaction
-from django.db.models import Case, Count, FloatField, IntegerField, Q, Value, When
+from django.db.models import (
+    Case,
+    Count,
+    FloatField,
+    IntegerField,
+    OuterRef,
+    Q,
+    Subquery,
+    Value,
+    When,
+)
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework import exceptions, generics, permissions, status
@@ -2695,6 +2705,44 @@ def _parse_topic_id(raw: str | None) -> int | None:
     return int(raw)
 
 
+def _viewpoint_favorite_count_subquery():
+    """一個子查詢：某個 ViewpointNode 被收藏（Favorite）幾次。
+
+    Favorite 是鬆散指向（target_type + target_id，不是 FK），沒有反向關聯可以
+    直接 annotate(Count(...))，所以用 Subquery 對 target_id 分組計數。
+    """
+    return Coalesce(
+        Subquery(
+            Favorite.objects.filter(
+                target_type=Favorite.TargetType.VIEWPOINT,
+                target_id=OuterRef("pk"),
+            )
+            .values("target_id")
+            .annotate(c=Count("id"))
+            .values("c"),
+            output_field=IntegerField(),
+        ),
+        Value(0),
+    )
+
+
+def _viewpoint_favorite_counts(node_ids) -> dict[int, int]:
+    """一次查好一批 ViewpointNode 各自的被收藏次數，給 _serialize_viewpoint_rows
+    用（不倚賴 queryset 上有沒有帶 favorite_count annotation）。"""
+    node_ids = list(node_ids)
+    if not node_ids:
+        return {}
+    rows = (
+        Favorite.objects.filter(
+            target_type=Favorite.TargetType.VIEWPOINT,
+            target_id__in=node_ids,
+        )
+        .values("target_id")
+        .annotate(n=Count("id"))
+    )
+    return {row["target_id"]: row["n"] for row in rows}
+
+
 def _approved_viewpoints_queryset(topic_id: int | None):
     qs = ViewpointNode.objects.filter(
         review_status=ViewpointNode.ReviewStatus.APPROVED
@@ -2702,9 +2750,12 @@ def _approved_viewpoints_queryset(topic_id: int | None):
     if topic_id is not None:
         qs = qs.filter(topic_id=topic_id)
 
+    # 「熱門」排序改用被收藏次數（觀點小卡顯示的也是這個數字），
+    # composite_score 當同分時的次序。
     return qs.annotate(
-        _score=Coalesce("composite_score", Value(0.0), output_field=FloatField())
-    ).order_by("-citation_count", "-_score")
+        _score=Coalesce("composite_score", Value(0.0), output_field=FloatField()),
+        favorite_count=_viewpoint_favorite_count_subquery(),
+    ).order_by("-favorite_count", "-_score")
 
 
 def _serialize_viewpoint_rows(nodes) -> list[dict]:
@@ -2718,6 +2769,8 @@ def _serialize_viewpoint_rows(nodes) -> list[dict]:
     同一個 summary_id，前端知識庫頁面用這個欄位把它們歸類在同一組卡片下，
     而不是打散成互不相關的獨立卡片。
     """
+    nodes = list(nodes)
+    favorite_counts = _viewpoint_favorite_counts(node.id for node in nodes)
     anchor_names_by_topic: dict[int, dict[str, str]] = {}
     rows = []
     for node in nodes:
@@ -2738,7 +2791,10 @@ def _serialize_viewpoint_rows(nodes) -> list[dict]:
                 "viewpoint_summary": node.viewpoint_summary,
                 "user_input_text": node.user_input_text,
                 "ai_response_text": node.ai_response_text,
+                # citation_count（被去重命中的次數）仍保留給研究者審核頁；
+                # 公開的觀點小卡改顯示 favorite_count（被收藏次數）。
                 "citation_count": node.citation_count,
+                "favorite_count": favorite_counts.get(node.id, 0),
                 "composite_score": node.composite_score,
                 "created_at": node.created_at,
             }
@@ -2750,12 +2806,15 @@ class KnowledgeBaseHighlightsView(APIView):
     """GET /api/summary/viewpoints/highlights/?topic_id=<id>&limit=<n>
 
     知識庫「熱門對話」區塊：所有登入使用者都能看，只回傳已通過人工審核
-    （review_status=approved）的 ViewpointNode，依 citation_count（被去重
-    比對命中的次數，等於這個觀點在多場對話中重複出現過幾次）排序，當作
-    「熱門度」的代理指標。預設 limit=5（首頁選定議題後顯示前五名用），
-    最多 20 筆——完整清單走 KnowledgeBaseViewpointBrowseView（有分頁）。
+    （review_status=approved）的 ViewpointNode，依 favorite_count（被使用者
+    收藏的次數，即觀點小卡上顯示的數字）排序，當作「熱門度」的代理指標，
+    composite_score 為同分時的次序。預設 limit=5（首頁選定議題後顯示前五名
+    用），最多 20 筆——完整清單走 KnowledgeBaseViewpointBrowseView（有分頁）。
     跟 ViewpointReviewListView 不同：那個是研究者專用、預設列 PENDING、
     且會帶原始逐字稿欄位。
+
+    topic_id 不帶時代表前端「全部」分類：跨所有議題一起排序回傳，不是錯誤
+    （_approved_viewpoints_queryset(None) 本來就支援不篩 topic）。
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -2848,8 +2907,9 @@ class KnowledgeBaseConversationDetailView(APIView):
             summary_id=summary.id,
             review_status=ViewpointNode.ReviewStatus.APPROVED,
         ).annotate(
-            _score=Coalesce("composite_score", Value(0.0), output_field=FloatField())
-        ).order_by("-citation_count", "-_score")
+            _score=Coalesce("composite_score", Value(0.0), output_field=FloatField()),
+            favorite_count=_viewpoint_favorite_count_subquery(),
+        ).order_by("-favorite_count", "-_score")
 
         data = {
             "dialogue_summary_id": summary.id,
@@ -2913,15 +2973,20 @@ class KnowledgeBaseConversationDetailView(APIView):
 class ViewpointBrowsePagination(PageNumberPagination):
     page_size = 12
     page_size_query_param = "page_size"
-    max_page_size = 50
+    # 前端「觀看更多」改成一次抓回整個議題的觀點、自己依卡片切頁（每頁固定
+    # 張數，只有最後一頁不足），所以會帶一個很大的 page_size。上限放寬到能
+    # 容納單一議題的全部已審核觀點。
+    max_page_size = 500
 
 
 class KnowledgeBaseViewpointBrowseView(APIView):
     """GET /api/summary/viewpoints/browse/?topic_id=<id>&page=<n>
 
-    知識庫「觀看更多」頁面：列出某個議題底下所有已審核通過的觀點，依
-    citation_count 排序，分頁回傳（DRF 標準 count/next/previous/results 格式）。
-    topic_id 為必填——這裡設計上一定是使用者先在首頁選定一個議題後才會進來。
+    知識庫「觀看更多」頁面：列出某個議題（或不帶 topic_id 時，跨全部議題）
+    底下所有已審核通過的觀點，依 favorite_count（被收藏次數）排序，分頁回傳
+    （DRF 標準 count/next/previous/results 格式）。首頁「全部」分類點進來的
+    「觀看更多」就是不帶 topic_id 的這種用法，見 KnowledgeBaseHighlightsView
+    docstring 對「全部」的說明——兩者對「不篩議題」的處理方式要一致。
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -2933,11 +2998,6 @@ class KnowledgeBaseViewpointBrowseView(APIView):
         except ValueError:
             return Response(
                 {"detail": "topic_id 必須是整數。"}, status=status.HTTP_400_BAD_REQUEST
-            )
-        if topic_id is None:
-            return Response(
-                {"detail": "topic_id 為必填。"},
-                status=status.HTTP_400_BAD_REQUEST,
             )
 
         # 埋點放在參數驗證之後：400 的請求沒真的看到知識庫，不該給成就。
