@@ -427,6 +427,17 @@
   color: #333;
 }
 
+/* "全部"分類底下影片混著不同議題，跟 .kb-highlight-topic 同一套配色。 */
+.kb-video-topic {
+  align-self: flex-start;
+  font-size: 11px;
+  font-weight: bold;
+  padding: 3px 10px;
+  border-radius: 50px;
+  background: #d8e4f2;
+  color: #3b587a;
+}
+
 .kb-video-description {
   color: #777;
   font-size: 13px;

@@ -1,8 +1,16 @@
+import { useEffect } from 'react';
 import IssueCard from '../components/IssueCard';
 import ActionCard from '../components/ActionCard';
+import { prefetchKnowledgeBaseHome } from './kbHomeCache';
 import './HomePage.css';
 
 function HomePage({ navigate, userName, issues, issuesLoaded, entryMode }) {
+    // 使用者多半會從首頁點進觀點知識庫，先把 /kb 一進去的預設畫面（議題清單、
+    // 「全部」的熱門對話與影片）在背景備好，點進去就不用等網路。
+    useEffect(() => {
+        prefetchKnowledgeBaseHome();
+    }, []);
+
     return (
         <div className="content-area">
             {/* 使用者歡迎詞區域 */}
