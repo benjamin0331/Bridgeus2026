@@ -104,6 +104,18 @@ function reactionKey(target) {
   return target ? `${target.type}:${target.id}` : null;
 }
 
+// 「這個房間已經自動導去過後測問卷了」的記號。
+//
+// 必須是 sessionStorage 而不是 ref：使用者從問卷按 × 會 navigate(-1) 回到
+// 對話頁，元件整個重新掛載，任何 ref 都會歸零，但房間的 status 仍然是
+// closed——記號活不過掛載的話，effect 會立刻又把人送回問卷。
+//
+// 主動退出與被動被結束兩條路都要寫同一個記號。只有其中一條寫（曾經的
+// 情況），另一條就會在重新掛載後再導一次，使用者看到的就是「問卷跳兩次」。
+function postQuestionnaireRedirectKey(roomId) {
+  return `bridgeus_pq_auto_redirected_${roomId}`;
+}
+
 function mapHistoryToMessages(history, userName) {
   return history.map((message, index) => {
     const isAgent = message.role === 'agent';
@@ -1403,7 +1415,7 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
     if (selfInitiatedLeaveRef.current) return;
     if (matchingState?.status !== 'closed') return;
     if (!matchingState?.room_id) return;
-    const redirectFlagKey = `bridgeus_pq_auto_redirected_${matchingState.room_id}`;
+    const redirectFlagKey = postQuestionnaireRedirectKey(matchingState.room_id);
     if (sessionStorage.getItem(redirectFlagKey)) return;
     sessionStorage.setItem(redirectFlagKey, '1');
     navigate('/post-questionnaire', {
@@ -2743,6 +2755,13 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       setMatchAssistNotice(null);
       setPendingMatchSuggestion(null);
       setMatchSuggestionDraft(null);
+      // 自己按退出也算「已經導過一次」。少了這行，使用者從問卷按 × 回來時
+      // 元件重新掛載、selfInitiatedLeaveRef 歸零，而房間仍是 closed，
+      // 上面那條 effect 就會再導一次——問卷因此跳兩次。
+      sessionStorage.setItem(
+        postQuestionnaireRedirectKey(matchingState.room_id),
+        '1',
+      );
       navigate('/post-questionnaire', {
         state: {
           topicId: Number(id),
