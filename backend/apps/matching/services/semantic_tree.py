@@ -1359,6 +1359,13 @@ def _owner_key_for_user(match: DialogueMatch, user_id: int | None) -> str:
     return OWNER_USER_A
 
 
+def owner_key_for_user(match: DialogueMatch, user_id: int | None) -> str:
+    """Public wrapper over `_owner_key_for_user`, for callers outside this
+    module that only hold a `user_id` (e.g. input_gate_store finalizing the
+    per-participant 廣度 count at dialogue end)."""
+    return _owner_key_for_user(match, user_id)
+
+
 def _owner_key_for_message(match: DialogueMatch, sender_id: int | None) -> str | None:
     if sender_id == match.user_a_id:
         return OWNER_USER_A
@@ -1446,6 +1453,59 @@ def get_lit_node_count(
     return _lit_node_count_from_owner_state(
         state["participants"].get(owner_key), source_message_id=source_message_id
     )
+
+
+def _count_lit_anchors(owner_state: Any) -> int:
+    """幾個 depth-1 大分類 anchor 已被點亮：treeData.children 裡
+    hiddenUntilUsed 為 False 的個數。一個 anchor 只要底下曾長出任何說法節點，
+    分析 pipeline（apply_analysis_items_to_tree）就會把它的 hiddenUntilUsed
+    設成 False。對缺漏/畸形狀態一律回 0，不丟例外——呼叫端在對話結束落庫，
+    不該因為樹狀態有問題就連 substantive_turn_count 一起落不了。
+    """
+    if not isinstance(owner_state, dict):
+        return 0
+    tree_data = owner_state.get("treeData")
+    if not isinstance(tree_data, dict):
+        return 0
+    return sum(
+        1
+        for child in tree_data.get("children", [])
+        if isinstance(child, dict) and child.get("hiddenUntilUsed") is False
+    )
+
+
+def get_lit_anchor_count(
+    match: DialogueMatch,
+    *,
+    owner_key: str,
+    root_name: str = "核電",
+) -> int:
+    """回傳某位 H-H 參與者在對話結束當下點亮了幾個 depth-1 CCND 大分類
+    anchor（0–6），供結算收據第二頁「思辨投入」五邊形的「廣度」軸使用
+    （見 docs/settlement_radar.md §5）。
+
+    **不要跟 get_lit_node_count 搞混**：那支數的是最外圈的說法節點
+    （flatten_tree 走 anchor 底下所有後代，滿分基準 MAX_LIT_NODES = 36），
+    這支只數六個固定大分類本身有沒有被點亮，滿分 6。
+
+    即時讀當前樹狀態，不做時間切片；查不到該參與者的狀態時回傳 0。
+    落庫時 H-H 兩位參與者各自算一次，owner_key 用 owner_key_for_user() 換。
+    """
+    state = get_semantic_tree_state(match, root_name=root_name)
+    return _count_lit_anchors(state["participants"].get(owner_key))
+
+
+def get_ai_lit_anchor_count(
+    session_record: dict[str, Any],
+    *,
+    root_name: str = "核電",
+) -> int:
+    """H-AI 版的 get_lit_anchor_count：數 AI 對話這位參與者點亮的 depth-1
+    大分類 anchor 數（0–6）。`session_record` 與 semantic_tree_session_payload
+    同一種 dict（tree 掛在 "semantic_tree" key 下）。查無狀態時回傳 0。
+    """
+    state = get_ai_semantic_tree_state(session_record, root_name=root_name)
+    return _count_lit_anchors(state["participants"].get(OWNER_AI_USER))
 
 
 def get_message_dimension(

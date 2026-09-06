@@ -803,6 +803,156 @@ def test_finalize_ai_session_metrics_produces_exportable_fields():
     assert record.substantive_turn_count == 5
 
 
+def _semantic_tree_state(mode, lit_by_owner):
+    """Hand-built semantic-tree state where `lit_by_owner` maps an owner_key to
+    the set of depth-1 anchor ids that should read as lit (hiddenUntilUsed
+    False). Used to prove finalize_* persists the 廣度 count."""
+    from apps.matching.services.semantic_tree import (
+        FIXED_ANCHORS,
+        SEMANTIC_TREE_STATE_VERSION,
+    )
+
+    participants = {}
+    for owner_key, lit_ids in lit_by_owner.items():
+        children = []
+        for anchor in FIXED_ANCHORS:
+            lit = anchor["id"] in lit_ids
+            children.append(
+                {
+                    "id": anchor["id"],
+                    "name": anchor["name"],
+                    "type": "anchor",
+                    "hiddenUntilUsed": not lit,
+                    "children": (
+                        [
+                            {
+                                "id": f"{anchor['id']}_p1",
+                                "name": "說法",
+                                "type": "point",
+                                "hiddenUntilUsed": False,
+                                "children": [],
+                            }
+                        ]
+                        if lit
+                        else []
+                    ),
+                }
+            )
+        participants[owner_key] = {
+            "ownerKey": owner_key,
+            "treeData": {
+                "id": "root",
+                "name": "核電",
+                "type": "root",
+                "children": children,
+            },
+            "analyzedSourceIds": [],
+            "analysisHistory": [],
+        }
+    return {
+        "version": SEMANTIC_TREE_STATE_VERSION,
+        "mode": mode,
+        "anchors": [dict(a) for a in FIXED_ANCHORS],
+        "participants": participants,
+    }
+
+
+@pytest.mark.django_db
+def test_finalize_ai_session_metrics_stores_lit_anchor_count():
+    from apps.matching.services.input_gate_store import finalize_ai_session_metrics
+    from apps.matching.services.semantic_tree import AI_TREE_MODE, OWNER_AI_USER
+
+    user = User.objects.create_user(username="anchor_ai", password="secret123")
+    session_id = uuid4().hex
+    DialogueSessionRecord.objects.create(
+        user=user,
+        session_id=session_id,
+        topic_id=102,
+        topic_title="核能",
+        collection_name="nuclear_energy_all",
+        last_activity_at=timezone.now(),
+        invalid_input_total=1,
+        input_attempt_total=4,
+        semantic_tree_state=_semantic_tree_state(
+            AI_TREE_MODE,
+            {OWNER_AI_USER: {"anchor_safety", "anchor_energy", "anchor_waste"}},
+        ),
+    )
+
+    metrics = finalize_ai_session_metrics(session_id)
+
+    assert metrics["lit_anchor_count"] == 3
+    record = DialogueSessionRecord.objects.get(session_id=session_id)
+    assert record.lit_anchor_count == 3
+
+
+@pytest.mark.django_db
+def test_finalize_ai_session_metrics_lit_anchor_count_is_zero_without_a_tree():
+    from apps.matching.services.input_gate_store import finalize_ai_session_metrics
+
+    user = User.objects.create_user(username="anchor_ai_empty", password="secret123")
+    session_id = uuid4().hex
+    DialogueSessionRecord.objects.create(
+        user=user,
+        session_id=session_id,
+        topic_id=102,
+        topic_title="核能",
+        collection_name="nuclear_energy_all",
+        last_activity_at=timezone.now(),
+    )
+
+    metrics = finalize_ai_session_metrics(session_id)
+
+    assert metrics["lit_anchor_count"] == 0
+    assert DialogueSessionRecord.objects.get(session_id=session_id).lit_anchor_count == 0
+
+
+@pytest.mark.django_db
+def test_finalize_match_metrics_stores_lit_anchor_count_per_participant():
+    from api.models import MatchInputGateStat
+    from apps.matching.services.input_gate_store import finalize_match_metrics
+    from apps.matching.services.semantic_tree import (
+        MATCH_TREE_MODE,
+        OWNER_USER_A,
+        OWNER_USER_B,
+    )
+
+    user_a = User.objects.create_user(username="anchor_hh_a", password="x")
+    user_b = User.objects.create_user(username="anchor_hh_b", password="x")
+    match = DialogueMatch.objects.create(
+        topic_id=102,
+        user_a=user_a,
+        user_b=user_b,
+        user_a_score=6.0,
+        user_b_score=2.0,
+        room_id=uuid4().hex,
+    )
+    match.stats = {
+        "semantic_tree": _semantic_tree_state(
+            MATCH_TREE_MODE,
+            {
+                OWNER_USER_A: {"anchor_safety", "anchor_economy"},
+                OWNER_USER_B: {"anchor_waste"},
+            },
+        )
+    }
+    match.save()
+    MatchInputGateStat.objects.create(
+        match=match, user=user_a, input_attempt_total=3, invalid_input_total=1
+    )
+    MatchInputGateStat.objects.create(
+        match=match, user=user_b, input_attempt_total=2, invalid_input_total=0
+    )
+
+    a_metrics = finalize_match_metrics(match.id, user_a.id)
+    b_metrics = finalize_match_metrics(match.id, user_b.id)
+
+    assert a_metrics["lit_anchor_count"] == 2
+    assert b_metrics["lit_anchor_count"] == 1
+    assert MatchInputGateStat.objects.get(match=match, user=user_a).lit_anchor_count == 2
+    assert MatchInputGateStat.objects.get(match=match, user=user_b).lit_anchor_count == 1
+
+
 @pytest.mark.django_db
 def test_record_ai_attempt_counts_profanity_only_separately():
     from apps.matching.services.input_gate_store import record_ai_attempt

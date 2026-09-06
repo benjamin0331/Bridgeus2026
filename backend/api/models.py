@@ -97,6 +97,11 @@ class DialogueSessionRecord(models.Model):
     # 對話結束時（後測問卷送出）計算並落庫；未結束的 session 為 NULL。
     invalid_ratio = models.FloatField(null=True, blank=True)
     substantive_turn_count = models.IntegerField(null=True, blank=True)
+    # 對話結束當下點亮的 CCND depth-1 大分類 anchor 數（0–6），供結算收據的
+    # 「思辨投入」五邊形「廣度」軸使用。落庫時機同 substantive_turn_count
+    # （後測送出時 _finalize_input_gate_metrics）。**不是** get_lit_node_count
+    # 數的最外圈說法節點（滿分 36），見 docs/settlement_radar.md §5。
+    lit_anchor_count = models.IntegerField(null=True, blank=True)
 
     class Meta:
         indexes = [
@@ -303,6 +308,10 @@ class MatchInputGateStat(models.Model):
     input_attempt_total = models.IntegerField(default=0)
     invalid_ratio = models.FloatField(null=True, blank=True)
     substantive_turn_count = models.IntegerField(null=True, blank=True)
+    # 對話結束當下這位參與者點亮的 CCND depth-1 大分類 anchor 數（0–6），
+    # 供結算收據五邊形「廣度」軸使用。落庫時機／定義同
+    # DialogueSessionRecord.lit_anchor_count，per (match, user)。
+    lit_anchor_count = models.IntegerField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

@@ -52,13 +52,16 @@ def record_ai_attempt(session_id: str, *, blocked: bool, profanity: bool = False
 
 
 def finalize_ai_session_metrics(session_id: str) -> dict | None:
-    """對話結束時計算並儲存 `invalid_ratio` 與 `substantive_turn_count`。
+    """對話結束時計算並儲存 `invalid_ratio`、`substantive_turn_count` 與
+    `lit_anchor_count`。
 
     invalid_ratio          = 攔截訊息數 / 總送出嘗試數
     substantive_turn_count = 通過閘門且非短回應的發言數
+    lit_anchor_count       = 點亮的 CCND depth-1 大分類 anchor 數（0–6）
     """
     from api.models import AIConversation, DialogueSessionRecord
     from apps.matching.services.input_gate import is_substantive_message
+    from apps.matching.services.semantic_tree import get_ai_lit_anchor_count
 
     record = DialogueSessionRecord.objects.filter(session_id=session_id).first()
     if record is None:
@@ -77,12 +80,22 @@ def finalize_ai_session_metrics(session_id: str) -> dict | None:
         ).values_list("user_prompt", flat=True)
         if is_substantive_message(prompt or "")
     )
-    record.save(update_fields=["invalid_ratio", "substantive_turn_count"])
+    record.lit_anchor_count = get_ai_lit_anchor_count(
+        {"semantic_tree": record.semantic_tree_state, "topic_id": record.topic_id}
+    )
+    record.save(
+        update_fields=[
+            "invalid_ratio",
+            "substantive_turn_count",
+            "lit_anchor_count",
+        ]
+    )
     return {
         "invalid_input_total": record.invalid_input_total,
         "input_attempt_total": attempts,
         "invalid_ratio": record.invalid_ratio,
         "substantive_turn_count": record.substantive_turn_count,
+        "lit_anchor_count": record.lit_anchor_count,
     }
 
 
@@ -115,8 +128,12 @@ def record_match_attempt(match_id: int, user_id: int, *, blocked: bool) -> int:
 
 
 def finalize_match_metrics(match_id: int, user_id: int) -> dict | None:
-    from api.models import MatchInputGateStat, MatchMessage
+    from api.models import DialogueMatch, MatchInputGateStat, MatchMessage
     from apps.matching.services.input_gate import is_substantive_message
+    from apps.matching.services.semantic_tree import (
+        get_lit_anchor_count,
+        owner_key_for_user,
+    )
 
     stat = MatchInputGateStat.objects.filter(
         match_id=match_id, user_id=user_id
@@ -135,12 +152,26 @@ def finalize_match_metrics(match_id: int, user_id: int) -> dict | None:
         ).values_list("content", flat=True)
         if is_substantive_message(content or "")
     )
-    stat.save(update_fields=["invalid_ratio", "substantive_turn_count"])
+    # 廣度是 per-participant：兩位參與者各自的樹分開數，用 user_id 換 owner_key。
+    match = DialogueMatch.objects.filter(id=match_id).first()
+    stat.lit_anchor_count = (
+        get_lit_anchor_count(match, owner_key=owner_key_for_user(match, user_id))
+        if match is not None
+        else None
+    )
+    stat.save(
+        update_fields=[
+            "invalid_ratio",
+            "substantive_turn_count",
+            "lit_anchor_count",
+        ]
+    )
     return {
         "invalid_input_total": stat.invalid_input_total,
         "input_attempt_total": attempts,
         "invalid_ratio": stat.invalid_ratio,
         "substantive_turn_count": stat.substantive_turn_count,
+        "lit_anchor_count": stat.lit_anchor_count,
     }
 
 

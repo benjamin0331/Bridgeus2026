@@ -346,6 +346,116 @@ class TestPostQuestionnaireStanceMetrics:
         assert mismatched.status_code == 400
 
 
+def _lit_state(mode, lit_by_owner):
+    from apps.matching.services.semantic_tree import (
+        FIXED_ANCHORS,
+        SEMANTIC_TREE_STATE_VERSION,
+    )
+
+    participants = {}
+    for owner_key, lit_ids in lit_by_owner.items():
+        participants[owner_key] = {
+            "ownerKey": owner_key,
+            "treeData": {
+                "id": "root",
+                "name": "核電",
+                "type": "root",
+                "children": [
+                    {
+                        "id": a["id"],
+                        "name": a["name"],
+                        "type": "anchor",
+                        "hiddenUntilUsed": a["id"] not in lit_ids,
+                        "children": [],
+                    }
+                    for a in FIXED_ANCHORS
+                ],
+            },
+            "analyzedSourceIds": [],
+            "analysisHistory": [],
+        }
+    return {
+        "version": SEMANTIC_TREE_STATE_VERSION,
+        "mode": mode,
+        "anchors": [dict(a) for a in FIXED_ANCHORS],
+        "participants": participants,
+    }
+
+
+@pytest.mark.django_db
+class TestPostQuestionnaireBreadthAxis:
+    """結算收據五邊形「廣度」軸：後測送出時把點亮的 CCND 大分類 anchor 數
+    落庫，OutputSerializer 讀回 lit_anchor_count（見 docs/settlement_radar.md §5）。"""
+
+    def test_ai_submission_returns_lit_anchor_count_from_the_session_tree(
+        self, auth_client
+    ):
+        from apps.matching.services.semantic_tree import AI_TREE_MODE, OWNER_AI_USER
+
+        client, _ = auth_client
+        record = DialogueSessionRecord.objects.get(session_id="testsessionid123")
+        record.semantic_tree_state = _lit_state(
+            AI_TREE_MODE,
+            {OWNER_AI_USER: {"anchor_safety", "anchor_energy", "anchor_waste"}},
+        )
+        record.save(update_fields=["semantic_tree_state"])
+
+        response = client.post(
+            "/api/post-questionnaire/", _make_ai_payload(), format="json"
+        )
+
+        assert response.status_code == 201, response.data
+        assert response.data["lit_anchor_count"] == 3
+        record.refresh_from_db()
+        assert record.lit_anchor_count == 3
+
+    def test_hh_submission_returns_the_submitters_own_lit_anchor_count(
+        self, auth_client
+    ):
+        from api.models import MatchInputGateStat
+        from apps.matching.services.semantic_tree import (
+            MATCH_TREE_MODE,
+            OWNER_USER_A,
+            OWNER_USER_B,
+        )
+
+        client, user = auth_client
+        match = DialogueMatch.objects.get(room_id="testroomid456")
+        # A MatchInputGateStat row exists by dialogue end in practice (created on
+        # the first message send); finalize_match_metrics is a no-op without one.
+        MatchInputGateStat.objects.create(
+            match=match, user=user, input_attempt_total=4, invalid_input_total=1
+        )
+        # `user` is user_a in the fixture; give A two lit anchors, B one.
+        match.stats = {
+            "semantic_tree": _lit_state(
+                MATCH_TREE_MODE,
+                {
+                    OWNER_USER_A: {"anchor_safety", "anchor_economy"},
+                    OWNER_USER_B: {"anchor_waste"},
+                },
+            )
+        }
+        match.save()
+
+        response = client.post(
+            "/api/post-questionnaire/", _make_hh_payload(), format="json"
+        )
+
+        assert response.status_code == 201, response.data
+        assert response.data["lit_anchor_count"] == 2
+
+    def test_lit_anchor_count_is_zero_when_no_anchor_was_lit(self, auth_client):
+        client, _ = auth_client
+
+        response = client.post(
+            "/api/post-questionnaire/", _make_ai_payload(), format="json"
+        )
+
+        assert response.status_code == 201, response.data
+        assert response.data["lit_anchor_count"] == 0
+
+
 @pytest.mark.django_db
 class TestPostQuestionnaireClosesSession:
     """提交後測問卷後，該筆 AI 對話 session 應結束——不該再被

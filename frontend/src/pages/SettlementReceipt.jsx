@@ -149,9 +149,9 @@ function DivergingBar({ value, range = 3, leftColor, rightColor, leftLabel, righ
 // 不截住會把整張圖的比例拉爛。
 const TURNS_FULL_MARK = 18.5;
 
-// ponytail: 廣度先用常數佔位。後端接上「CCND 六大分類點亮數」之後，把
-// breadth 的 score 換成讀那個欄位即可，其餘不用動。
-const BREADTH_PLACEHOLDER = 2;
+// 廣度＝對話結束時點亮的 CCND 六大分類（depth-1 anchor）數，0–6。後端在後測
+// 送出時落庫，OutputSerializer 以 lit_anchor_count 回傳（見 docs/settlement_radar.md
+// §5）。查無紀錄時後端回 null，這一軸比照參與度軸留空、不計入級距平均。
 const BREADTH_MAX = 6;
 
 const pairMean = (data, a, b) => {
@@ -185,7 +185,8 @@ const PENTAGON_AXES = [
   },
   {
     key: 'breadth', label: '廣度',
-    raw: () => BREADTH_PLACEHOLDER,
+    // null / undefined（後端查無紀錄時回 None）要當缺值，不是 0——同參與度軸。
+    raw: (d) => (d.lit_anchor_count == null ? null : Number(d.lit_anchor_count)),
     norm: (v) => v / BREADTH_MAX,
     hint: 'CCND 六大分類點亮數',
   },

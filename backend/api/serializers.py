@@ -690,6 +690,7 @@ class PostDialogueResponseOutputSerializer(serializers.ModelSerializer):
     # 對應的資料表，也不受 TopicDisplayOverride 覆寫（那層只管可見性與門檻）。
     topic_title = serializers.SerializerMethodField()
     substantive_turn_count = serializers.SerializerMethodField()
+    lit_anchor_count = serializers.SerializerMethodField()
 
     def get_s_post(self, obj):
         return obj.s_post()
@@ -729,6 +730,38 @@ class PostDialogueResponseOutputSerializer(serializers.ModelSerializer):
 
         return None
 
+    def get_lit_anchor_count(self, obj):
+        """點亮的 CCND depth-1 大分類 anchor 數（0–6），給結算畫面的「廣度」軸用。
+
+        同 substantive_turn_count 的處理：欄位分在兩張表（H-AI 在
+        DialogueSessionRecord、H-H 在 MatchInputGateStat per match+user），
+        都在後測送出時由 input_gate_store 落庫，這裡只讀不即時算。查不到回
+        None，前端把那一軸留空、不計入級距平均。
+        """
+        from .models import DialogueSessionRecord, MatchInputGateStat
+
+        if obj.session_id:
+            record = (
+                DialogueSessionRecord.objects
+                .filter(session_id=obj.session_id)
+                .only("lit_anchor_count")
+                .first()
+            )
+            if record is not None:
+                return record.lit_anchor_count
+
+        if obj.room_id:
+            stat = (
+                MatchInputGateStat.objects
+                .filter(match__room_id=obj.room_id, user_id=obj.user_id)
+                .only("lit_anchor_count")
+                .first()
+            )
+            if stat is not None:
+                return stat.lit_anchor_count
+
+        return None
+
     def get_pre_question_map(self, _obj):
         from .models import POST_LIKERT_TO_PRE_QUESTION
         return POST_LIKERT_TO_PRE_QUESTION
@@ -749,6 +782,7 @@ class PostDialogueResponseOutputSerializer(serializers.ModelSerializer):
             "discomfort_flag", "consent_confirmed",
             "s_pre", "s_post", "delta_s", "stance_centrism",
             "substantive_turn_count",
+            "lit_anchor_count",
             "pre_question_map",
             "created_at",
         ]

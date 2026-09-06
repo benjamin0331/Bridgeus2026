@@ -17,7 +17,7 @@
 | `change` | 改變 | (`exp_stance_change_1` + `_2`) / 2 | 1–7 | Part C-2 主觀立場改變自覺 |
 | `quality` | 品質 | (`exp_quality_1` + `_2`) / 2 | 1–7 | Part C-2 對話品質感知 |
 | `reflection` | 反思 | (`exp_reflection_1` + `_2`) / 2 | 1–7 | Part C-2 自我反思 / 元認知 |
-| `breadth` | 廣度 | **常數 2（佔位）** | 0–6 | CCND 六大分類點亮數 ← **後端未提供** |
+| `breadth` | 廣度 | `lit_anchor_count`（0–6，缺值回 null） | 0–6 | CCND 六大分類點亮數（depth-1 anchor） |
 | `engagement` | 參與度 | `substantive_turn_count` | 0–18.5 | 實質發言輪數 |
 
 任一軸缺值時：該軸畫成 0，但**不計入級距平均**（`axisValues()` 回 `ratio: null`，`computeTitle()` 過濾掉）。
@@ -133,32 +133,38 @@
 兩者都由 `apps/matching/services/input_gate_store.py` 在**後測送出時**填上，而結算畫面正好是
 後測送出後才顯示，所以讀到的一定是最終值。查不到回 `None`，前端把該軸留空。
 
-### ❌ 待補：廣度（CCND 六大分類點亮數）
+### ✅ 已完成：廣度（`lit_anchor_count`，CCND 六大分類點亮數）
 
-**現況**：前端寫死 `BREADTH_PLACEHOLDER = 2`，所以每個人這一軸都固定 33%。
+**是什麼**：一個整數，`0–6`，代表這位參與者在對話結束時點亮了幾個 depth-1 大分類 anchor。
 
-**要什麼**：一個整數，`0–6`，代表這位參與者在對話結束時點亮了幾個 depth-1 anchor。
+**計算方式**（一行）：對該參與者的 `treeData.children` 數 `hiddenUntilUsed is False` 的個數
+（`semantic_tree._count_lit_anchors`）。
 
-**計算方式**（一行）：對該參與者的 `treeData.children` 數 `hiddenUntilUsed is False` 的個數。
-
-**注意不要跟現有的 `get_lit_node_count` 搞混**——那支數的是**最外圈的說法節點**
+**不要跟 `get_lit_node_count` 搞混**——那支數的是**最外圈的說法節點**
 （`flatten_tree` DFS 走 anchor 底下所有後代，滿分基準 `MAX_LIT_NODES = 36`），不是六個大分類。
 
-**建議做法**：
+| 模式 | 來源欄位 | 落庫點 |
+|---|---|---|
+| H-AI | `DialogueSessionRecord.lit_anchor_count` | `finalize_ai_session_metrics` → `get_ai_lit_anchor_count` |
+| H-H | `MatchInputGateStat.lit_anchor_count`（per match+user） | `finalize_match_metrics` → `get_lit_anchor_count(match, owner_key=…)` |
 
-1. 在 `apps/matching/services/semantic_tree.py` 加 `get_lit_anchor_count(match, *, owner_key)`，
-   照 `get_lit_node_count` 的形狀寫（即時算，不落庫）。
-2. 在 `PostDialogueResponseOutputSerializer` 加 `lit_anchor_count` 的 `SerializerMethodField`。
-3. 前端把 `PENTAGON_AXES` 裡 `breadth` 的 `raw` 從常數改成 `(d) => Number(d.lit_anchor_count)`，
-   其餘不用動（`norm` 已經是 `v / BREADTH_MAX`）。
+**做法（已實作）**：
 
-**要不要落庫**：結算是對話結束後的快照，如果日後語意樹會被重算，即時算出來的數字就會跟
-當初結算時不一致。研究端若要匯出這個欄位，建議在對話結束時一併落庫（會需要 migration）。
+1. `apps/matching/services/semantic_tree.py`：`get_lit_anchor_count(match, *, owner_key)` /
+   `get_ai_lit_anchor_count(session_record)` /（公開包裝）`owner_key_for_user(match, user_id)`。
+2. **在對話結束（後測送出）時落庫**，跟 `substantive_turn_count` 同一時機、同一支
+   `_finalize_input_gate_metrics` → `input_gate_store.finalize_*`。新增欄位 + migration
+   `0039_lit_anchor_count`。H-H 兩位參與者各自算（`owner_key` 由 `user_id` 換）。
+3. `PostDialogueResponseOutputSerializer` 加 `lit_anchor_count` 的 `SerializerMethodField`，
+   **讀新欄位**（不即時算），比照 `substantive_turn_count` 分兩張表查；查不到回 `None`。
+4. 前端 `PENTAGON_AXES` 的 `breadth.raw` 改成
+   `(d) => (d.lit_anchor_count == null ? null : Number(d.lit_anchor_count))`，`norm` 不動
+   （`v / BREADTH_MAX`，`BREADTH_MAX = 6`）；`BREADTH_PLACEHOLDER` 常數已移除。缺值回 `null`，
+   該軸不計入 `computeTitle` 的級距平均。
 
 > ✅ **已拍板（2026-09-06）**：資料來源＝6 個大分類 anchor（不是最外圈說法節點）；
 > **在對話結束（後測送出）時落庫**，跟 `substantive_turn_count` 同一個時機、同一支
-> `_finalize_input_gate_metrics`。所以上面「建議做法」步驟 1 要改成落庫版（新增欄位 + migration），
-> `lit_anchor_count` 序列化器改讀該欄位而非即時算。此項獨立於雷達圖回歸，另開工作處理。
+> `_finalize_input_gate_metrics`。
 
 ---
 
@@ -170,7 +176,9 @@
   （`< 4` → 該受試者 CCND 分析標記 invalid），不是計分項。
 - **同一 subscale 的兩題先平均再上軸**，不拆成兩軸。組長本來就設計成每個構念兩題，
   拆開畫等於同一件事量兩次、權重加倍。
-- **廣度目前是常數**，會讓所有人的平均被固定拉到 33% 附近，級距分布在後端補上前不具參考價值。
+- **廣度是對話結束的快照**：`lit_anchor_count` 在後測送出時落庫。若日後語意樹被重算，
+  這個欄位不會跟著動——那是刻意的（結算要對得回當時），但論文若引用要說明它反映的是
+  結算當下、非事後重算的點亮數。
 
 ---
 
@@ -188,4 +196,4 @@
    其中屬於「後端另補、非既有欄位」的：
    - `topic_title`：議題名，收據標頭顯示用，後端從 `TOPIC_CONFIGS` 補，未知議題為空字串（無 migration）。
    - `substantive_turn_count`：參與度軸用，`SerializerMethodField`（無 migration）。
-   - 廣度（`lit_anchor_count`）：待補，會需要 migration（見 §五）。
+   - `lit_anchor_count`：廣度軸用，`SerializerMethodField` 讀落庫欄位；migration `0039_lit_anchor_count`（見 §五）。
