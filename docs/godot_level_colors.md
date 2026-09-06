@@ -26,7 +26,7 @@
 
 級距刻意遞增，後段升級愈來愈慢。Lv0 門檻是 0，所以每個人一進來就有顏色（白青蛙）——`dialogue_level()` 仍保留「回傳預設 0」的防禦，是為了萬一哪天門檻表被改成 Lv0 > 0，新玩家也還是拿得到合法等級。門檻要調就改那一個 tuple，Godot 端不用動（色表的場次是從 `/titles/me/` 的 `level_thresholds` 讀的）。
 
-等級不綁立場方向——刻意不用 `delta_s` / `stance_centrism` / drift 當來源。理由同 [settlement_screen.md](settlement_screen.md) §五.1：等級是比結算徽章更強的獎勵訊號，拿去極化程度當等級等於付錢請受試者改立場，實驗資料就廢了。
+等級不綁立場方向——刻意不用 `delta_s` / `stance_centrism` / drift 當來源。理由同 [settlement_radar.md](settlement_radar.md) §七.1：等級是比結算徽章更強的獎勵訊號，拿去極化程度當等級等於付錢請受試者改立場，實驗資料就廢了。
 
 ## 二、七色對照
 

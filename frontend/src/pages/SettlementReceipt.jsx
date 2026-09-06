@@ -5,7 +5,7 @@ import './SettlementReceipt.css';
 
 // ---------------------------------------------------------------------------
 // 數值 → 呈現的所有邏輯集中在這支，PostQuestionnairePage 只負責掛載。
-// 資料來源見 docs/settlement_screen.md。
+// 第二頁五邊形的數值規格見 docs/settlement_radar.md。
 // ---------------------------------------------------------------------------
 
 const CHANGE_EPSILON = 0.1;
@@ -136,6 +136,154 @@ function DivergingBar({ value, range = 3, leftColor, rightColor, leftLabel, righ
   );
 }
 
+// ---------------------------------------------------------------------------
+// 五邊形（思辨投入）
+// 軸的定義出自 docs/post_questionnaire_v1.1.md 的「Subscale 計算-五邊形圖」。
+// ---------------------------------------------------------------------------
+
+// 參與度那一軸的滿分＝18.5 輪，兩步推出來的：
+//   1. 分母取組長 docs/對話輪數for彩希.docx 的兩組平均之中間值
+//      (8.64 每場 Session + 13.57 每筆樣本) / 2 = 11.105 輪
+//   2. 上限再由「讓達到平均輪數的人落在 3/5 半徑」反推：11.105 / 0.6 = 18.5
+// 超過的截在外圈——組長樣本裡有 47/37/34 輪這種離群值（中位數只有 9），
+// 不截住會把整張圖的比例拉爛。
+const TURNS_FULL_MARK = 18.5;
+
+// ponytail: 廣度先用常數佔位。後端接上「CCND 六大分類點亮數」之後，把
+// breadth 的 score 換成讀那個欄位即可，其餘不用動。
+const BREADTH_PLACEHOLDER = 2;
+const BREADTH_MAX = 6;
+
+const pairMean = (data, a, b) => {
+  const values = [Number(data[a]), Number(data[b])].filter((v) => Number.isFinite(v));
+  return values.length ? values.reduce((x, y) => x + y, 0) / values.length : null;
+};
+
+// 每軸換算成「佔自己滿分的百分比」再比較。五個軸的值域不一樣（李克特 1-7、
+// 廣度 0-6、參與度是輪數），直接畫在同一個半徑上會讓形狀騙人：同樣是「剛好
+// 中等」，李克特的 4 分畫成 57%、參與度剛好達平均卻只有 14%。
+const normLikert = (v) => (v - 1) / 6;          // 1 -> 0、7 -> 1
+
+const PENTAGON_AXES = [
+  {
+    key: 'change', label: '改變',
+    raw: (d) => pairMean(d, 'exp_stance_change_1', 'exp_stance_change_2'),
+    norm: normLikert,
+    hint: '主觀立場改變自覺',
+  },
+  {
+    key: 'quality', label: '品質',
+    raw: (d) => pairMean(d, 'exp_quality_1', 'exp_quality_2'),
+    norm: normLikert,
+    hint: '對話品質感知',
+  },
+  {
+    key: 'reflection', label: '反思',
+    raw: (d) => pairMean(d, 'exp_reflection_1', 'exp_reflection_2'),
+    norm: normLikert,
+    hint: '自我反思 / 元認知',
+  },
+  {
+    key: 'breadth', label: '廣度',
+    raw: () => BREADTH_PLACEHOLDER,
+    norm: (v) => v / BREADTH_MAX,
+    hint: 'CCND 六大分類點亮數',
+  },
+  {
+    key: 'engagement', label: '參與度',
+    raw: (d) => {
+      // null / undefined（後端查無紀錄時回 None）要當缺值，不是 0——
+      // Number(null) === 0 會讓這軸被算進級距平均，見 docs/settlement_radar.md 一。
+      if (d.substantive_turn_count === null || d.substantive_turn_count === undefined) return null;
+      const turns = Number(d.substantive_turn_count);
+      return Number.isFinite(turns) ? turns : null;
+    },
+    norm: (v) => Math.min(v, TURNS_FULL_MARK) / TURNS_FULL_MARK,
+    hint: '實質發言輪數',
+  },
+];
+
+function axisValues(data) {
+  return PENTAGON_AXES.map((axis) => {
+    const raw = axis.raw(data);
+    return {
+      ...axis,
+      raw,
+      ratio: raw === null ? null : Math.min(Math.max(axis.norm(raw), 0), 1),
+    };
+  });
+}
+
+// 四個級距＝把五軸平均後的百分比四等分。切點來自「等分可能範圍」而不是憑感覺
+// 挑的分數；不顯示 S/A/B/C 字母，只給頭銜——字母暗示一套客觀評分標準，而這
+// 五個軸裡有三個是自評量表，撐不起那個暗示。
+const TITLE_TIERS = [
+  { min: 0.75, title: '深度思辨者' },
+  { min: 0.50, title: '用心對話者' },
+  { min: 0.25, title: '認真參與者' },
+  { min: 0, title: '初心探索者' },
+];
+
+function computeTitle(data) {
+  const ratios = axisValues(data).map((a) => a.ratio).filter((r) => r !== null);
+  if (ratios.length === 0) return { title: '完成對話', average: null };
+  const average = ratios.reduce((a, b) => a + b, 0) / ratios.length;
+  const tier = TITLE_TIERS.find((t) => average >= t.min) || TITLE_TIERS.at(-1);
+  return { title: tier.title, average };
+}
+
+// 五邊形雷達。半徑用正規化後的比例，所以五個軸的外圈代表各自的滿分
+// （李克特 7、廣度 6、參與度 18.5 輪）。
+function PentagonRadar({ data }) {
+  const size = 300;
+  const c = size / 2;
+  const R = 74;
+  const axes = axisValues(data).map((axis, i) => {
+    const ratio = axis.ratio === null ? 0 : axis.ratio;
+    const angle = (Math.PI * 2 * i) / PENTAGON_AXES.length - Math.PI / 2;
+    const r = ratio * R;
+    return {
+      ...axis,
+      angle,
+      x: c + Math.cos(angle) * r,
+      y: c + Math.sin(angle) * r,
+      lx: c + Math.cos(angle) * (R + 20),
+      ly: c + Math.sin(angle) * (R + 20),
+      gx: c + Math.cos(angle) * R,
+      gy: c + Math.sin(angle) * R,
+    };
+  });
+  const poly = axes.map((a) => `${a.x.toFixed(1)},${a.y.toFixed(1)}`).join(' ');
+
+  return (
+    <svg className="sr-chart" viewBox={`0 0 ${size} ${size}`} role="img" aria-label="思辨投入五邊形">
+      {[0.25, 0.5, 0.75, 1].map((ring) => (
+        <polygon
+          key={ring}
+          points={axes.map((a) => `${(c + Math.cos(a.angle) * R * ring).toFixed(1)},${(c + Math.sin(a.angle) * R * ring).toFixed(1)}`).join(' ')}
+          fill="none" stroke="#e3dacd" strokeWidth="1"
+        />
+      ))}
+      {axes.map((a) => (
+        <line key={a.key} x1={c} y1={c} x2={a.gx} y2={a.gy} stroke="#e3dacd" strokeWidth="1" />
+      ))}
+      <polygon points={poly} fill="rgba(176,85,64,0.16)" stroke={SEAL} strokeWidth="2" strokeLinejoin="round" />
+      {axes.map((a) => (
+        <circle key={a.key} cx={a.x} cy={a.y} r="3" fill={SEAL} />
+      ))}
+      {axes.map((a) => (
+        <text
+          key={a.key} x={a.lx} y={a.ly}
+          textAnchor={Math.abs(a.lx - c) < 8 ? 'middle' : a.lx > c ? 'start' : 'end'}
+          dominantBaseline="middle" fontSize="11" fill={MUTED}
+        >
+          {a.label}
+        </text>
+      ))}
+    </svg>
+  );
+}
+
 // 讚 vs 倒讚 甜甜圈（識別靠圖示+數字，不靠顏色）
 function ReactionsDonut({ likes, dislikes }) {
   const total = likes + dislikes;
@@ -224,6 +372,28 @@ function PageStance({ data, animate }) {
   );
 }
 
+function PageEngagement({ data }) {
+  const { title } = computeTitle(data);
+  return (
+    <div className="sr-page">
+      <div className="sr-section-title">思辨投入</div>
+      <div className="sr-grade">
+        {/* 印章是圖不是字母：字母（S/A/B/C）暗示一套客觀評分標準，這五個軸
+            有三個是自評量表，撐不起那個暗示。改用平台的青蛙印章。
+            用 seal_ink.png（由 seal.png 裁掉留白 + 染成頭銜同色）：原圖內容只佔
+            畫布 44%，直接顯示會小一半。 */}
+        <span className="sr-seal" aria-hidden="true">
+          <img className="sr-seal-img" src="/seal_ink.png" alt="" />
+        </span>
+        <div className="sr-grade-text">
+          <span className="sr-grade-title">「{title}」</span>
+        </div>
+      </div>
+      <PentagonRadar data={data} />
+    </div>
+  );
+}
+
 function PageExtras({ data, reactions }) {
   const isHH = data.experiment_condition === 'hh';
   const judgment = data.opponent_judgment; // 1真人 2AI 3不確定
@@ -255,6 +425,7 @@ function PageExtras({ data, reactions }) {
 function ReceiptBody({ data, reactions, page, export: isExport }) {
   const pages = [
     <PageStance key="s" data={data} animate={!isExport} />,
+    <PageEngagement key="e" data={data} />,
     <PageExtras key="x" data={data} reactions={reactions} />,
   ];
   // 後端補的 topic_title 是議題名；舊資料或未知議題才退回 id。

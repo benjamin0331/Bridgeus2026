@@ -483,25 +483,39 @@ export default function PostQuestionnairePage() {
     );
   }
 
+  const closeButton = (
+    <button
+      type="button"
+      className="pq-close-btn"
+      onClick={handleClose}
+      aria-label="離開問卷並返回對話"
+      title="離開問卷並返回對話"
+    >
+      ×
+    </button>
+  );
+
   return (
     <div className="pq-page">
       <div className="pq-container" ref={containerRef}>
+        {/* 頁首只在第一頁完整顯示：標題與作答指示看過一次就夠了，之後每一頁都
+            留著等於固定吃掉兩列高度。第二頁之後只剩徽章、進度點與離開鈕，
+            關閉鈕跟著併進進度列，不另外佔一行。 */}
         <div className="pq-header">
-          <div className="pq-header-top">
-            <h2>對話後問卷</h2>
-            <button
-              type="button"
-              className="pq-close-btn"
-              onClick={handleClose}
-              aria-label="離開問卷並返回對話"
-              title="離開問卷並返回對話"
-            >
-              ×
-            </button>
+          {step === 0 && (
+            <div className="pq-header-top">
+              <div className="pq-title-line">
+                <h2>對話後問卷</h2>
+                <p className="pq-subtitle">感謝你的參與！請依序回答以下問題。</p>
+              </div>
+              {closeButton}
+            </div>
+          )}
+          <div className="pq-progress-row">
+            <div className="pq-step-badge">{getStepLabel()}</div>
+            <StepIndicator current={step} total={actualSteps} />
+            {step > 0 && closeButton}
           </div>
-          <p className="pq-subtitle">感謝你的參與！請依序回答以下問題。</p>
-          <div className="pq-step-badge">{getStepLabel()}</div>
-          <StepIndicator current={step} total={actualSteps} />
         </div>
 
         <div className="pq-body" ref={bodyRef}>

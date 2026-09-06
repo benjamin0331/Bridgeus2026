@@ -198,6 +198,43 @@
   text-align: center;
 }
 
+/* 頭銜印章 */
+.sr-grade {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 6px 0 14px;
+}
+
+/* 印章：單線圓框 + 章面。框線用一條 solid，不用 double——double 會畫成兩條，
+   看起來像兩個圈。顏色跟章面、頭銜文字統一都是 #4a4038。
+   圖佔框的 83%，不留一大圈空白。 */
+.sr-seal {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  border: 1.75px solid #4a4038;
+  transform: rotate(-8deg);
+  animation: sr-stamp 0.4s cubic-bezier(0.2, 0.9, 0.3, 1.5) 0.15s both;
+}
+
+.sr-seal-img {
+  width: 46px;
+  height: 46px;
+  object-fit: contain;
+}
+
+@keyframes sr-stamp {
+  0% { opacity: 0; transform: rotate(-8deg) scale(1.7); }
+  100% { opacity: 1; transform: rotate(-8deg) scale(1); }
+}
+.sr-receipt--export .sr-seal { animation: none; }
+
+.sr-grade-title { display: block; font-size: 20px; font-weight: 800; color: #4a4038; }
+
 .sr-extra-row {
   display: flex;
   align-items: center;
