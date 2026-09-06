@@ -15,7 +15,7 @@ from django.test import override_settings
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from api.models import AIConversation, DialogueMatch, MatchMessage
+from api.models import AIConversation, DialogueMatch, Favorite, MatchMessage
 from api.permissions import RESEARCHER_GROUP_NAME
 from apps.summary.models import DialogueSummary, VideoRecommendation, ViewpointNode
 
@@ -64,6 +64,18 @@ def _make_viewpoint(
         citation_count=citation_count,
         review_status=review_status,
     )
+
+
+def _favorite_times(node, times):
+    """讓 `times` 個不同使用者收藏這個觀點（Favorite 有 per-user 唯一約束）。"""
+    for _ in range(times):
+        suffix = User.objects.count() + 1
+        user = User.objects.create_user(username=f"kb_fav_{suffix}", password="pw")
+        Favorite.objects.create(
+            user=user,
+            target_type=Favorite.TargetType.VIEWPOINT,
+            target_id=node.id,
+        )
 
 
 class KnowledgeBaseHighlightsTests(APITestCase):
@@ -117,9 +129,13 @@ class KnowledgeBaseHighlightsTests(APITestCase):
         ):
             self.assertNotIn(internal_field, row)
 
-    def test_ordered_by_citation_count_then_score(self):
-        low = _make_viewpoint(citation_count=1, composite_score=0.9)
-        high = _make_viewpoint(citation_count=5, composite_score=0.1)
+    def test_ordered_by_favorite_count_then_score(self):
+        """公開卡片顯示的「被收藏 N 次」也是排序鍵，composite_score 只當同分
+        時的次序。citation_count（被去重命中）不再參與公開排序。"""
+        low = _make_viewpoint(composite_score=0.9)
+        high = _make_viewpoint(composite_score=0.1)
+        _favorite_times(low, 1)
+        _favorite_times(high, 5)
 
         response = self.client.get(
             "/api/summary/viewpoints/highlights/", {"topic_id": 102}
@@ -127,6 +143,9 @@ class KnowledgeBaseHighlightsTests(APITestCase):
 
         ids = [row["id"] for row in response.data]
         self.assertEqual(ids, [high.id, low.id])
+        by_id = {row["id"]: row for row in response.data}
+        self.assertEqual(by_id[high.id]["favorite_count"], 5)
+        self.assertEqual(by_id[low.id]["favorite_count"], 1)
 
     def test_limit_is_clamped(self):
         for i in range(3):
@@ -232,15 +251,31 @@ class KnowledgeBaseViewpointBrowseTests(APITestCase):
         self.user = User.objects.create_user(username="participant3", password="pw")
         self.client.force_authenticate(user=self.user)
 
-    def test_topic_id_is_required(self):
+    def test_missing_topic_id_returns_all_topics(self):
+        """對應前端首頁的「全部」分類：不帶 topic_id 時跨全部議題回傳，不是
+        400——「全部」不是額外的後端概念，是這個既有行為的前端呈現。"""
+        _make_viewpoint(topic_id=102)
+        _make_viewpoint(topic_id=103, dimension="anchor_equality")
+
         response = self.client.get("/api/summary/viewpoints/browse/")
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 2)
+        topic_ids = {row["topic_id"] for row in response.data["results"]}
+        self.assertEqual(topic_ids, {102, 103})
 
     def test_invalid_topic_id_is_a_400_not_a_500(self):
         response = self.client.get(
             "/api/summary/viewpoints/browse/", {"topic_id": "abc"}
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_pagination_allows_a_large_page_size(self):
+        """前端「觀看更多」一次抓回整個議題的觀點、自己依卡片切頁，所以會帶
+        很大的 page_size；max_page_size 太小會讓後面幾頁的卡片憑空消失。"""
+        from api.views import ViewpointBrowsePagination
+
+        self.assertGreaterEqual(ViewpointBrowsePagination.max_page_size, 500)
 
     def test_returns_paginated_approved_viewpoints(self):
         for i in range(3):
@@ -375,8 +410,9 @@ class VideoRecommendationAdminTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         video = VideoRecommendation.objects.get(pk=response.data["id"])
-        # url 沒帶也要自動補成該檔案的絕對網址，下游只認 url。
-        self.assertTrue(video.url.startswith("http"))
+        # url 沒帶也要自動補成該檔案的根相對路徑（/media/...），不寫死 host；
+        # 下游只認 url，反向代理負責把 /media/ 轉到後端。
+        self.assertTrue(video.url.startswith("/media/"))
         self.assertIn("kb_videos/", video.url)
 
     def test_upload_without_file_or_url_is_rejected(self):

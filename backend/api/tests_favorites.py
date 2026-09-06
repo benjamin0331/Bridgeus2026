@@ -155,8 +155,11 @@ class FavoriteListTests(APITestCase):
             "stance_direction",
             "viewpoint_summary",
             "citation_count",
+            "favorite_count",
         ):
             self.assertIn(field, row)
+        # 這個觀點剛剛被目前使用者收藏了一次。
+        self.assertEqual(row["favorite_count"], 1)
 
         video_row = response.data["video"][0]
         self.assertEqual(video_row["id"], video.id)

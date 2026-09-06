@@ -114,7 +114,10 @@ class ViewpointHighlightSerializer(serializers.Serializer):
     viewpoint_summary = serializers.CharField(allow_blank=True)
     user_input_text = serializers.CharField(allow_blank=True)
     ai_response_text = serializers.CharField(allow_blank=True)
+    # citation_count：被去重命中的次數，保留給研究者審核頁。
+    # favorite_count：被使用者收藏的次數，公開觀點小卡顯示的數字。
     citation_count = serializers.IntegerField()
+    favorite_count = serializers.IntegerField()
     composite_score = serializers.FloatField(allow_null=True)
     created_at = serializers.DateTimeField()
 
