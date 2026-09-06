@@ -12,7 +12,25 @@ from rest_framework.views import APIView
 
 from api.serializers import BridgeUsTokenObtainPairSerializer
 
+from .consent import CONSENT_DOCUMENT, CONSENT_VERSION
 from .serializers import RegistrationSerializer
+
+
+class ConsentDocumentView(APIView):
+    """GET /api/consent/ — 研究參與說明全文 + 版本號。
+
+    公開端點（免登入）：受試者必須在建立帳號前就看得到。內容是後端程式碼
+    常數（見 accounts/consent.py），前端 ConsentPage 只負責渲染，不再自己
+    抄一份。回傳的 version 與註冊時記進 User.consent_version 的是同一個值。
+    """
+
+    authentication_classes = []
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        return Response(
+            {"version": CONSENT_VERSION, "document": CONSENT_DOCUMENT}
+        )
 
 
 class RegistrationView(APIView):

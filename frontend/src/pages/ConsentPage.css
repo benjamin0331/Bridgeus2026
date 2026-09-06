@@ -1,0 +1,128 @@
+.consent-page {
+  height: 100vh;
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+  padding: 48px 24px 64px;
+  background-color: #f7f3f0;
+}
+
+.consent-card {
+  width: 100%;
+  max-width: 720px;
+  height: fit-content;
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+  padding: 40px 48px 32px;
+}
+
+.consent-loading {
+  text-align: center;
+  color: #666;
+  font-size: 15px;
+  padding: 24px 0;
+}
+
+.consent-header {
+  text-align: center;
+  margin-bottom: 32px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid #eee;
+}
+
+.consent-eyebrow {
+  display: inline-block;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: #7a716a;
+  background: #f1ede8;
+  padding: 4px 12px;
+  border-radius: 999px;
+  margin-bottom: 12px;
+}
+
+.consent-header h1 {
+  font-size: 24px;
+  color: #1a1a1a;
+  margin-bottom: 10px;
+}
+
+.consent-version {
+  display: inline-flex;
+  gap: 8px;
+  font-size: 13px;
+  color: #284a8a;
+  background: #dfe8ff;
+  padding: 4px 12px;
+  border-radius: 999px;
+}
+
+.consent-section {
+  margin-bottom: 28px;
+}
+
+.consent-section h2 {
+  font-size: 17px;
+  color: #1f1a17;
+  margin-bottom: 10px;
+  padding-left: 12px;
+  border-left: 4px solid #b9e6d0;
+}
+
+.consent-section p {
+  font-size: 15px;
+  line-height: 1.8;
+  color: #444;
+}
+
+.consent-section ol {
+  padding-left: 24px;
+}
+
+.consent-section li {
+  font-size: 15px;
+  line-height: 1.8;
+  color: #444;
+  margin-bottom: 6px;
+}
+
+.consent-meta {
+  margin-top: 32px;
+  padding: 18px 20px;
+  background: #fafafa;
+  border-radius: 12px;
+  border: 1px solid #eee;
+}
+
+.consent-meta-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 14px;
+  color: #666;
+  padding: 4px 0;
+}
+
+.consent-meta-row span:first-child {
+  color: #999;
+}
+
+.consent-footer {
+  margin-top: 28px;
+  text-align: center;
+}
+
+.consent-back-link {
+  display: inline-block;
+  padding: 10px 28px;
+  border-radius: 8px;
+  border: 1px solid #ddd;
+  color: #333;
+  text-decoration: none;
+  font-size: 14px;
+  transition: background-color 0.15s ease;
+}
+
+.consent-back-link:hover {
+  background-color: #f1ede8;
+}
