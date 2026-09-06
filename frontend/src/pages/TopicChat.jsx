@@ -3020,82 +3020,88 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
           {!isMatchMessagesLoading && matchMessages.length === 0 && (
             <div className="match-message-empty">配對成功了，現在可以先說第一句。</div>
           )}
-          {matchAssistNotice && (
-            <div className="match-assist-card system">
-              <div>
-                <span className="match-assist-label">系統提醒</span>
-                <p className="match-assist-copy">{matchAssistNotice.message}</p>
-              </div>
-              <button
-                className="match-assist-btn secondary"
-                type="button"
-                onClick={() => setMatchAssistNotice(null)}
-              >
-                知道了
-              </button>
-            </div>
-          )}
-          {pendingMatchSuggestion && (
-            <div className="match-assist-card">
-              <div className="match-assist-content">
-                <span className="match-assist-label">
-                  {formatSuggestionCategory(pendingMatchSuggestion.category)}
-                </span>
-                {pendingMatchSuggestion.original_content && (
-                  <p className="match-assist-original">
-                    原文：{pendingMatchSuggestion.original_content}
-                  </p>
-                )}
-                <p className="match-assist-copy">
-                  {pendingMatchSuggestion.suggested_content}
-                </p>
-              </div>
-              <div className="match-assist-actions">
-                {pendingMatchSuggestion.actions?.includes('accept') && (
-                  <button
-                    className="match-assist-btn primary"
-                    type="button"
-                    onClick={handleAcceptMatchSuggestion}
-                  >
-                    {pendingMatchSuggestion.category === 'rephrase' ? '使用建議' : '知道了'}
-                  </button>
-                )}
-                {pendingMatchSuggestion.actions?.includes('modify') && (
+          {/* 三種介入提醒（情緒改寫／離題引導／髒話攔截）共用一個 sticky 容器。
+              分開釘的話，兩張同時出現時會疊在一起；包成一層就自然往下排。 */}
+          {(matchAssistNotice || pendingMatchSuggestion || matchSuggestionDraft) && (
+            <div className="match-assist-stack">
+              {matchAssistNotice && (
+                <div className="match-assist-card system">
+                  <div>
+                    <span className="match-assist-label">系統提醒</span>
+                    <p className="match-assist-copy">{matchAssistNotice.message}</p>
+                  </div>
                   <button
                     className="match-assist-btn secondary"
                     type="button"
-                    onClick={handleEditMatchSuggestion}
+                    onClick={() => setMatchAssistNotice(null)}
                   >
-                    放到輸入框修改
+                    知道了
                   </button>
-                )}
-                {pendingMatchSuggestion.actions?.includes('ignore') && (
+                </div>
+              )}
+              {pendingMatchSuggestion && (
+                <div className="match-assist-card">
+                  <div className="match-assist-content">
+                    <span className="match-assist-label">
+                      {formatSuggestionCategory(pendingMatchSuggestion.category)}
+                    </span>
+                    {pendingMatchSuggestion.original_content && (
+                      <p className="match-assist-original">
+                        原文：{pendingMatchSuggestion.original_content}
+                      </p>
+                    )}
+                    <p className="match-assist-copy">
+                      {pendingMatchSuggestion.suggested_content}
+                    </p>
+                  </div>
+                  <div className="match-assist-actions">
+                    {pendingMatchSuggestion.actions?.includes('accept') && (
+                      <button
+                        className="match-assist-btn primary"
+                        type="button"
+                        onClick={handleAcceptMatchSuggestion}
+                      >
+                        {pendingMatchSuggestion.category === 'rephrase' ? '使用建議' : '知道了'}
+                      </button>
+                    )}
+                    {pendingMatchSuggestion.actions?.includes('modify') && (
+                      <button
+                        className="match-assist-btn secondary"
+                        type="button"
+                        onClick={handleEditMatchSuggestion}
+                      >
+                        放到輸入框修改
+                      </button>
+                    )}
+                    {pendingMatchSuggestion.actions?.includes('ignore') && (
+                      <button
+                        className="match-assist-btn ghost"
+                        type="button"
+                        onClick={handleIgnoreMatchSuggestion}
+                      >
+                        {pendingMatchSuggestion.category === 'rephrase' ? '仍送出原文' : '略過'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+              {matchSuggestionDraft && (
+                <div className="match-assist-card editing">
+                  <div>
+                    <span className="match-assist-label">正在修改 AI 建議</span>
+                    <p className="match-assist-copy">
+                      編輯完成後按送出，系統會再次檢查語氣後送出。
+                    </p>
+                  </div>
                   <button
                     className="match-assist-btn ghost"
                     type="button"
-                    onClick={handleIgnoreMatchSuggestion}
+                    onClick={handleCancelSuggestionDraft}
                   >
-                    {pendingMatchSuggestion.category === 'rephrase' ? '仍送出原文' : '略過'}
+                    取消修改
                   </button>
-                )}
-              </div>
-            </div>
-          )}
-          {matchSuggestionDraft && (
-            <div className="match-assist-card editing">
-              <div>
-                <span className="match-assist-label">正在修改 AI 建議</span>
-                <p className="match-assist-copy">
-                  編輯完成後按送出，系統會再次檢查語氣後送出。
-                </p>
-              </div>
-              <button
-                className="match-assist-btn ghost"
-                type="button"
-                onClick={handleCancelSuggestionDraft}
-              >
-                取消修改
-              </button>
+                </div>
+              )}
             </div>
           )}
           {matchChatDisplayMessages.map((msg) => (
