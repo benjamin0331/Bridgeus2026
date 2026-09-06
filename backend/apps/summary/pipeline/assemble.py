@@ -19,14 +19,19 @@ ccnd_semantic_dist / ccnd_stance_shift 都是「這則發言本身帶來多少�
 import logging
 
 from api.display_settings import resolve_stance_category
-from api.models import DialogueMatch, MatchStanceDrift
+from api.models import AIConversation, DialogueMatch, DialogueSessionRecord, MatchStanceDrift
 from apps.matching.services.semantic_tree import (
     OWNER_USER_A,
     OWNER_USER_B,
+    SEMANTIC_TREE_STATS_KEY,
     get_lit_node_count,
     get_message_dimension,
     get_message_lit_nodes,
+    get_session_lit_node_count,
+    get_session_message_dimension,
+    get_session_message_lit_nodes,
 )
+from apps.summary.models import DialogueSummary
 from apps.summary.pipeline.quality_filter import run_pipeline
 from apps.summary.pipeline.write import write_dialogue_summary, write_viewpoint
 from chat.services.embedding import cosine_distance
@@ -254,6 +259,174 @@ def run_pipeline_for_match(match_id: int) -> int:
                 "summary_id": summary_id,
                 "dimension": dimension,
                 "speaker_side": pair["speaker_side"],
+                "user_input_text": pair["user_input_text"],
+                "ai_response_text": pair["ai_response_text"],
+                "viewpoint_summary": "、".join(node["name"] for node in lit_nodes),
+                "stance_direction": lit_nodes[0]["stance"] if lit_nodes else "",
+                "source_message_ids": [pair["user_message_id"]],
+                "composite_score": pair["composite_score"],
+                "score_detail": pair["score_detail"],
+            }
+        ):
+            written += 1
+    return written
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# H-AI（人對 AI）：只把「使用者發言」送進觀點知識庫審核
+# ──────────────────────────────────────────────────────────────────────────
+#
+# 跟 H-H 的差異：
+# - 來源是 AIConversation（一列 = 一輪 user_prompt + ai_response），不是
+#   MatchMessage。
+# - 只有使用者那一側會產生 ViewpointNode（speaker_side 一律 "a"）。AI 回覆
+#   只當作 ai_response_text 的「對話脈絡」存著，本身不是被審核的觀點。
+# - CCND 分類走 get_session_* 系列（DialogueSessionRecord 只有使用者一棵樹）。
+#
+# Step 1 品質篩選（passes_quality_filter）走 turn_count_side="a"：輪數與平均
+# 發言長度只數使用者發言；攻擊詞比例仍以整場（含 AI 回覆）計算。
+
+
+def _session_record_dict(record: DialogueSessionRecord) -> dict:
+    """組出 get_session_* / get_ai_semantic_tree_state 需要的最小 session_record
+    dict：語意樹狀態放在 SEMANTIC_TREE_STATS_KEY，外加 topic_id。"""
+    return {
+        SEMANTIC_TREE_STATS_KEY: record.semantic_tree_state or {},
+        "topic_id": record.topic_id,
+    }
+
+
+def build_messages_for_session(
+    record: DialogueSessionRecord, session_record: dict
+) -> list[dict]:
+    """把一場 H-AI 對話的 AIConversation 依時間順序組成 run_pipeline() 的格式。
+
+    每一輪拆成最多兩則訊息：
+    - 使用者發言：side="a"，message_id = AIConversation.id（int），
+      ccnd_semantic_dist = 這則 user_prompt 的 embedding 與「使用者上一則
+      發言」的 cosine distance（缺 embedding 記 0.0），
+      ccnd_stance_shift = 這則新點亮的 CCND 節點數（換算成 100/MAX_LIT_NODES 分制）
+    - AI 回覆：side="b"，message_id = "ai-<id>"（字串，永遠不會被寫成觀點），
+      ccnd_* 一律 0.0——AI 回覆不做 CCND 分析，只是讓 Step 2 能把它配成
+      使用者發言的「對方回應」。ai_response 為空的輪次不產生這則。
+    """
+    turns = AIConversation.objects.filter(
+        user_id=record.user_id, session_id=record.session_id
+    ).order_by("created_at", "id")
+
+    messages: list[dict] = []
+    prev_user_embedding = None
+    prev_lit_count = 0
+    for turn in turns:
+        if not turn.user_prompt:
+            continue
+
+        if prev_user_embedding is not None and turn.embedding is not None:
+            semantic_dist = round(
+                float(cosine_distance(turn.embedding, prev_user_embedding)), 4
+            )
+        else:
+            semantic_dist = 0.0
+        if turn.embedding is not None:
+            prev_user_embedding = turn.embedding
+
+        lit_count = get_session_lit_node_count(
+            session_record, source_message_id=str(turn.id)
+        )
+        new_lit_count = max(0, lit_count - prev_lit_count)
+        prev_lit_count = lit_count
+
+        messages.append(
+            {
+                "side": "a",
+                "content": turn.user_prompt,
+                "ccnd_semantic_dist": semantic_dist,
+                "ccnd_stance_shift": round(100 / MAX_LIT_NODES * new_lit_count, 4),
+                "message_id": turn.id,
+            }
+        )
+        if turn.ai_response:
+            messages.append(
+                {
+                    "side": "b",
+                    "content": turn.ai_response,
+                    "ccnd_semantic_dist": 0.0,
+                    "ccnd_stance_shift": 0.0,
+                    "message_id": f"ai-{turn.id}",
+                }
+            )
+    return messages
+
+
+def _session_user_stance_score(record: DialogueSessionRecord):
+    """這場 H-AI 對話的前測立場分數（1–7）。優先取關房當下凍結在
+    survey_context 的快照，其次 session_state；都沒有回 None。"""
+    for source in (record.survey_context, record.session_state):
+        if isinstance(source, dict) and source.get("user_stance_score") is not None:
+            return source["user_stance_score"]
+    return None
+
+
+def run_pipeline_for_session(session_id: str) -> int:
+    """M6 觀點知識庫的 H-AI 自動觸發入口：對話後問卷送出、session 轉為 CLOSED
+    之後由 api.views._close_dialogue_session_record() 透過 transaction.on_commit()
+    呼叫。回傳實際寫入的 ViewpointNode 筆數。
+
+    只收使用者發言（speaker_side="a"）。AI 回覆存進 ai_response_text 當脈絡，
+    不獨立成審核項目。任何一步失敗都不該影響對話結束流程，呼叫端負責包
+    try/except。
+    """
+    # 同一場對話重複觸發（例如問卷因競態被送出兩次）時，不要再寫一份
+    # DialogueSummary/ViewpointNode——第一次的結果已經在審核佇列裡了。
+    if DialogueSummary.objects.filter(dialogue_id=session_id).exists():
+        return 0
+
+    record = DialogueSessionRecord.objects.filter(session_id=session_id).first()
+    if record is None:
+        return 0
+
+    session_record = _session_record_dict(record)
+    messages = build_messages_for_session(record, session_record)
+    # turn_count_side="a"：Step 1 的「輪數 / 平均長度」只數使用者發言。
+    ranked = [
+        pair
+        for pair in run_pipeline(messages, turn_count_side="a")
+        if pair["speaker_side"] == "a"
+    ]
+    if not ranked:
+        return 0
+
+    stance_score = _session_user_stance_score(record)
+    summary_id = write_dialogue_summary(
+        {
+            "dialogue_id": session_id,
+            "topic_id": record.topic_id,
+            "summary_text": _build_summary_text(messages),
+            # side_a = 使用者；side_b 留空——AI 代理人沒有量測到的立場分數。
+            "side_a_stance": _stance_for_score(record.topic_id, stance_score),
+            "side_b_stance": "",
+            "quality_score": _quality_score(ranked),
+            # H-AI 沒有 MatchStanceDrift 的等價紀錄，立場偏移量暫不計入。
+            "stance_shift_magnitude": None,
+        }
+    )
+
+    written = 0
+    for pair in ranked:
+        dimension = get_session_message_dimension(
+            session_record, source_message_id=str(pair["user_message_id"])
+        )
+        if dimension is None:
+            continue  # 這則發言沒對應到任何 CCND anchor，無法分類，跳過
+
+        lit_nodes = get_session_message_lit_nodes(
+            session_record, source_message_id=str(pair["user_message_id"])
+        )
+        if write_viewpoint(
+            {
+                "summary_id": summary_id,
+                "dimension": dimension,
+                "speaker_side": "a",
                 "user_input_text": pair["user_input_text"],
                 "ai_response_text": pair["ai_response_text"],
                 "viewpoint_summary": "、".join(node["name"] for node in lit_nodes),

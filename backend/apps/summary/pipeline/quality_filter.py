@@ -43,22 +43,41 @@ def _count_attack_hits(text: str) -> int:
 # Step 1：整場對話品質篩選
 # ──────────────────────────────────────────────
 
-def passes_quality_filter(messages: list[dict]) -> bool:
+def passes_quality_filter(
+    messages: list[dict], *, turn_count_side: str | None = None
+) -> bool:
     """
     輸入整場對話，回傳 True 代表整場對話品質合格。
 
-    條件：
-    1. 雙方發言輪數合計 >= 6
+    條件（turn_count_side=None 為 H-H，"a" 為 H-AI）：
+    1. 發言輪數 >= 6
+       - H-H：雙方發言合計 >= 6
+       - H-AI：只數使用者（side "a"）發言 >= 6
     2. 平均發言長度 >= 30 字
-    3. 全場攻擊性詞彙比例 < 15%
+       - H-H：整場所有訊息的平均
+       - H-AI：只算使用者發言的平均（不含 AI 回覆）
+    3. 全場攻擊性詞彙比例 < 15%（一律以整場對話所有訊息計算，含對方 / AI 回覆）
     """
     human_messages = [m["content"] for m in messages]
 
-    if len(human_messages) < 6:
+    if turn_count_side is None:
+        counted_messages = human_messages
+    else:
+        counted_messages = [
+            m["content"] for m in messages if m.get("side") == turn_count_side
+        ]
+
+    # 1. 輪數
+    if len(counted_messages) < 6:
         return False
 
-    avg_len = sum(len(m) for m in human_messages) / len(human_messages)
+    # 2. 平均發言長度（H-AI 一樣只看使用者發言）
+    avg_len = sum(len(m) for m in counted_messages) / len(counted_messages)
     if avg_len < 30:
+        return False
+
+    # 3. 攻擊性詞彙比例：仍以整場對話（含對方 / AI 回覆）計算
+    if not human_messages:
         return False
 
     all_text = " ".join(human_messages)
@@ -269,14 +288,19 @@ def _select_balanced_by_side(scored: list[dict], top_n: int) -> list[dict]:
 # 整合入口：對單場對話跑完 Step 1 → 2 → 3
 # ──────────────────────────────────────────────
 
-def run_pipeline(messages: list[dict], top_n: int = TOP_N) -> list[dict]:
+def run_pipeline(
+    messages: list[dict], top_n: int = TOP_N, *, turn_count_side: str | None = None
+) -> list[dict]:
     """
     輸入一場對話的訊息列表。
     先跑 Step 1 品質篩選，通過後執行 Step 2 擷取配對、Step 3 評分排序。
     回傳 Top N 配對，供 Step 4 人工終審使用。
     若整場對話未通過 Step 1，回傳空列表。
+
+    turn_count_side：見 passes_quality_filter()。H-AI 傳 "a"，讓「輪數 >= 6」
+    只數使用者發言。
     """
-    if not passes_quality_filter(messages):
+    if not passes_quality_filter(messages, turn_count_side=turn_count_side):
         return []
     pairs  = extract_valuable_pairs(messages)
     ranked = score_and_rank(pairs, top_n=top_n)
