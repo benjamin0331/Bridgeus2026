@@ -57,10 +57,17 @@ nginx 的值**刻意設得比 Django 大一些**：讓只超過一點點的檔�
 不設就用預設值）。除此之外 確認以下既有值即可（`settings.py` 內建預設，通常不必寫進 `.env`）：
 
 ```env
-# settings.py 已寫死，列出供對照
+# MEDIA_URL 寫死在 settings.py；MEDIA_ROOT 可用環境變數覆寫
 # MEDIA_URL  = /media/
-# MEDIA_ROOT = <backend>/media
+MEDIA_ROOT=/srv/bridgeus_media
 ```
+
+**`MEDIA_ROOT` 在正式機一定要設成 checkout 之外的絕對路徑。** 預設值
+`<backend>/media` 會跟著 checkout 走：DB 存的是全域路徑 `/media/kb_videos/…`，
+檔案卻落在寫檔那個 process 的 `BASE_DIR` 底下。只要「收到上傳的 process」跟
+「之後對外服務的 process」不是同一個目錄（多份 checkout、換分支、重建容器而
+沒掛 volume），播放就會 404，而檔案其實還在原本那個目錄裡。設成共用的絕對
+路徑之後，換分支或重新部署都不會再弄丟已上傳的影片。
 
 檔案系統：
 

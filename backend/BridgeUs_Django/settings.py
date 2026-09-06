@@ -272,7 +272,14 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # 研究者從設定頁上傳的知識庫影片檔（VideoRecommendation.video_file）。
 MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+
+# 預設放在 checkout 底下，但一定要能用環境變數挪到 checkout 之外。
+# DB 裡存的是全域路徑（/media/kb_videos/…），檔案卻綁在寫檔那個 process 的
+# BASE_DIR 底下。只要「收到上傳的 process」與「之後對外服務的 process」不是
+# 同一份程式碼目錄（多份 checkout、換分支、重建容器而沒掛 volume），播放就會
+# 404，而檔案其實好端端在另一個目錄裡。正式機請設成 checkout 之外的絕對路徑
+# （例如 /srv/bridgeus_media），換分支或重新部署都不會弄丟已上傳的影片。
+MEDIA_ROOT = Path(os.getenv("MEDIA_ROOT") or (BASE_DIR / 'media'))
 
 # 單支影片的大小上限。這一層是最後一道，前面還有 nginx 的 client_max_body_size
 # （見 frontend/nginx/default.conf.template）——nginx 的值刻意設得比這裡大一點，
