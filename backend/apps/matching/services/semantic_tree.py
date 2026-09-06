@@ -1231,6 +1231,62 @@ def _owner_key_for_message(match: DialogueMatch, sender_id: int | None) -> str |
     return None
 
 
+# ── M6 觀點知識庫 pipeline 用的逐則 CCND 查詢 ─────────────────────────────
+#
+# H-H（DialogueMatch，雙方各一棵樹）與 H-AI（DialogueSessionRecord，只有使用者
+# 那一棵樹）共用同一套攤平/比對邏輯。差別只在「怎麼拿到那棵 owner tree」：
+# H-H 走 get_semantic_tree_state()＋owner_key，H-AI 走 get_ai_semantic_tree_state()
+# ＋OWNER_AI_USER。核心邏輯抽成 _*_from_owner_state()，兩種來源各包一層薄的
+# 進入點。flatten_tree 的 owner_key 直接讀 owner_state["ownerKey"]（由
+# _ensure_owner_tree_state 寫入，恆等於當初傳進去的 owner_key）。
+
+
+def _lit_node_count_from_owner_state(owner_state, *, source_message_id: str) -> int:
+    from apps.matching.services.ccnd_snapshot_analysis import flatten_tree
+
+    if not owner_state:
+        return 0
+
+    cutoff = resolve_cutoff_for_message(owner_state["analysisHistory"], source_message_id)
+    if cutoff is None:
+        return 0
+
+    snapshot = reconstruct_tree_as_of(owner_state["treeData"], cutoff)
+    hits = flatten_tree(snapshot, owner_key=owner_state.get("ownerKey"))
+    return len({hit["_node_key"] for hit in hits})
+
+
+def _message_dimension_from_owner_state(owner_state, *, source_message_id: str) -> str | None:
+    from apps.matching.services.ccnd_snapshot_analysis import flatten_tree
+
+    if not owner_state:
+        return None
+
+    target_id = clean_text(source_message_id)
+    for hit in flatten_tree(owner_state["treeData"], owner_key=owner_state.get("ownerKey")):
+        if clean_text(hit.get("source_message_id")) == target_id:
+            return hit.get("parent_anchor_id")
+    return None
+
+
+def _message_lit_nodes_from_owner_state(
+    owner_state, *, source_message_id: str
+) -> list[dict[str, str]]:
+    from apps.matching.services.ccnd_snapshot_analysis import flatten_tree
+
+    if not owner_state:
+        return []
+
+    target_id = clean_text(source_message_id)
+    return [
+        {"name": hit["node_name"], "stance": clean_text(hit.get("stance"))}
+        for hit in flatten_tree(
+            owner_state["treeData"], owner_key=owner_state.get("ownerKey")
+        )
+        if clean_text(hit.get("source_message_id")) == target_id and hit.get("node_name")
+    ]
+
+
 def get_lit_node_count(
     match: DialogueMatch,
     *,
@@ -1250,20 +1306,10 @@ def get_lit_node_count(
     root_name 只影響空狀態（尚無任何分析紀錄）時的預設樹名稱，不影響既有樹內容。
     找不到該訊息的分析紀錄（尚未分析過）時回傳 0。
     """
-    from apps.matching.services.ccnd_snapshot_analysis import flatten_tree
-
     state = get_semantic_tree_state(match, root_name=root_name)
-    owner_state = state["participants"].get(owner_key)
-    if not owner_state:
-        return 0
-
-    cutoff = resolve_cutoff_for_message(owner_state["analysisHistory"], source_message_id)
-    if cutoff is None:
-        return 0
-
-    snapshot = reconstruct_tree_as_of(owner_state["treeData"], cutoff)
-    hits = flatten_tree(snapshot, owner_key=owner_key)
-    return len({hit["_node_key"] for hit in hits})
+    return _lit_node_count_from_owner_state(
+        state["participants"].get(owner_key), source_message_id=source_message_id
+    )
 
 
 def get_message_dimension(
@@ -1280,19 +1326,10 @@ def get_message_dimension(
     分析紀錄（不曾命中任何節點）時回傳 None，呼叫端應該視為「無法分類」而跳過
     寫入，不要自己亂猜一個 anchor。
     """
-    from apps.matching.services.ccnd_snapshot_analysis import flatten_tree
-
     state = get_semantic_tree_state(match, root_name="核電")
-    owner_state = state["participants"].get(owner_key)
-    if not owner_state:
-        return None
-
-    target_id = clean_text(source_message_id)
-    hits = flatten_tree(owner_state["treeData"], owner_key=owner_key)
-    for hit in hits:
-        if clean_text(hit.get("source_message_id")) == target_id:
-            return hit.get("parent_anchor_id")
-    return None
+    return _message_dimension_from_owner_state(
+        state["participants"].get(owner_key), source_message_id=source_message_id
+    )
 
 
 def get_message_lit_nodes(
@@ -1311,20 +1348,49 @@ def get_message_lit_nodes(
     順序回傳全部命中。訊息沒有任何 CCND 分析紀錄（不曾命中任何節點）時回傳
     空 list，呼叫端應該視為「沒有可用節點」而留空，不要自己編內容。
     """
-    from apps.matching.services.ccnd_snapshot_analysis import flatten_tree
-
     state = get_semantic_tree_state(match, root_name="核電")
-    owner_state = state["participants"].get(owner_key)
-    if not owner_state:
-        return []
+    return _message_lit_nodes_from_owner_state(
+        state["participants"].get(owner_key), source_message_id=source_message_id
+    )
 
-    target_id = clean_text(source_message_id)
-    hits = flatten_tree(owner_state["treeData"], owner_key=owner_key)
-    return [
-        {"name": hit["node_name"], "stance": clean_text(hit.get("stance"))}
-        for hit in hits
-        if clean_text(hit.get("source_message_id")) == target_id and hit.get("node_name")
-    ]
+
+def get_session_lit_node_count(
+    session_record: dict[str, Any],
+    *,
+    source_message_id: str,
+    root_name: str = "核電",
+) -> int:
+    """get_lit_node_count() 的 H-AI 版：source_message_id 是 AIConversation 的 id，
+    樹取自 DialogueSessionRecord 的使用者語意脈絡（OWNER_AI_USER）。H-AI 只有
+    使用者這一棵樹——AI 回覆不做 CCND 分析、也不進觀點知識庫審核。"""
+    state = get_ai_semantic_tree_state(session_record, root_name=root_name)
+    return _lit_node_count_from_owner_state(
+        state["participants"].get(OWNER_AI_USER), source_message_id=source_message_id
+    )
+
+
+def get_session_message_dimension(
+    session_record: dict[str, Any],
+    *,
+    source_message_id: str,
+) -> str | None:
+    """get_message_dimension() 的 H-AI 版（見 get_session_lit_node_count 的說明）。"""
+    state = get_ai_semantic_tree_state(session_record, root_name="核電")
+    return _message_dimension_from_owner_state(
+        state["participants"].get(OWNER_AI_USER), source_message_id=source_message_id
+    )
+
+
+def get_session_message_lit_nodes(
+    session_record: dict[str, Any],
+    *,
+    source_message_id: str,
+) -> list[dict[str, str]]:
+    """get_message_lit_nodes() 的 H-AI 版（見 get_session_lit_node_count 的說明）。"""
+    state = get_ai_semantic_tree_state(session_record, root_name="核電")
+    return _message_lit_nodes_from_owner_state(
+        state["participants"].get(OWNER_AI_USER), source_message_id=source_message_id
+    )
 
 
 def _owner_payload(

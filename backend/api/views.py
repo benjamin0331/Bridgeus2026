@@ -284,12 +284,34 @@ def _persist_dialogue_session_record(session_record: dict) -> DialogueSessionRec
     return record
 
 
+def _trigger_m6_pipeline_for_closed_session(session_id: str) -> None:
+    """H-AI 對話結束（session 轉為 CLOSED）後觸發 M6 觀點知識庫 pipeline。
+
+    對應 apps.matching.services.matcher._trigger_m6_pipeline_for_closed_match 的
+    H-AI 版：只把使用者發言送進 Step 4 人工終審，AI 回覆只當脈絡不獨立審核。
+    只註冊在 transaction.on_commit()，pipeline 失敗絕不能讓對話結束流程受影響，
+    所以整支包住吃掉例外、只記 log。
+    """
+    try:
+        from apps.summary.pipeline.assemble import run_pipeline_for_session
+
+        run_pipeline_for_session(session_id)
+    except Exception:
+        logger.exception(
+            "M6 觀點知識庫 pipeline 觸發失敗 session_id=%s（不影響對話結束）",
+            session_id,
+        )
+
+
 def _close_dialogue_session_record(*, session_id: str, user_id: int) -> None:
     """標記某個 AI 對話 session 為已結束，並清掉快取。
 
     後測問卷送出後呼叫——沒有這一步的話，該 session 在 DB 裡永遠是 ACTIVE，
     /api/dialogue/sessions/latest/ 會一直把它當成「可繼續」的對話回傳，使用者
     填完後測問卷後還是會看到「要繼續上次，還是開始新對話？」的提示。
+
+    這裡也是 H-AI 觀點進入知識庫審核的觸發點：ACTIVE → CLOSED 的轉換一場對話
+    只會發生一次，剛好對應「這場對話真的完成了」，跟 H-H 用關房當觸發點一致。
     """
     updated = DialogueSessionRecord.objects.filter(
         session_id=session_id,
@@ -298,6 +320,9 @@ def _close_dialogue_session_record(*, session_id: str, user_id: int) -> None:
     ).update(status=DialogueSessionRecord.Status.CLOSED)
     if updated:
         cache.delete(_session_cache_key(session_id))
+        transaction.on_commit(
+            lambda: _trigger_m6_pipeline_for_closed_session(session_id)
+        )
 
 
 def _close_superseded_dialogue_sessions(
@@ -993,6 +1018,39 @@ def _approved_match_messages(match: DialogueMatch) -> list[dict]:
                 "created_at": message.created_at,
             }
         )
+    return messages
+
+
+def _approved_session_messages(record: DialogueSessionRecord) -> list[dict]:
+    """知識庫『對話詳情』頁的 H-AI 逐字稿。對應 _approved_match_messages 的
+    H-AI 版：使用者發言標 A 方、AI 回覆標 B 方，同樣不帶 sender_id/使用者名稱。
+
+    只有使用者發言會出現在觀點知識庫的審核與收錄裡，但詳情頁仍完整呈現雙方
+    往返，讓瀏覽者看得懂上下文。"""
+    messages = []
+    for turn in AIConversation.objects.filter(
+        user_id=record.user_id, session_id=record.session_id
+    ).order_by("created_at", "id"):
+        if turn.user_prompt:
+            messages.append(
+                {
+                    "id": f"ai-{turn.id}-user",
+                    "side": "a",
+                    "sender_label": "使用者",
+                    "content": turn.user_prompt,
+                    "created_at": turn.created_at,
+                }
+            )
+        if turn.ai_response:
+            messages.append(
+                {
+                    "id": f"ai-{turn.id}-agent",
+                    "side": "b",
+                    "sender_label": "AI",
+                    "content": turn.ai_response,
+                    "created_at": turn.created_at,
+                }
+            )
     return messages
 
 
@@ -2489,7 +2547,6 @@ class KnowledgeBaseConversationDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, pk: int):
-        from apps.matching.services.semantic_tree import approved_match_tree_payload
         from apps.summary.pipeline.assemble import generate_ai_summary, is_raw_summary_text
 
         try:
@@ -2503,16 +2560,16 @@ class KnowledgeBaseConversationDetailView(APIView):
             )
 
         summary = node.summary
-        try:
-            match = DialogueMatch.objects.get(pk=int(summary.dialogue_id))
-        except (DialogueMatch.DoesNotExist, ValueError, TypeError):
-            return Response(
-                {"detail": "找不到這場對話對應的配對房間紀錄。"},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
         topic_title = TOPIC_CONFIGS.get(summary.topic_id, {}).get("title", "")
-        messages = _approved_match_messages(match)
+
+        # dialogue_id 是純數字 → H-H（DialogueMatch.id）；否則 → H-AI（session_id）。
+        if summary.dialogue_id.isdigit():
+            resolved = self._resolve_match_conversation(summary)
+        else:
+            resolved = self._resolve_session_conversation(summary, topic_title)
+        if isinstance(resolved, Response):
+            return resolved
+        messages, semantic_tree = resolved
 
         if is_raw_summary_text(summary.summary_text):
             ai_summary = generate_ai_summary(messages, topic_title=topic_title)
@@ -2545,12 +2602,51 @@ class KnowledgeBaseConversationDetailView(APIView):
             "created_at": summary.created_at,
             "viewpoints": _serialize_viewpoint_rows(sibling_nodes),
             "messages": messages,
-            "semantic_tree": approved_match_tree_payload(
-                match=match, root_name=_semantic_tree_root_name(match)
-            ),
+            "semantic_tree": semantic_tree,
         }
         serializer = DialogueSummaryDetailSerializer(data)
         return Response(serializer.data)
+
+    @staticmethod
+    def _resolve_match_conversation(summary):
+        """H-H：回傳 (messages, semantic_tree)，或錯誤 Response。"""
+        from apps.matching.services.semantic_tree import approved_match_tree_payload
+
+        try:
+            match = DialogueMatch.objects.get(pk=int(summary.dialogue_id))
+        except (DialogueMatch.DoesNotExist, ValueError, TypeError):
+            return Response(
+                {"detail": "找不到這場對話對應的配對房間紀錄。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return (
+            _approved_match_messages(match),
+            approved_match_tree_payload(
+                match=match, root_name=_semantic_tree_root_name(match)
+            ),
+        )
+
+    @staticmethod
+    def _resolve_session_conversation(summary, topic_title):
+        """H-AI：回傳 (messages, semantic_tree)，或錯誤 Response。CCND 樹只有
+        使用者那一側（semantic_tree_session_payload），跟審核只收使用者發言一致。"""
+        from apps.matching.services.semantic_tree import semantic_tree_session_payload
+
+        record = DialogueSessionRecord.objects.filter(
+            session_id=summary.dialogue_id
+        ).order_by("-last_activity_at", "-id").first()
+        if record is None:
+            return Response(
+                {"detail": "找不到這場對話對應的 AI 對話紀錄。"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        session_record = _dialogue_session_cache_payload_from_record(record)
+        semantic_tree = semantic_tree_session_payload(
+            session_record=session_record,
+            session_id=record.session_id,
+            root_name=_semantic_tree_root_name_for_topic_id(record.topic_id),
+        )
+        return (_approved_session_messages(record), semantic_tree)
 
 
 class ViewpointBrowsePagination(PageNumberPagination):
