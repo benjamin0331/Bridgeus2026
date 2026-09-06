@@ -5,6 +5,16 @@ server {
   root /usr/share/nginx/html;
   index index.html;
 
+  # 研究者上傳知識庫影片用。沒有這一行的話 nginx 會套預設的 1MB 上限，
+  # 任何真實影片都會在到達 Django 之前就被擋掉，回一個沒有 JSON body 的
+  # 413 HTML 頁——前端的錯誤解析拿不到 detail，只會顯示「新增影片失敗」，
+  # 完全看不出原因（2026-09 實際踩到過）。
+  #
+  # 這個值刻意比後端的 KB_VIDEO_MAX_BYTES（預設 200MB）大一些：讓「只超過
+  # 一點點」的檔案能走到 Django，拿到「上限是 200 MB，請先壓縮」這種說得
+  # 清楚的錯誤，而不是 nginx 這個無訊息的 413。兩邊要一起調。
+  client_max_body_size 220m;
+
   location /api/ {
     proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT};
     proxy_http_version 1.1;

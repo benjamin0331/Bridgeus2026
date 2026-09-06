@@ -9,6 +9,7 @@ from functools import lru_cache
 from core.llm_provider import active_model_name, active_provider
 from uuid import uuid4
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.cache import cache
@@ -3231,10 +3232,20 @@ def _fill_video_url_from_file(instance, request):
     - 部署拓撲是前端、API、媒體同一個網域用路徑分流（dev 由 Vite proxy、
       docker 由 nginx、正式站由 Cloudflare Tunnel 把 /media/ 轉到後端），
       所以用頁面自己的 origin 解析 /media/... 一定對。
+    重新上傳（PATCH 換檔）時也要跟著改：條件如果只是「url 還是空的」，換過檔
+    之後 url 會繼續指著已經被刪掉的舊檔，前台播放器拿到 404，而研究者從管理
+    面板完全看不出哪裡不對。但只覆寫「本來就是自動填的 /media/… 路徑」——
+    研究者手動填的外部連結（YouTube 之類）是刻意設定，不能被上傳動作蓋掉。
+
     request 參數保留是為了相容既有呼叫端；目前不需要用到。
     """
-    if instance.video_file and not instance.url:
-        instance.url = instance.video_file.url
+    if not instance.video_file:
+        return
+
+    expected = instance.video_file.url
+    is_auto_filled = not instance.url or instance.url.startswith(settings.MEDIA_URL)
+    if is_auto_filled and instance.url != expected:
+        instance.url = expected
         instance.save(update_fields=["url"])
 
 

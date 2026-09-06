@@ -1,6 +1,9 @@
+from pathlib import Path
+
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.contrib.auth.validators import UnicodeUsernameValidator
@@ -197,6 +200,32 @@ class VideoRecommendationAdminSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "created_at"]
         extra_kwargs = {"url": {"required": False}}
+
+    def validate_video_file(self, value):
+        """副檔名白名單 + 大小上限。
+
+        兩者都不能只靠前面的 nginx／前端：nginx 的 client_max_body_size 只看得到
+        位元組數，回的是沒有訊息的 413 HTML；前端的 accept 屬性使用者按一下開發者
+        工具就能改掉。這裡是唯一一道對「研究者上傳了什麼」有話語權的檢查。
+        """
+        if value is None:
+            return value
+
+        allowed = [ext.lower().lstrip(".") for ext in settings.KB_VIDEO_ALLOWED_EXTENSIONS]
+        suffix = Path(value.name).suffix.lower().lstrip(".")
+        if suffix not in allowed:
+            raise serializers.ValidationError(
+                f"只接受這些格式的影片檔：{('、').join(allowed)}（收到的是 .{suffix or '無副檔名'}）。"
+            )
+
+        max_bytes = settings.KB_VIDEO_MAX_BYTES
+        size = getattr(value, "size", None)
+        if size is not None and size > max_bytes:
+            raise serializers.ValidationError(
+                f"影片檔太大：{size / 1024 / 1024:.1f} MB，"
+                f"上限是 {max_bytes // 1024 // 1024} MB。請先壓縮再上傳。"
+            )
+        return value
 
     def validate(self, attrs):
         has_url = bool(attrs.get("url") or getattr(self.instance, "url", ""))

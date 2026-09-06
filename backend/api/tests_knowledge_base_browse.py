@@ -375,8 +375,10 @@ class VideoRecommendationAdminTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         video = VideoRecommendation.objects.get(pk=response.data["id"])
-        # url 沒帶也要自動補成該檔案的絕對網址，下游只認 url。
-        self.assertTrue(video.url.startswith("http"))
+        # url 沒帶要自動補成該檔案的「根相對路徑」，下游只認 url。
+        # 這裡刻意不是絕對網址：絕對網址會把上傳當下的 host/scheme 寫死進 DB
+        # （見 api.views._fill_video_url_from_file 的說明）。
+        self.assertTrue(video.url.startswith("/media/"), video.url)
         self.assertIn("kb_videos/", video.url)
 
     def test_upload_without_file_or_url_is_rejected(self):

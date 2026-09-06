@@ -40,6 +40,16 @@ def _env_list(name: str, default: str = "") -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        return int(value.strip())
+    except ValueError:
+        return default
+
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
@@ -263,6 +273,20 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 # 研究者從設定頁上傳的知識庫影片檔（VideoRecommendation.video_file）。
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+
+# 單支影片的大小上限。這一層是最後一道，前面還有 nginx 的 client_max_body_size
+# （見 frontend/nginx/default.conf.template）——nginx 的值刻意設得比這裡大一點，
+# 讓「稍微超過上限」的檔案能走到 Django、拿到講得清楚的 JSON 錯誤，而不是
+# nginx 那個沒有訊息的 413 HTML 頁。研究用的 VPS 只有 2–4GB 且磁碟不大，
+# 這個上限同時是防止磁碟被一支誤傳的大檔塞爆的閘門。
+KB_VIDEO_MAX_BYTES = _env_int("KB_VIDEO_MAX_MB", 200) * 1024 * 1024
+
+# 允許上傳的影片副檔名。白名單而非黑名單：上傳目錄由 serve_media 以站台自己的
+# origin 提供，放行 .html/.svg 這類會被瀏覽器當成文件執行的格式，等於讓任何
+# 研究者帳號都能在正式站掛上可執行的頁面（儲存型 XSS）。
+KB_VIDEO_ALLOWED_EXTENSIONS = _env_list(
+    "KB_VIDEO_ALLOWED_EXTENSIONS", "mp4,webm,mov,m4v"
+)
 
 # 讓 DRF 預設使用 JWT 驗證
 REST_FRAMEWORK = {

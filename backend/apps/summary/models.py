@@ -10,6 +10,8 @@ is comparable against MatchMessage.embedding / AIConversation.embedding.
 from django.conf import settings
 from django.contrib.postgres.fields import ArrayField
 from django.db import models
+from django.db.models.signals import post_delete, pre_save
+from django.dispatch import receiver
 from pgvector.django import VectorField
 
 
@@ -122,7 +124,12 @@ class VideoRecommendation(models.Model):
         OPPOSE = "oppose", "反對"
 
     title = models.CharField(max_length=255)
-    url = models.URLField(blank=True)
+    # 刻意用 CharField 而不是 URLField：本地上傳的影片存的是根相對路徑
+    # （/media/kb_videos/…，見 api.views._fill_video_url_from_file），
+    # URLField 的 URLValidator 會把它判成無效網址——研究者從 Django admin
+    # 編輯任何一筆已上傳的影片都會被擋下來，即使他根本沒動到這一欄。
+    # 外部連結（https://…）一樣存在這裡，兩種來源下游都只認這一欄。
+    url = models.CharField(max_length=500, blank=True)
     video_file = models.FileField(upload_to="kb_videos/%Y/%m/", blank=True, null=True)
     thumbnail_url = models.URLField(blank=True)
     description = models.TextField(blank=True)
@@ -187,3 +194,49 @@ class VideoWatchEvent(models.Model):
 
     def __str__(self):
         return f"user={self.user_id} video={self.video_id} stance={self.stance_direction}"
+
+
+# ---------------------------------------------------------------------------
+# 影片檔的磁碟清理
+#
+# Django 從 1.3 起就不會自動刪 FileField 的實體檔案——刪掉 DB 列或換上新檔
+# 之後，舊檔會永遠留在 MEDIA_ROOT 底下，沒有任何一頁看得到它，但一直佔著
+# 研究用 VPS 那顆不大的磁碟。影片是這個專案裡唯一的大型二進位檔，累積速度
+# 遠比其他資料快，所以這裡補上。
+#
+# 用 signal 而不是覆寫 view：研究者也可能從 Django admin 換檔或刪除，
+# 兩條路徑都要收拾乾淨。
+# ---------------------------------------------------------------------------
+
+
+def _discard_video_file(file_field) -> None:
+    """安靜地把檔案從儲存後端移除。
+
+    刪不掉不該讓使用者的操作失敗——列已經刪了／新檔已經存好了，這裡失敗
+    最多是留下一個孤兒檔，比讓整個請求 500 好。
+    """
+    if not file_field:
+        return
+    try:
+        file_field.storage.delete(file_field.name)
+    except Exception:  # noqa: BLE001 — 清理失敗不該影響主流程
+        pass
+
+
+@receiver(post_delete, sender=VideoRecommendation)
+def _delete_video_file_on_record_delete(sender, instance, **kwargs):
+    _discard_video_file(instance.video_file)
+
+
+@receiver(pre_save, sender=VideoRecommendation)
+def _delete_replaced_video_file(sender, instance, **kwargs):
+    """換上新檔時，把這一列原本指著的舊檔刪掉。"""
+    if not instance.pk:
+        return
+    try:
+        previous = VideoRecommendation.objects.get(pk=instance.pk)
+    except VideoRecommendation.DoesNotExist:
+        return
+    old_file = previous.video_file
+    if old_file and old_file.name != getattr(instance.video_file, "name", None):
+        _discard_video_file(old_file)

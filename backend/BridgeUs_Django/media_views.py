@@ -83,6 +83,11 @@ def serve_media(request, path, document_root=None):
         response["Content-Length"] = str(file_size)
 
     response["Accept-Ranges"] = "bytes"
+    # 這個目錄的內容是使用者上傳來的，而且由站台自己的 origin 提供。上傳端
+    # 已經有副檔名白名單（KB_VIDEO_ALLOWED_EXTENSIONS），這一行是第二道：
+    # 就算哪天有個非影片檔用別的途徑進到 MEDIA_ROOT，瀏覽器也不會靠嗅探
+    # 內容把它當成 HTML 執行。
+    response["X-Content-Type-Options"] = "nosniff"
     response["Last-Modified"] = http_date(statobj.st_mtime)
     if encoding:
         response["Content-Encoding"] = encoding

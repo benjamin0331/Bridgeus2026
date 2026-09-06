@@ -57,6 +57,13 @@ function SettingsPage({ user, onReplayTour }) {
   const refreshAccounts = () => setReloadKey((key) => key + 1);
 
   const extractError = (requestError, fallback) => {
+    // 413 是 nginx 在請求到達 Django 之前擋下來的，回的是 HTML 不是 JSON，
+    // 底下的解析一定拿不到 detail 而落到 fallback——那句話看不出原因。
+    // 這裡直接講出真正發生的事（見 frontend/nginx/default.conf.template
+    // 的 client_max_body_size）。
+    if (requestError?.response?.status === 413) {
+      return '檔案太大，被伺服器擋下來了（超過上傳大小上限）。請壓縮後再試，或請管理員調高 nginx 的 client_max_body_size。';
+    }
     const data = requestError?.response?.data;
     if (data?.detail) return data.detail;
     if (data && typeof data === 'object') {
