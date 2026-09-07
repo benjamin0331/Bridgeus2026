@@ -100,13 +100,6 @@
 
 .login-submit-btn:hover { background-color: #d1c8be; }
 
-.login-footer {
-  margin-top: 25px;
-  text-align: center;
-  font-size: 12px;
-  color: #bbb;
-}
-
 /* --- 🔮 核心法陣：背景裝飾通用樣式 --- */
 .bg-decor {
   position: absolute;

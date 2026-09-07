@@ -212,10 +212,6 @@ function LoginPage({ setUser, authMessage = '' }) {
                 </button>
               </div>
 
-              <div className="login-footer">
-                <p>請使用管理員帳號登入</p>
-              </div>
-
               <div className="login-register-link">
                 還沒有帳號？<Link to="/register">立即註冊</Link>
               </div>
