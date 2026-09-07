@@ -1171,7 +1171,11 @@ class SingleActiveDialogueSessionTests(APITestCase):
         return response.data["session_id"]
 
     def test_new_session_closes_previous_active_session(self):
+        # 第一場要先有人開口。沒有發言的空 session 會被下一次進入沿用（見
+        # ReuseEmptyDialogueSessionTests），那條路徑根本不會產生第二筆，
+        # 測不到這裡要保護的「舊的那筆被關掉」。
         first = self._create_session()
+        self._mark_spoken(first)
         second = self._create_session()
 
         self.assertEqual(
@@ -1183,17 +1187,47 @@ class SingleActiveDialogueSessionTests(APITestCase):
             DialogueSessionRecord.Status.ACTIVE,
         )
 
+    def _mark_spoken(self, session_id):
+        """讓這場 session 看起來「使用者真的說過話」。
+
+        sessions/latest 只提供有使用者發言的對話（見 DialogueSessionLatestView），
+        所以測「只提供最新那筆」時必須讓兩筆都是有內容的，否則測到的會是
+        「空對話不提供」那條規則。
+        """
+        record = DialogueSessionRecord.objects.get(session_id=session_id)
+        record.session_state = {
+            **(record.session_state or {}),
+            "history": [{"role": "user", "content": "我覺得核電比較穩定。"}],
+        }
+        record.save(update_fields=["session_state"])
+        cache.delete(f"dialogue_session:{session_id}")
+
     def test_only_newest_session_is_offered_for_restore(self):
-        self._create_session()
+        self._mark_spoken(self._create_session())
         newest = self._create_session()
+        self._mark_spoken(newest)
 
         response = self.client.get("/api/dialogue/sessions/latest/?topic_id=102")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["session_id"], newest)
 
+    def test_session_without_user_speech_is_not_offered_for_restore(self):
+        """進了房沒開口留下的空 session 不該被當成「上次的對話」。
+
+        session 是在進入當下就建立的，所以這種紀錄一定會出現。回傳它的話，
+        使用者會被問要不要繼續一場一句話都沒有的對話，而且那個提示會壓掉
+        「沿用上次立場」的彈窗。
+        """
+        self._create_session()
+
+        response = self.client.get("/api/dialogue/sessions/latest/?topic_id=102")
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
     def test_superseded_session_cannot_be_restored_directly(self):
         first = self._create_session()
+        self._mark_spoken(first)  # 空的會被沿用而不是被取代，見上一個測試的註解
         self._create_session()
         cache.clear()  # 強迫走 DB 而非快取
 
@@ -2685,3 +2719,57 @@ class DialogueLevelTests(APITestCase):
         )
         response = self.client.get("/api/titles/me/")
         self.assertEqual(response.data["dialogue_count"], 0)
+
+
+class ReuseEmptyDialogueSessionTests(APITestCase):
+    """進入對話室時，沒人開過口的舊 session 要被沿用，不要每次都開新的。
+
+    session 是在「進入」當下建立的（送出前測問卷／沿用上次立場／混合入口
+    fallback），所以每重新進入一次就會多一筆 0 輪的空紀錄。實測 2026-09-07：
+    129 筆 session 裡有 31 筆（24%）是這樣來的，會讓「每人幾場對話」多算。
+    """
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="reuse-empty-session", password="secret123"
+        )
+        assign_entry_route(self.user, 102)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def _create_session(self):
+        response = self.client.post(
+            "/api/dialogue/sessions/",
+            {"topic_id": 102, "topic_title": "核能發電在減碳中的角色"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        return response.data["session_id"]
+
+    def test_entering_again_without_speaking_reuses_the_same_session(self):
+        first = self._create_session()
+        second = self._create_session()
+
+        self.assertEqual(first, second)
+        self.assertEqual(
+            DialogueSessionRecord.objects.filter(user=self.user, topic_id=102).count(),
+            1,
+        )
+
+    def test_entering_again_after_speaking_starts_a_new_session(self):
+        first = self._create_session()
+        record = DialogueSessionRecord.objects.get(session_id=first)
+        record.session_state = {
+            **(record.session_state or {}),
+            "history": [{"role": "user", "content": "我覺得核電比較穩定。"}],
+        }
+        record.save(update_fields=["session_state"])
+        cache.delete(f"dialogue_session:{first}")
+
+        second = self._create_session()
+
+        self.assertNotEqual(first, second)
+        self.assertEqual(
+            DialogueSessionRecord.objects.get(session_id=first).status,
+            DialogueSessionRecord.Status.CLOSED,
+        )

@@ -21,6 +21,53 @@ manage.py 指令共用，兩邊行為保證一致。
 """
 
 from collections import defaultdict
+from datetime import timedelta
+
+# 進了房卻一句話都沒說的 session，放這麼久之後就當作被放棄。留這段緩衝是因為
+# 「剛進房還沒開始打字」跟「放棄」在資料上長得一模一樣，立刻關掉會把正在進行
+# 的流程砍斷。
+ABANDONED_GRACE_SECONDS = 30 * 60
+
+
+def session_has_user_speech(session_state) -> bool:
+    """這場對話裡使用者是否真的說過話。
+
+    只認 role == "user" 的訊息：AI 開場會寫進 history 但沒有對應的
+    AIConversation turn，把它算成「有內容」的話，一場只有開場、使用者從未
+    回應的對話會被當成可以繼續。
+    """
+    history = (session_state or {}).get("history") or []
+    return any(
+        isinstance(message, dict) and message.get("role") == "user"
+        for message in history
+    )
+
+
+def find_abandoned_session_ids(
+    *, DialogueSessionRecord, now, grace_seconds=ABANDONED_GRACE_SECONDS
+):
+    """使用者一句話都沒說、而且已經擱置超過緩衝時間的 active session。
+
+    session 是在「進入」當下就建立的（送出前測問卷／沿用上次立場／混合入口
+    fallback），不是等第一則訊息，所以「進了房沒開口」就會留下一筆。這種
+    session 沒有東西可以繼續，卻會被 /api/dialogue/sessions/latest/ 當成
+    「上次的對話」擋住正常進入流程，也會讓「每人幾場對話」多算。
+    實測 2026-09-07：129 筆 session 裡有 31 筆（24%）是這種。
+
+    刻意跟 find_closable_session_ids 分開：那支被 data migration 0018 直接
+    import，改它的行為等於改寫歷史遷移的結果。
+    """
+    cutoff = now - timedelta(seconds=grace_seconds)
+    rows = DialogueSessionRecord.objects.filter(
+        status="active",
+        last_activity_at__lt=cutoff,
+    ).values_list("session_id", "session_state")
+    return [
+        session_id
+        for session_id, session_state in rows
+        if not session_has_user_speech(session_state)
+    ]
+
 
 
 def find_closable_session_ids(*, DialogueSessionRecord, PostDialogueResponse):

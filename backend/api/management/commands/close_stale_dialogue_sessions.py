@@ -13,9 +13,13 @@
 
 from django.core.cache import cache
 from django.core.management.base import BaseCommand
+from django.utils import timezone
 
 from api.models import DialogueSessionRecord, PostDialogueResponse
-from api.session_cleanup import find_closable_session_ids
+from api.session_cleanup import (
+    find_abandoned_session_ids,
+    find_closable_session_ids,
+)
 
 
 class Command(BaseCommand):
@@ -33,15 +37,28 @@ class Command(BaseCommand):
             DialogueSessionRecord=DialogueSessionRecord,
             PostDialogueResponse=PostDialogueResponse,
         )
+        # 進了房沒開口留下的空 session。跟上面那組分開算，數量與原因不同，
+        # 印出來時也分開列，才看得出這次清掉的是哪一類。
+        abandoned = [
+            session_id
+            for session_id in find_abandoned_session_ids(
+                DialogueSessionRecord=DialogueSessionRecord,
+                now=timezone.now(),
+            )
+            if session_id not in set(closable)
+        ]
+        closable = list(closable) + abandoned
 
         if not closable:
             self.stdout.write(self.style.SUCCESS("沒有需要關閉的 session。"))
             return
 
+        abandoned_set = set(abandoned)
         for session_id in closable:
             record = DialogueSessionRecord.objects.get(session_id=session_id)
+            reason = "空對話" if session_id in abandoned_set else "已結束"
             self.stdout.write(
-                f"  user={record.user_id} topic={record.topic_id} "
+                f"  [{reason}] user={record.user_id} topic={record.topic_id} "
                 f"session={session_id[:12]} last_activity={record.last_activity_at}"
             )
 
