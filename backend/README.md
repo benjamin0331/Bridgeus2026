@@ -234,9 +234,10 @@ lookup) and stay valid until they expire — shorten
 Users who cannot sign in reset their password with a 6-digit code mailed to their
 address:
 
-1. `POST /api/password-reset/request/` with `{ "email": ... }` — always returns the
-   same body regardless of whether the account exists; a code is mailed only when
-   it does (active, with an email). Requesting again invalidates the prior code.
+1. `POST /api/password-reset/request/` with `{ "email": ... }` — `200` and mails a
+   code when the email matches an active account; `404` "這個信箱沒有註冊帳號。"
+   when it does not (not hidden — the register endpoint already reveals which
+   emails are taken). Requesting again invalidates the prior code.
 2. `POST /api/password-reset/confirm/` with `{ "email", "code", "new_password",
    "new_password_confirm" }` — verifies the code, sets the password, blacklists the
    account's refresh tokens, and marks the email verified. Returns no tokens; the

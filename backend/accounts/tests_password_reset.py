@@ -1,7 +1,7 @@
 """忘記密碼：寄驗證碼到信箱 → 驗碼 → 設新密碼。
 
-兩支端點都免登入，所以測試重點除了「功能對不對」，還有：
-- 不論信箱有沒有註冊，request 一律回同一句話（不可被拿來列舉帳號）；
+測試重點：
+- request 對查無此信箱回 404「沒有註冊」（產品刻意不做防帳號列舉）；
 - 驗證碼只存雜湊、單次使用、會過期、錯太多次就作廢；
 - 換完密碼舊 refresh token 立刻失效（見 api/tests_change_password）。
 """
@@ -58,23 +58,14 @@ class PasswordResetRequestTests(APITestCase):
         self.assertEqual(record.code_hash, PasswordResetCode.hash_code(code))
         self.assertNotIn(code, record.code_hash)  # 明碼沒落庫
 
-    def test_unknown_email_looks_identical_but_sends_nothing(self):
-        known = self.client.post(
-            REQUEST_URL, {"email": "p@example.com"}, format="json"
-        )
-        mail.outbox.clear()
-        unknown = self.client.post(
+    def test_unknown_email_is_rejected_as_not_registered(self):
+        response = self.client.post(
             REQUEST_URL, {"email": "nobody@example.com"}, format="json"
         )
-
-        self.assertEqual(unknown.status_code, known.status_code)
-        self.assertEqual(unknown.data, known.data)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertIn("沒有註冊", response.data["detail"])
         self.assertEqual(len(mail.outbox), 0)
-        self.assertFalse(
-            PasswordResetCode.objects.filter(
-                user__email="nobody@example.com"
-            ).exists()
-        )
+        self.assertFalse(PasswordResetCode.objects.exists())
 
     def test_email_match_is_case_insensitive(self):
         response = self.client.post(
@@ -83,13 +74,13 @@ class PasswordResetRequestTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(mail.outbox), 1)
 
-    def test_inactive_account_gets_no_mail(self):
+    def test_inactive_account_is_treated_as_not_registered(self):
         self.user.is_active = False
         self.user.save(update_fields=["is_active"])
         response = self.client.post(
             REQUEST_URL, {"email": "p@example.com"}, format="json"
         )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         self.assertEqual(len(mail.outbox), 0)
 
     def test_new_request_invalidates_the_previous_code(self):
@@ -118,7 +109,7 @@ class PasswordResetRequestTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_mail_send_failure_does_not_leak_and_burns_the_code(self):
+    def test_mail_send_failure_reports_502_and_burns_the_code(self):
         with patch(
             "accounts.views.send_password_reset_code",
             side_effect=RuntimeError("smtp down"),
@@ -126,7 +117,7 @@ class PasswordResetRequestTests(APITestCase):
             response = self.client.post(
                 REQUEST_URL, {"email": "p@example.com"}, format="json"
             )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
         record = PasswordResetCode.objects.get(user=self.user)
         self.assertIsNotNone(record.consumed_at)  # 寄不出去的碼不留成有效憑證
 

@@ -10,7 +10,7 @@
 > 每完成一項未 commit 的工作就記在這；commit 後刪掉該行。
 
 - **忘記密碼：Email 收 6 位數驗證碼（新功能，M1）**：登入頁 →「忘記密碼？」→ 輸入 email → 收驗證碼 → 驗碼 + 設新密碼 → 回登入。
-  - 後端：`accounts.PasswordResetCode`（migration `accounts/0006`，只存 SHA-256、單次使用、10 分鐘、錯 5 次作廢該碼）；`POST /api/password-reset/request/`（一律回同一句、不列舉帳號；帳號存在且 active 且有 email 才寄）＋`POST /api/password-reset/confirm/`（驗碼 → `set_password` → `revoke_user_tokens` → 補 `email_verified_at`，**不發 token**）；serializer `PasswordResetRequestSerializer`／`PasswordResetConfirmSerializer`；寄信 `accounts/emails.py`（純文字常數）。
+  - 後端：`accounts.PasswordResetCode`（migration `accounts/0006`，只存 SHA-256、單次使用、10 分鐘、錯 5 次作廢該碼）；`POST /api/password-reset/request/`（查無此信箱回 404「沒有註冊」——**刻意不做防帳號列舉**，註冊頁本來就會回報 email 已被使用；寄信失敗回 502 並作廢該碼）＋`POST /api/password-reset/confirm/`（驗碼 → `set_password` → `revoke_user_tokens` → 補 `email_verified_at`，**不發 token**；confirm 這支仍回通用錯誤不分辨）；serializer `PasswordResetRequestSerializer`／`PasswordResetConfirmSerializer`；寄信 `accounts/emails.py`（純文字常數）。
   - 限流（未認證、依 IP）：新 scope `THROTTLE_PASSWORD_RESET_REQUEST`（`5/hour`）／`THROTTLE_PASSWORD_RESET_CONFIRM`（`10/hour`）。真正的暴力破解防線是碼自己的 `attempt_count`。
   - Email：settings 新增 `EMAIL_*`（dev 預設 console backend，不寄真信）＋`PASSWORD_RESET_CODE_TTL_MINUTES`。正式機在 `backend/.env` 設 `EMAIL_BACKEND=...smtp...`＋`EMAIL_HOST_USER=bridgeus2026@gmail.com`＋`EMAIL_HOST_PASSWORD=<Gmail 應用程式密碼>`。⚠️ 多數 VPS 封鎖對外 587/465，部署要確認。
   - 舊帳號（研究者代開、無 email）走不到這條流程是刻意的，仍由研究者後台重設。

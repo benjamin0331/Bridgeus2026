@@ -87,13 +87,13 @@ class RegistrationView(APIView):
 class PasswordResetRequestView(APIView):
     """POST /api/password-reset/request/ — 忘記密碼第一步：寄驗證碼到信箱。
 
-    **一律回同一句話**，不論這個信箱有沒有註冊、帳號有沒有停用、寄信有沒有
-    成功。這個端點免登入，回應只要因帳號存在與否而不同，就是一個帳號列舉
-    工具。真的寄出去的條件（帳號存在、is_active、有 email）都在內部判斷，
-    對外不可見。
+    信箱查無帳號時直接回 `404` 明講「這個信箱沒有註冊」，不做「不論存不存在
+    都回同一句」的防帳號列舉處理——這是產品刻意的取捨（封閉的研究平台、註冊頁
+    本來就會回報 email 已被使用），換取使用者打錯字時看得懂。
 
-    研究者代開的舊帳號多半沒有 email，走不到這條流程是預期行為——他們的
-    密碼由研究者在後台重設。
+    寄出的條件是帳號存在、`is_active`、有 email；三者有一個不成立就當成
+    「沒有註冊」。研究者代開的舊帳號多半沒有 email，走不到這條流程是預期
+    行為——他們的密碼由研究者在後台重設。
 
     限流 scope password_reset_request 掛在這裡：未認證請求依 IP 計數，狂點
     只會灌爆某個信箱、燒掉 Gmail 每日寄信配額。
@@ -104,7 +104,9 @@ class PasswordResetRequestView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "password_reset_request"
 
-    GENERIC_OK = "如果這個信箱有註冊帳號，我們已經寄出一組驗證碼，請查看信箱。"
+    NOT_REGISTERED = "這個信箱沒有註冊帳號。"
+    MAIL_FAILED = "驗證碼寄送失敗，請稍後再試。"
+    SENT = "驗證碼已寄出。"
 
     def post(self, request):
         serializer = PasswordResetRequestSerializer(data=request.data)
@@ -112,20 +114,29 @@ class PasswordResetRequestView(APIView):
         email = serializer.validated_data["email"]
 
         user = User.objects.filter(email__iexact=email, is_active=True).first()
-        if user is not None and user.email:
-            record, code = PasswordResetCode.issue(user)
-            try:
-                send_password_reset_code(user.email, code)
-            except Exception:
-                # 寄信失敗就把剛產的碼作廢：不要在 DB 裡留一組寄不出去、
-                # 卻仍然有效的憑證。錯誤只進 log，不對外洩漏。
-                record.consumed_at = timezone.now()
-                record.save(update_fields=["consumed_at"])
-                logger.exception(
-                    "password reset mail failed for user id=%s", user.id
-                )
+        if user is None or not user.email:
+            return Response(
+                {"detail": self.NOT_REGISTERED},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
-        return Response({"detail": self.GENERIC_OK})
+        record, code = PasswordResetCode.issue(user)
+        try:
+            send_password_reset_code(user.email, code)
+        except Exception:
+            # 寄信失敗就把剛產的碼作廢：不要在 DB 裡留一組寄不出去、卻仍然
+            # 有效的憑證。
+            record.consumed_at = timezone.now()
+            record.save(update_fields=["consumed_at"])
+            logger.exception(
+                "password reset mail failed for user id=%s", user.id
+            )
+            return Response(
+                {"detail": self.MAIL_FAILED},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        return Response({"detail": self.SENT})
 
 
 class PasswordResetConfirmView(APIView):

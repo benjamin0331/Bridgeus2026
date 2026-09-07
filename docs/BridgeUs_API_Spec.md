@@ -135,16 +135,19 @@ email. Rate limited per IP (`THROTTLE_PASSWORD_RESET_REQUEST`, default `5/hour`)
 
 **Response** `200`
 ```json
-{ "detail": "如果這個信箱有註冊帳號，我們已經寄出一組驗證碼，請查看信箱。" }
+{ "detail": "驗證碼已寄出。" }
 ```
 
-The response is identical whether or not the email belongs to an account, so the
-endpoint cannot be used to enumerate accounts. A code is actually sent only when
-the account exists, is active, and has an email. Requesting a new code
-invalidates any previous unused code for that account. Codes expire after
-`PASSWORD_RESET_CODE_TTL_MINUTES` (default 10) and are single-use.
+Sent only when the email matches an account that is active and has an email
+address. Requesting a new code invalidates any previous unused code for that
+account. Codes expire after `PASSWORD_RESET_CODE_TTL_MINUTES` (default 10) and
+are single-use.
 
-**Errors** `400` when `email` is malformed; `429` when throttled.
+**Errors** `404` `{ "detail": "這個信箱沒有註冊帳號。" }` when the email matches no
+active account (the endpoint deliberately does not hide this — the register
+endpoint already reveals which emails are taken); `400` when `email` is
+malformed; `502` `{ "detail": "驗證碼寄送失敗，請稍後再試。" }` when the mail
+server rejects the send (the code is voided); `429` when throttled.
 
 ---
 

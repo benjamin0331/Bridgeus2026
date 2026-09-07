@@ -102,8 +102,7 @@ class RegistrationSerializer(serializers.Serializer):
 class PasswordResetRequestSerializer(serializers.Serializer):
     """忘記密碼第一步：輸入信箱、請系統寄驗證碼。
 
-    只驗格式，不在這裡查帳號存不存在——view 一律回同一句話（不論信箱有沒有
-    註冊），避免這個端點變成帳號列舉工具。
+    只驗格式；查帳號、決定回 200 還是 404「沒有註冊」都在 view 做。
     """
 
     email = serializers.EmailField()

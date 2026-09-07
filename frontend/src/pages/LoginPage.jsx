@@ -83,18 +83,21 @@ function LoginPage({ setUser, authMessage = '' }) {
 
     try {
       await requestPasswordReset({ email: resetEmail });
-      // 後端不論信箱有沒有註冊都回同一句話——這裡照樣往下一步，不暗示
-      // 「這個信箱存在」。
       setResetNotice(
-        '如果這個信箱有註冊帳號，我們已經寄出一組 6 位數驗證碼。請查看信箱（含垃圾郵件匣），驗證碼 10 分鐘內有效。',
+        '驗證碼已寄出，請查看信箱（含垃圾郵件匣）。驗證碼 10 分鐘內有效。',
       );
       setView(VIEW_CONFIRM);
     } catch (error) {
       const status = error?.response?.status;
-      if (status === 400) {
+      const detail = error?.response?.data?.detail;
+      if (status === 404) {
+        setResetError(detail || '這個信箱沒有註冊帳號。');
+      } else if (status === 400) {
         setResetError('請輸入有效的電子信箱。');
       } else if (status === 429) {
         setResetError('索取驗證碼過於頻繁，請稍後再試。');
+      } else if (status === 502) {
+        setResetError(detail || '驗證碼寄送失敗，請稍後再試。');
       } else {
         setResetError('目前無法處理，請檢查網路連線後再試。');
       }
