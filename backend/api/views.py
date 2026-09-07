@@ -4605,14 +4605,32 @@ class PostDialogueResponseView(APIView):
 
     def post(self, request):
         serializer = PostDialogueResponseSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        validated = serializer.validated_data
+        try:
+            serializer.is_valid(raise_exception=True)
+            validated = serializer.validated_data
 
-        discomfort_detail = validated.pop("discomfort_detail", "") or ""
-        s_pre = _post_dialogue_stance_snapshot(
-            user=request.user,
-            validated=validated,
-        )
+            discomfort_detail = validated.pop("discomfort_detail", "") or ""
+            s_pre = _post_dialogue_stance_snapshot(
+                user=request.user,
+                validated=validated,
+            )
+        except exceptions.ValidationError as exc:
+            # 送不出去的後測問卷＝流失一個樣本，而受試者通常只會說「按了沒反應」。
+            # 這裡把「誰、哪一場、哪個欄位不合法」寫進 log，研究者不必等受試者
+            # 回報就能查。刻意只記欄位名與對話識別碼，不記問卷答案本身。
+            detail = exc.detail
+            fields = sorted(detail.keys()) if isinstance(detail, dict) else ["non_field"]
+            logger.warning(
+                "Post-questionnaire rejected user=%s condition=%r session=%r room=%r "
+                "topic=%r invalid_fields=%s",
+                request.user.id,
+                request.data.get("experiment_condition"),
+                request.data.get("session_id"),
+                request.data.get("room_id"),
+                request.data.get("topic_id"),
+                fields,
+            )
+            raise
 
         response_obj = PostDialogueResponse(
             user=request.user,
