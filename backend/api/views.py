@@ -90,6 +90,7 @@ from .display_settings import (
 )
 from .timeline_access import LOCKED_DETAIL, timeline_unlock_state
 from .godot_tickets import issue_ticket, redeem_ticket
+from api.session_cleanup import session_has_user_speech
 from api.token_revocation import revoke_user_tokens
 from api.godot_binding import (
     BINDING_STATS_KEY,
@@ -1503,7 +1504,27 @@ def _create_ai_dialogue_session(
         user_reasoning_mode=topic_config["user_reasoning_mode"],
     )
 
-    session_id = uuid4().hex
+    # 同一位使用者、同一議題底下如果已經有一場「沒人開過口」的 active session，
+    # 就沿用那一筆的 id，不要再開新的。session 是在「進入」當下建立的，不沿用
+    # 的話，每次重新整理或重新進入都會多留一筆 0 輪的空紀錄——實測 2026-09-07
+    # 有 24% 的 session 是這樣來的，會讓「每人幾場對話」多算。
+    #
+    # 沿用的是「房號」，內容整份覆寫（下面的 _persist_dialogue_session_record
+    # 是 update_or_create）：使用者可能重填了前測問卷，立場與代理人設定都要換
+    # 成新的。中間沒有任何發言，所以沒有東西會被蓋掉。
+    reusable = next(
+        (
+            candidate
+            for candidate in DialogueSessionRecord.objects.filter(
+                user=user,
+                topic_id=topic_id,
+                status=DialogueSessionRecord.Status.ACTIVE,
+            ).order_by("-last_activity_at", "-id")
+            if not session_has_user_speech(candidate.session_state)
+        ),
+        None,
+    )
+    session_id = reusable.session_id if reusable else uuid4().hex
     session_record = {
         "user_id": user.id,
         "session_id": session_id,
@@ -1896,14 +1917,21 @@ class DialogueSessionLatestView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        record = (
-            DialogueSessionRecord.objects.filter(
-                user=request.user,
-                topic_id=topic_id,
-                status=DialogueSessionRecord.Status.ACTIVE,
-            )
-            .order_by("-last_activity_at", "-id")
-            .first()
+        # 只挑「使用者真的說過話」的那一場。session 是在進入當下就建立的，
+        # 所以「進了房沒開口」會留下 active 但空白的紀錄；不濾掉的話它會被當成
+        # 「上次的對話」問使用者要不要繼續（裡面一句話都沒有），而且那個提示還
+        # 會壓掉「沿用上次立場」的彈窗，等於整個進入流程被一場空對話綁架。
+        record = next(
+            (
+                candidate
+                for candidate in DialogueSessionRecord.objects.filter(
+                    user=request.user,
+                    topic_id=topic_id,
+                    status=DialogueSessionRecord.Status.ACTIVE,
+                ).order_by("-last_activity_at", "-id")
+                if session_has_user_speech(candidate.session_state)
+            ),
+            None,
         )
         if record is None:
             return Response(
@@ -4539,29 +4567,45 @@ def _post_dialogue_stance_snapshot(*, user, validated: dict):
     topic_id = validated["topic_id"]
     condition = validated["experiment_condition"]
 
+    # 「查不到」與「不是你的」分開講。實測踩過：共用瀏覽器換帳號之後，舊分頁
+    # （localStorage 是跨分頁共用的，token 已經換人）送出時仍帶著前一位的
+    # session_id，後端擋下來是對的，但訊息寫成「找不到」會讓人以為是逾時或
+    # 系統壞掉，於是一直重按。分開之後畫面才講得出「請用原本的帳號登入」。
+    #
+    # 先不帶 user 查、再比對擁有者：等於承認「這個 id 存在」。session_id 是
+    # uuid4，只有擁有者的前端會拿到，換來的可診斷性遠大於這點資訊量。
     if condition == PostDialogueResponse.ExperimentCondition.AI:
         record = DialogueSessionRecord.objects.filter(
-            user=user,
             session_id=validated["session_id"],
             topic_id=topic_id,
         ).first()
         if record is None:
             raise exceptions.ValidationError(
-                {"session_id": "找不到屬於你的同議題 AI 對話 session。"}
+                {"session_id": "找不到這個議題的 AI 對話 session。"}
+            )
+        if record.user_id != user.id:
+            raise exceptions.ValidationError(
+                {
+                    "session_id": "這場對話屬於另一個帳號。請用當時的帳號登入，"
+                    "或從對話頁重新進入問卷。"
+                }
             )
         return (record.session_state or {}).get("user_stance_score")
 
-    match = (
-        DialogueMatch.objects.filter(
-            room_id=validated["room_id"],
-            topic_id=topic_id,
-        )
-        .filter(Q(user_a=user) | Q(user_b=user))
-        .first()
-    )
+    match = DialogueMatch.objects.filter(
+        room_id=validated["room_id"],
+        topic_id=topic_id,
+    ).first()
     if match is None:
         raise exceptions.ValidationError(
-            {"room_id": "找不到屬於你的同議題配對房間。"}
+            {"room_id": "找不到這個議題的配對房間。"}
+        )
+    if user.id not in (match.user_a_id, match.user_b_id):
+        raise exceptions.ValidationError(
+            {
+                "room_id": "這場對話屬於另一個帳號。請用當時的帳號登入，"
+                "或從對話頁重新進入問卷。"
+            }
         )
     return match.user_a_score if match.user_a_id == user.id else match.user_b_score
 

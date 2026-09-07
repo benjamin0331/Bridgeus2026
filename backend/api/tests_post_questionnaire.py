@@ -648,3 +648,54 @@ class TestPostQuestionnaireConsent:
             format="json",
         )
         assert response.status_code == 404
+
+
+@pytest.mark.django_db
+class TestPostQuestionnaireOwnership:
+    """換帳號之後送出舊對話的問卷，必須被擋下、而且要說得出原因。
+
+    實測情境（2026-09-07）：共用瀏覽器上舊分頁還停在問卷頁，另一個分頁換帳號
+    登入之後，舊分頁送出時帶的是新帳號的 token 加上前一位的 session_id。後端
+    擋下來是對的，但訊息若寫成「找不到」，現場只會被當成逾時而一直重按。
+    """
+
+    def test_ai_session_owned_by_another_account_is_rejected_with_a_clear_reason(
+        self, auth_client
+    ):
+        from django.contrib.auth import get_user_model
+
+        client, _ = auth_client
+        other = get_user_model().objects.create_user(username="pq-other-owner")
+        record = DialogueSessionRecord.objects.create(
+            user=other,
+            session_id="owned-by-someone-else",
+            topic_id=102,
+            topic_title="台灣核能議題討論",
+            collection_name="nuclear_energy_all",
+            survey_context={},
+            session_state={"user_stance_score": 5.0},
+            last_activity_at=timezone.now(),
+        )
+
+        response = client.post(
+            "/api/post-questionnaire/",
+            _make_ai_payload(session_id=record.session_id),
+            format="json",
+        )
+
+        assert response.status_code == 400
+        message = str(response.data["session_id"])
+        assert "另一個帳號" in message, message
+
+    def test_missing_ai_session_still_says_it_was_not_found(self, auth_client):
+        client, _ = auth_client
+
+        response = client.post(
+            "/api/post-questionnaire/",
+            _make_ai_payload(session_id="no-such-session"),
+            format="json",
+        )
+
+        assert response.status_code == 400
+        message = str(response.data["session_id"])
+        assert "找不到" in message, message

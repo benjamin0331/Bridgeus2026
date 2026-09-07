@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import api from '../api/client';
+import api, { getAccessTokenPayload } from '../api/client';
 import SettlementReceipt from './SettlementReceipt';
 import './PostQuestionnairePage.css';
 
@@ -365,6 +365,28 @@ export default function PostQuestionnairePage() {
     [topicSurvey],
   );
 
+  // 這份問卷是「誰的對話」。localStorage 是跨分頁共用的，所以另一個分頁換帳號
+  // 登入之後，這個還開著的舊分頁會帶著新帳號的 token 去送前一位的 session_id，
+  // 後端一定擋（也應該擋）。與其讓人整份填完才被打回票，不如一發現就先講。
+  const [openedByUserId] = useState(() => getAccessTokenPayload()?.user_id ?? null);
+  const [accountChanged, setAccountChanged] = useState(false);
+
+  useEffect(() => {
+    const check = () => {
+      const currentUserId = getAccessTokenPayload()?.user_id ?? null;
+      setAccountChanged(
+        openedByUserId !== null &&
+          currentUserId !== null &&
+          currentUserId !== openedByUserId,
+      );
+    };
+
+    check();
+    // storage 事件只在「其他分頁」改動 localStorage 時觸發，正好就是這個情境。
+    window.addEventListener('storage', check);
+    return () => window.removeEventListener('storage', check);
+  }, [openedByUserId]);
+
   const draftKey = postQuestionnaireDraftKey({ condition, sessionId, roomId });
   // 用 lazy initializer 而不是 useEffect 還原：effect 版本會在還原前先跑一次
   // 儲存 effect，把空白狀態寫回去蓋掉草稿。
@@ -488,6 +510,14 @@ export default function PostQuestionnairePage() {
       setSubmitError('請填完本頁所有欄位再繼續。');
       return;
     }
+    const currentUserId = getAccessTokenPayload()?.user_id ?? null;
+    if (openedByUserId !== null && currentUserId !== null && currentUserId !== openedByUserId) {
+      setAccountChanged(true);
+      setSubmitError(
+        '這份問卷屬於另一個帳號的對話，送出會被伺服器擋下。請用當時的帳號登入，或從對話頁重新進入問卷。',
+      );
+      return;
+    }
     setIsSubmitting(true);
     setSubmitError('');
 
@@ -605,6 +635,12 @@ export default function PostQuestionnairePage() {
               <div className="pq-title-line">
                 <h2>對話後問卷</h2>
                 <p className="pq-subtitle">感謝你的參與！請依序回答以下問題。</p>
+          {accountChanged && (
+            <p className="pq-error" role="alert">
+              目前登入的帳號跟開啟這份問卷時不同，送出會被擋下。
+              請用當時的帳號登入，或從對話頁重新進入問卷。
+            </p>
+          )}
               </div>
               {closeButton}
             </div>
@@ -681,7 +717,7 @@ export default function PostQuestionnairePage() {
               <button
                 className="pq-btn pq-btn-submit"
                 onClick={handleSubmit}
-                disabled={isSubmitting}
+                disabled={isSubmitting || accountChanged}
               >
                 {isSubmitting ? '送出中...' : '送出問卷'}
               </button>
