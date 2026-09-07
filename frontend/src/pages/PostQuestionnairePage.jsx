@@ -249,6 +249,57 @@ function StepE({ flag, detail, onFlagChange, onDetailChange }) {
   );
 }
 
+// DRF 的錯誤有三種形狀：{detail}、{non_field_errors:[...]}、以及欄位層級的
+// {欄位名:[訊息]}。原本只讀前兩種，第三種一律變成「送出失敗，請稍後再試」——
+// 而後測問卷最容易踩到的偏偏是第三種（找不到對應的 session/房間、開放題字數
+// 不足）。受試者看不到真正原因就只能重按，研究者事後也查不出那筆為什麼沒進來。
+function extractSubmitError(error) {
+  const data = error?.response?.data;
+
+  if (typeof data === 'string' && data.trim()) return data;
+  if (typeof data?.detail === 'string') return data.detail;
+
+  const first = (value) => (Array.isArray(value) ? value[0] : value);
+
+  const nonField = first(data?.non_field_errors);
+  if (typeof nonField === 'string') return nonField;
+
+  if (data && typeof data === 'object') {
+    for (const [field, value] of Object.entries(data)) {
+      const message = first(value);
+      if (typeof message === 'string' && message.trim()) {
+        return `${message}（${field}）`;
+      }
+    }
+  }
+
+  if (error?.response?.status) {
+    return `送出失敗（HTTP ${error.response.status}），請稍後再試。`;
+  }
+  return '送出失敗，請稍後再試。';
+}
+
+// 填到一半的答案暫存。演示現場最貴的失敗是「送出失敗／不小心重整／被登出」
+// 之後整份重填——受試者通常直接放棄，那個樣本就沒了。
+//
+// key 綁在「哪一場對話」上，所以同一個人不同場次的草稿不會互相蓋掉；送出成功
+// 就清掉，不留殘骸。localStorage 在無痕模式或關閉站台資料時會直接丟例外，
+// 所有存取都要包 try/catch——暫存失敗可以接受，擋住填問卷不行。
+function postQuestionnaireDraftKey({ condition, sessionId, roomId }) {
+  const conversationId = sessionId || roomId;
+  return conversationId ? `bridgeus_pq_draft_${condition}:${conversationId}` : null;
+}
+
+function readQuestionnaireDraft(key) {
+  if (!key) return null;
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
 // --- Main page ------------------------------------------------------------
 
 export default function PostQuestionnairePage() {
@@ -314,15 +365,26 @@ export default function PostQuestionnairePage() {
     [topicSurvey],
   );
 
-  const [step, setStep] = useState(0);
-  const [c1Answers, setC1Answers] = useState({});
-  const [c2Answers, setC2Answers] = useState({});
-  const [c3Answers, setC3Answers] = useState({});
-  const [c4Answer, setC4Answer] = useState(null);
-  const [d1, setD1] = useState('');
-  const [d2, setD2] = useState('');
-  const [discomfortFlag, setDiscomfortFlag] = useState(false);
-  const [discomfortDetail, setDiscomfortDetail] = useState('');
+  const draftKey = postQuestionnaireDraftKey({ condition, sessionId, roomId });
+  // 用 lazy initializer 而不是 useEffect 還原：effect 版本會在還原前先跑一次
+  // 儲存 effect，把空白狀態寫回去蓋掉草稿。
+  const [draft] = useState(() => readQuestionnaireDraft(draftKey));
+
+  const [step, setStep] = useState(() => {
+    const saved = Number(draft?.step);
+    if (!Number.isInteger(saved) || saved < 0) return 0;
+    // 夾在合法範圍內：H-H 少一步，草稿是舊格式時不能讓 step 落到沒有內容的頁。
+    const maxStep = (condition === 'hh' ? 5 : TOTAL_STEPS) - 1;
+    return Math.min(saved, maxStep);
+  });
+  const [c1Answers, setC1Answers] = useState(() => draft?.c1Answers ?? {});
+  const [c2Answers, setC2Answers] = useState(() => draft?.c2Answers ?? {});
+  const [c3Answers, setC3Answers] = useState(() => draft?.c3Answers ?? {});
+  const [c4Answer, setC4Answer] = useState(() => draft?.c4Answer ?? null);
+  const [d1, setD1] = useState(() => draft?.d1 ?? '');
+  const [d2, setD2] = useState(() => draft?.d2 ?? '');
+  const [discomfortFlag, setDiscomfortFlag] = useState(() => Boolean(draft?.discomfortFlag));
+  const [discomfortDetail, setDiscomfortDetail] = useState(() => draft?.discomfortDetail ?? '');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const [result, setResult] = useState(null);
@@ -337,6 +399,39 @@ export default function PostQuestionnairePage() {
     containerRef.current?.scrollTo({ top: 0 });
     bodyRef.current?.scrollTo({ top: 0 });
   }, [step]);
+
+  useEffect(() => {
+    if (!draftKey) return;
+    try {
+      localStorage.setItem(
+        draftKey,
+        JSON.stringify({
+          step,
+          c1Answers,
+          c2Answers,
+          c3Answers,
+          c4Answer,
+          d1,
+          d2,
+          discomfortFlag,
+          discomfortDetail,
+        }),
+      );
+    } catch {
+      // 寫不進去就算了，不能因此擋住填問卷。
+    }
+  }, [
+    draftKey,
+    step,
+    c1Answers,
+    c2Answers,
+    c3Answers,
+    c4Answer,
+    d1,
+    d2,
+    discomfortFlag,
+    discomfortDetail,
+  ]);
 
   // H-H 組跳過 C-4，實際步驟比較少
   // Steps: 0=C1, 1=C2, 2=C3, 3=C4(ai only)/D(hh), 4=D(ai)/E(hh), 5=E(ai)
@@ -368,7 +463,7 @@ export default function PostQuestionnairePage() {
   };
 
   const handleClose = () => {
-    const confirmed = window.confirm('確定要離開問卷嗎？目前填寫的內容將不會被儲存。');
+    const confirmed = window.confirm('確定要離開問卷嗎？已填的內容會暫存，回來可以接著填。');
     if (confirmed) {
       navigate(-1);
     }
@@ -426,13 +521,16 @@ export default function PostQuestionnairePage() {
 
     try {
       const response = await api.post('/api/post-questionnaire/', payload);
+      if (draftKey) {
+        try {
+          localStorage.removeItem(draftKey);
+        } catch {
+          // 清不掉不影響已經送出的問卷；下次同一場也不會再被還原（key 綁對話）。
+        }
+      }
       setResult(response.data);
     } catch (error) {
-      const detail =
-        error?.response?.data?.detail ||
-        error?.response?.data?.non_field_errors?.[0] ||
-        '送出失敗，請稍後再試。';
-      setSubmitError(typeof detail === 'string' ? detail : JSON.stringify(detail));
+      setSubmitError(extractSubmitError(error));
     } finally {
       setIsSubmitting(false);
     }
