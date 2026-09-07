@@ -93,6 +93,10 @@ function LoginPage({ setUser, authMessage = '' }) {
             </button>
           </form>
 
+          <div className="login-forgot-link">
+            <Link to="/forgot-password">忘記密碼？</Link>
+          </div>
+
           {/* 底部輔助說明 */}
           <div className="login-footer">
             <p>請使用管理員帳號登入</p>

@@ -97,3 +97,42 @@ class RegistrationSerializer(serializers.Serializer):
                 {"username": ["這個帳號名稱或 email 已經有人用了，請再試一次。"]}
             )
         return user
+
+
+class PasswordResetRequestSerializer(serializers.Serializer):
+    """忘記密碼第一步：輸入信箱、請系統寄驗證碼。
+
+    只驗格式，不在這裡查帳號存不存在——view 一律回同一句話（不論信箱有沒有
+    註冊），避免這個端點變成帳號列舉工具。
+    """
+
+    email = serializers.EmailField()
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    """忘記密碼第二步：驗證碼 + 新密碼。
+
+    刻意不驗 old_password——使用者就是因為不知道舊密碼才走這條路。查帳號、
+    比對驗證碼都是 view 的事：view 找得到 target user 才能把它傳進
+    dj_validate_password（UserAttributeSimilarityValidator 需要 user 才會
+    比對「密碼跟帳號名稱/信箱太像」）。target 為 None（信箱查無此人）時
+    其餘 validator 照常生效，弱密碼一樣擋得下來。
+    """
+
+    email = serializers.EmailField()
+    code = serializers.RegexField(r"^\d{6}$")
+    new_password = serializers.CharField(write_only=True)
+    new_password_confirm = serializers.CharField(write_only=True)
+
+    def validate(self, attrs):
+        if attrs["new_password"] != attrs["new_password_confirm"]:
+            raise serializers.ValidationError(
+                {"new_password_confirm": "兩次輸入的新密碼不一致。"}
+            )
+        try:
+            dj_validate_password(
+                attrs["new_password"], user=self.context.get("target")
+            )
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"new_password": list(exc.messages)})
+        return attrs

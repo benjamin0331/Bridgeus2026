@@ -9,6 +9,15 @@
 
 > 每完成一項未 commit 的工作就記在這；commit 後刪掉該行。
 
+- **忘記密碼：Email 收 6 位數驗證碼（新功能，M1）**：登入頁 →「忘記密碼？」→ 輸入 email → 收驗證碼 → 驗碼 + 設新密碼 → 回登入。
+  - 後端：`accounts.PasswordResetCode`（migration `accounts/0006`，只存 SHA-256、單次使用、10 分鐘、錯 5 次作廢該碼）；`POST /api/password-reset/request/`（一律回同一句、不列舉帳號；帳號存在且 active 且有 email 才寄）＋`POST /api/password-reset/confirm/`（驗碼 → `set_password` → `revoke_user_tokens` → 補 `email_verified_at`，**不發 token**）；serializer `PasswordResetRequestSerializer`／`PasswordResetConfirmSerializer`；寄信 `accounts/emails.py`（純文字常數）。
+  - 限流（未認證、依 IP）：新 scope `THROTTLE_PASSWORD_RESET_REQUEST`（`5/hour`）／`THROTTLE_PASSWORD_RESET_CONFIRM`（`10/hour`）。真正的暴力破解防線是碼自己的 `attempt_count`。
+  - Email：settings 新增 `EMAIL_*`（dev 預設 console backend，不寄真信）＋`PASSWORD_RESET_CODE_TTL_MINUTES`。正式機在 `backend/.env` 設 `EMAIL_BACKEND=...smtp...`＋`EMAIL_HOST_USER=bridgeus2026@gmail.com`＋`EMAIL_HOST_PASSWORD=<Gmail 應用程式密碼>`。⚠️ 多數 VPS 封鎖對外 587/465，部署要確認。
+  - 舊帳號（研究者代開、無 email）走不到這條流程是刻意的，仍由研究者後台重設。
+  - 前端：`pages/ForgotPasswordPage.jsx`＋`.css`、`api/auth.js` 的 `requestPasswordReset()`／`confirmPasswordReset()`、`App.jsx` route `/forgot-password`、`LoginPage` 加連結。
+  - 測試：`accounts/tests_password_reset.py`（20 passed）。文件：`docs/BridgeUs_API_Spec.md`、`backend/README.md`、`backend/.env.example`、`frontend/README.md`。
+  - ⚠️ 拉到這版要跑 `uv run python manage.py migrate accounts`（dev DB 已跑過）。
+
 - **GPT 備案（新功能）**：演示當天 Anthropic 出事時，改一個 env 就整套切到 OpenAI。
   - `core/llm_provider.py` **真正實作** `LLM_PROVIDER`（`claude` 預設／`openai` 備案，認不得的值一律回 claude）；新增 `active_provider()`／`active_model_name()`／`chat_max_tokens()`。Embedding **不跟著切**（換掉會讓立場向量／CCND／drift 的新舊資料不可比較）。
   - 涵蓋範圍＝所有 LLM 呼叫：H-AI 對話（`ai_agent.astream_respond` 加 `_astream_openai` 分支，走 LangChain astream；Claude 那條原封不動保留原生 client 與 `cache_control` 提示快取）、REST fallback `respond()`、AI 開場（本來就走 `get_llm`）、H-H 介入提示（`hh_ai._call_claude` → `_call_llm`，舊名保留為別名）、M6 摘要（`assemble.generate_ai_summary`）。

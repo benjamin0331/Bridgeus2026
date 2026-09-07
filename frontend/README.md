@@ -39,6 +39,7 @@ VITE_PROXY_TARGET=http://127.0.0.1:8005 npm run dev
 - App shell and routes: `src/App.jsx`
 - API client and auth handling: `src/api/client.js`
 - Login: `src/pages/LoginPage.jsx`
+- Register / forgot password: `src/pages/RegisterPage.jsx`, `src/pages/ForgotPasswordPage.jsx`
 - Topic / AI dialogue / matching UI: `src/pages/TopicChat.jsx`
 - Topic chat styles: `src/pages/TopicChat.css`
 - Vite proxy: `vite.config.js`
@@ -49,6 +50,8 @@ Auth:
 
 - `POST /api/token/`
 - `POST /api/token/refresh/`
+- `POST /api/register/`
+- `POST /api/password-reset/request/` · `POST /api/password-reset/confirm/`
 
 Topics and surveys:
 

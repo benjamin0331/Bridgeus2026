@@ -1,5 +1,11 @@
+import hashlib
+import secrets
+from datetime import timedelta
+
+from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from django.utils import timezone
 
 
 class User(AbstractUser):
@@ -45,3 +51,69 @@ class User(AbstractUser):
         if not self.email:
             self.email = None
         super().save(*args, **kwargs)
+
+
+class PasswordResetCode(models.Model):
+    """忘記密碼時寄到信箱的一次性驗證碼。
+
+    **只存雜湊不存明碼**：這張表（或它進到的 log／備份）外洩時，不能直接
+    拿來重設任何人的密碼。比對時把使用者輸入的碼做同樣的 SHA-256 再比
+    `code_hash`。
+
+    一個帳號同時只該有一組有效的碼：`issue()` 在建新碼之前，會把該帳號所有
+    尚未使用的舊碼標記成已用（`consumed_at`）。
+
+    `attempt_count` 是暴力破解的主要防線——限流依 IP 計數，攻擊者換 IP 就能
+    繞過，但錯 `MAX_ATTEMPTS` 次就作廢這組碼，六位數字在 10 分鐘內只有 5 次
+    機會。
+    """
+
+    MAX_ATTEMPTS = 5
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="password_reset_codes",
+    )
+    code_hash = models.CharField(max_length=64)  # SHA-256 hexdigest
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    attempt_count = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        indexes = [models.Index(fields=["user", "consumed_at"])]
+
+    def __str__(self):
+        return f"PasswordResetCode(user={self.user_id}, created={self.created_at:%Y-%m-%d %H:%M})"
+
+    @staticmethod
+    def hash_code(code: str) -> str:
+        return hashlib.sha256(code.encode()).hexdigest()
+
+    @classmethod
+    def issue(cls, user) -> tuple["PasswordResetCode", str]:
+        """作廢該帳號現有的碼，產一組新的六位數字碼。
+
+        回傳 `(instance, 明碼)`——明碼只在這一刻存在於記憶體，寄完信就沒有
+        任何地方留著它。
+        """
+        now = timezone.now()
+        cls.objects.filter(user=user, consumed_at__isnull=True).update(
+            consumed_at=now
+        )
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        ttl = getattr(settings, "PASSWORD_RESET_CODE_TTL_MINUTES", 10)
+        instance = cls.objects.create(
+            user=user,
+            code_hash=cls.hash_code(code),
+            expires_at=now + timedelta(minutes=ttl),
+        )
+        return instance, code
+
+    def is_usable(self) -> bool:
+        return (
+            self.consumed_at is None
+            and self.attempt_count < self.MAX_ATTEMPTS
+            and timezone.now() < self.expires_at
+        )

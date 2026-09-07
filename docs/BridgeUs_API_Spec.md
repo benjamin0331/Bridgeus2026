@@ -124,6 +124,63 @@ tokens issued earlier are not revoked and stay valid until they expire.
 
 ---
 
+### POST `/api/password-reset/request/`
+Forgot-password step 1. Public (no auth). Sends a 6-digit code to the account's
+email. Rate limited per IP (`THROTTLE_PASSWORD_RESET_REQUEST`, default `5/hour`).
+
+**Request**
+```json
+{ "email": "string" }
+```
+
+**Response** `200`
+```json
+{ "detail": "如果這個信箱有註冊帳號，我們已經寄出一組驗證碼，請查看信箱。" }
+```
+
+The response is identical whether or not the email belongs to an account, so the
+endpoint cannot be used to enumerate accounts. A code is actually sent only when
+the account exists, is active, and has an email. Requesting a new code
+invalidates any previous unused code for that account. Codes expire after
+`PASSWORD_RESET_CODE_TTL_MINUTES` (default 10) and are single-use.
+
+**Errors** `400` when `email` is malformed; `429` when throttled.
+
+---
+
+### POST `/api/password-reset/confirm/`
+Forgot-password step 2. Public (no auth). Verifies the code and sets a new
+password. Rate limited per IP (`THROTTLE_PASSWORD_RESET_CONFIRM`, default
+`10/hour`); additionally each code is voided after 5 wrong attempts.
+
+**Request**
+```json
+{
+  "email": "string",
+  "code": "string (6 digits)",
+  "new_password": "string",
+  "new_password_confirm": "string"
+}
+```
+
+**Response** `200`
+```json
+{ "detail": "密碼已更新，請用新密碼登入。" }
+```
+
+On success the account's existing refresh tokens are all blacklisted, and
+`email_verified_at` is set if it was still null (receiving the mailed code proves
+the address). No tokens are returned — the user signs in again with the new
+password.
+
+**Errors** `400` with `{ "detail": "驗證碼不正確或已失效，請重新索取。" }` when
+the code is wrong, expired, already used, locked, or the email matches no active
+account (same body in every case); `400` field errors on `code` /
+`new_password` / `new_password_confirm` for malformed or weak input; `429` when
+throttled.
+
+---
+
 ## M2 — Topic Selection & Stance Measurement
 
 ### GET `/stance/topics/`

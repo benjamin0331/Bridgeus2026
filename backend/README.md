@@ -229,6 +229,47 @@ Access tokens are not revoked (they are verified by signature alone, without a D
 lookup) and stay valid until they expire — shorten
 `JWT_ACCESS_TOKEN_LIFETIME_MINUTES` if that window matters for your deployment.
 
+### Forgot password (email code)
+
+Users who cannot sign in reset their password with a 6-digit code mailed to their
+address:
+
+1. `POST /api/password-reset/request/` with `{ "email": ... }` — always returns the
+   same body regardless of whether the account exists; a code is mailed only when
+   it does (active, with an email). Requesting again invalidates the prior code.
+2. `POST /api/password-reset/confirm/` with `{ "email", "code", "new_password",
+   "new_password_confirm" }` — verifies the code, sets the password, blacklists the
+   account's refresh tokens, and marks the email verified. Returns no tokens; the
+   user signs in again.
+
+Codes live in `accounts.PasswordResetCode` as a SHA-256 hash only, expire after
+`PASSWORD_RESET_CODE_TTL_MINUTES` (default 10), are single-use, and are voided
+after 5 wrong attempts. Rate limited per IP by
+`THROTTLE_PASSWORD_RESET_REQUEST` (`5/hour`) and
+`THROTTLE_PASSWORD_RESET_CONFIRM` (`10/hour`). Run `migrate` after pulling:
+
+```bash
+uv run python manage.py migrate accounts
+```
+
+Researcher-created accounts without an email cannot use this flow — reset those
+through `POST /api/accounts/<id>/reset-password/`.
+
+**Email delivery.** Dev uses the console backend (mail is printed to stdout, no
+credentials needed). For production set these in `backend/.env`:
+
+```env
+EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
+EMAIL_HOST_USER=bridgeus2026@gmail.com
+EMAIL_HOST_PASSWORD=<16-char Gmail app password>
+DEFAULT_FROM_EMAIL=TakeAbridge <bridgeus2026@gmail.com>
+```
+
+The app password is generated at <https://myaccount.google.com/apppasswords>
+after enabling 2-Step Verification on that Gmail account — it is not the account
+password. Note that many VPS providers block outbound SMTP (587/465) by default;
+confirm the port is open on deploy.
+
 ## Verification
 
 ```bash

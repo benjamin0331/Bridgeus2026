@@ -322,6 +322,17 @@ REST_FRAMEWORK = {
         # 已認證的 view 上，DRF 因此依 user id 計數而不是 IP——受試者集體在同一
         # 場地共用 NAT 出口 IP，依 IP 計數會讓一個人試錯就鎖住整間教室。
         'change_password': os.getenv('THROTTLE_CHANGE_PASSWORD', '5/min'),
+        # 忘記密碼是未認證端點，DRF 依 IP 計數。request（寄信）限最嚴：狂點
+        # 只會灌爆某人的信箱、燒掉 Gmail 每日寄信配額。confirm（驗碼）放寬一點
+        # 讓使用者能重打，真正的暴力破解防線是 PasswordResetCode.attempt_count
+        # （錯 5 次就作廢那組碼）。同場地共用 NAT 出口 IP 的顧慮這裡存在但可
+        # 接受：受試者不會集體同時忘記密碼。
+        'password_reset_request': os.getenv(
+            'THROTTLE_PASSWORD_RESET_REQUEST', '5/hour'
+        ),
+        'password_reset_confirm': os.getenv(
+            'THROTTLE_PASSWORD_RESET_CONFIRM', '10/hour'
+        ),
     },
 }
 
@@ -340,6 +351,35 @@ SIMPLE_JWT = {
         days=int(os.getenv("JWT_REFRESH_TOKEN_LIFETIME_DAYS", "7"))
     ),
 }
+
+# ── Email（Gmail SMTP）─────────────────────────────────────────────────
+# 目前唯一的用途是忘記密碼的驗證碼信（accounts/emails.py）。
+#
+# dev：預設 console backend，send_mail 只把信印到 stdout，不需要任何帳密。
+# 正式機：在 backend/.env 設
+#   EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
+#   EMAIL_HOST_USER=bridgeus2026@gmail.com
+#   EMAIL_HOST_PASSWORD=<16 碼 Gmail 應用程式密碼，非帳號密碼>
+# 應用程式密碼的前提是該 Gmail 帳號開了兩步驟驗證，於
+# https://myaccount.google.com/apppasswords 產生。
+# ⚠️ 多數 VPS 預設封鎖對外 587/465，部署時要先確認 outbound 通。
+EMAIL_BACKEND = os.getenv(
+    "EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend"
+)
+EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.gmail.com")
+EMAIL_PORT = _env_int("EMAIL_PORT", 587)
+EMAIL_USE_TLS = _env_bool("EMAIL_USE_TLS", True)
+EMAIL_USE_SSL = _env_bool("EMAIL_USE_SSL", False)
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+EMAIL_TIMEOUT = _env_int("EMAIL_TIMEOUT", 10)
+DEFAULT_FROM_EMAIL = os.getenv(
+    "DEFAULT_FROM_EMAIL", "TakeAbridge <bridgeus2026@gmail.com>"
+)
+
+# 忘記密碼驗證碼的有效時間（分鐘）。
+PASSWORD_RESET_CODE_TTL_MINUTES = _env_int("PASSWORD_RESET_CODE_TTL_MINUTES", 10)
+
 
 # 允許 React 伺服器來拿資料
 CORS_ALLOWED_ORIGINS = _env_list(

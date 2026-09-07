@@ -31,6 +31,27 @@ export function login({ username, password }) {
   });
 }
 
+// 忘記密碼第一步：請後端把驗證碼寄到信箱。後端不論信箱有沒有註冊都回同一
+// 句話（避免帳號列舉），所以前端也不用、也無法分辨成功與否，一律往下一步走。
+export function requestPasswordReset({ email }) {
+  return api
+    .post('/api/password-reset/request/', { email })
+    .then((response) => response.data);
+}
+
+// 忘記密碼第二步：驗證碼 + 新密碼。成功後端不發 token（不自動登入），
+// 使用者拿新密碼回登入頁。
+export function confirmPasswordReset({ email, code, newPassword, newPasswordConfirm }) {
+  return api
+    .post('/api/password-reset/confirm/', {
+      email,
+      code,
+      new_password: newPassword,
+      new_password_confirm: newPasswordConfirm,
+    })
+    .then((response) => response.data);
+}
+
 export function register(payload) {
   return api.post('/api/register/', payload).then((response) => {
     return persistSession({
