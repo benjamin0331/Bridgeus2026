@@ -1,17 +1,32 @@
 /* src/pages/LoginPage.css */
 
+/* 這一層只負責鋪滿畫面與裁切背景裝飾（.bg-decor 用負偏移定位，靠這裡的
+   overflow: hidden 收邊），所以它自己不能捲。捲動交給裡面的
+   .login-scroll-area。 */
 .login-page-container {
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
   background-color: #f0ece9;
-  display: flex;
-  justify-content: center;
-  align-items: center;
   z-index: 10000;
   overflow: hidden;
 }
 
+/* 卡片的捲動層。App.css 把 html/body 設成 overflow: hidden，這裡不自己捲的話，
+   表單一長（放大字級、或欄位跳出驗證訊息）下面的登入鈕就會被切掉、按不到。 */
+.login-scroll-area {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  display: flex;
+  justify-content: center;
+  overflow-y: auto;
+  padding: 24px;
+  z-index: 2;
+}
+
 .login-card {
+  /* 置中用 margin: auto 而不是捲動層的 align-items: center——後者在內容比
+     容器高時會把卡片上緣推出捲動範圍，變成上面反而捲不到。 */
+  margin: auto;
   background-color: #ffffff;
   width: 420px; /* 🔮 寬度稍微修窄一點看起來更專業 */
   padding: 45px;

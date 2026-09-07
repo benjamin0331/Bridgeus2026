@@ -45,58 +45,62 @@ function LoginPage({ setUser, authMessage = '' }) {
 
   return (
     <div className="login-page-container">
-      {/* 登入卡片主體 */}
-      <div className="login-card">
-        <div className="login-header">
-          <img src="/logo.png" alt="TakeAbridge Logo" className="login-logo" />
-          <h1>TakeAbridge</h1>
-          <p>請輸入您的帳號密碼</p>
-        </div>
-
-        {/* 登入表單 */}
-        <form className="login-form" onSubmit={handleLogin}>
-          <div className="input-group">
-            <label>User ID</label>
-            <input
-              type="text"
-              className="login-input"
-              placeholder="請輸入帳號"
-              value={userId}
-              onChange={(e) => setUserId(e.target.value)}
-              required
-            />
+      {/* 卡片放在自己的捲動層：背景裝飾用負偏移定位，靠外層的
+          overflow: hidden 裁切，那層不能拿來捲。 */}
+      <div className="login-scroll-area">
+        {/* 登入卡片主體 */}
+        <div className="login-card">
+          <div className="login-header">
+            <img src="/logo.png" alt="TakeAbridge Logo" className="login-logo" />
+            <h1>TakeAbridge</h1>
+            <p>請輸入您的帳號密碼</p>
           </div>
 
-          <div className="input-group">
-            <label>Password</label>
-            <input
-              type="password"
-              className="login-input"
-              placeholder="請輸入密碼"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
+          {/* 登入表單 */}
+          <form className="login-form" onSubmit={handleLogin}>
+            <div className="input-group">
+              <label>User ID</label>
+              <input
+                type="text"
+                className="login-input"
+                placeholder="請輸入帳號"
+                value={userId}
+                onChange={(e) => setUserId(e.target.value)}
+                required
+              />
+            </div>
+
+            <div className="input-group">
+              <label>Password</label>
+              <input
+                type="password"
+                className="login-input"
+                placeholder="請輸入密碼"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+            </div>
+
+            {displayErrorMessage && (
+              <p style={{ color: 'red', fontSize: '14px', marginBottom: '10px' }}>
+                {displayErrorMessage}
+              </p>
+            )}
+
+            <button type="submit" className="login-submit-btn">
+              進入討論
+            </button>
+          </form>
+
+          {/* 底部輔助說明 */}
+          <div className="login-footer">
+            <p>請使用管理員帳號登入</p>
           </div>
 
-          {displayErrorMessage && (
-            <p style={{ color: 'red', fontSize: '14px', marginBottom: '10px' }}>
-              {displayErrorMessage}
-            </p>
-          )}
-
-          <button type="submit" className="login-submit-btn">
-            進入討論
-          </button>
-        </form>
-
-        {/* 底部輔助說明 */}
-        <div className="login-footer">
-          <p>請使用管理員帳號登入</p>
-        </div>
-
-        <div className="login-register-link">
-          還沒有帳號？<Link to="/register">立即註冊</Link>
+          <div className="login-register-link">
+            還沒有帳號？<Link to="/register">立即註冊</Link>
+          </div>
         </div>
       </div>
 
