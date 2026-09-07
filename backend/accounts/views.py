@@ -18,9 +18,12 @@ from api.serializers import BridgeUsTokenObtainPairSerializer
 from api.token_revocation import revoke_user_tokens
 
 from .consent import CONSENT_DOCUMENT, CONSENT_VERSION
-from .emails import send_password_reset_code
-from .models import PasswordResetCode, User
+from .emails import send_email_verification_code, send_password_reset_code
+from .models import EmailVerificationCode, PasswordResetCode, User
 from .serializers import (
+    EmailVerificationConfirmSerializer,
+    EmailVerificationRequestSerializer,
+    MeEmailVerificationConfirmSerializer,
     PasswordResetConfirmSerializer,
     PasswordResetRequestSerializer,
     RegistrationSerializer,
@@ -215,3 +218,184 @@ class PasswordResetConfirmView(APIView):
         revoke_user_tokens(user)
 
         return Response({"detail": "密碼已更新，請用新密碼登入。"})
+
+
+EMAIL_CODE_GENERIC_ERROR = "驗證碼不正確或已失效，請重新索取。"
+
+
+def _verify_code(record, code, *, on_success):
+    """驗證碼比對的共用尾段：查無可用紀錄或比錯 → 回 400 通用錯誤並累加
+    attempt_count；比中 → 執行 on_success()（呼叫端負責落庫）並回它的 Response。
+    """
+    if record is None or not record.is_usable():
+        return Response(
+            {"detail": EMAIL_CODE_GENERIC_ERROR},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if not secrets.compare_digest(
+        record.code_hash, EmailVerificationCode.hash_code(code)
+    ):
+        record.attempt_count += 1
+        record.save(update_fields=["attempt_count"])
+        return Response(
+            {"detail": EMAIL_CODE_GENERIC_ERROR},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return on_success()
+
+
+class EmailVerificationRequestView(APIView):
+    """POST /api/email-verification/request/ — 註冊前，寄信箱驗證碼。
+
+    未登入端點：帳號還不存在，用 email 當鍵。這個 email 若已經有人註冊，回
+    400（與註冊頁一致地回報 email 已被使用）。限流 scope
+    email_verification_request 依 IP 計數，量級對齊 register（同場地集體註冊
+    共用 NAT 出口 IP）。
+    """
+
+    authentication_classes = []
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "email_verification_request"
+
+    def post(self, request):
+        serializer = EmailVerificationRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"]
+
+        if User.objects.filter(email__iexact=email).exists():
+            return Response(
+                {"email": ["這個 email 已經註冊過了。"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        record, code = EmailVerificationCode.issue(email, user=None)
+        try:
+            send_email_verification_code(email, code)
+        except Exception:
+            record.consumed_at = timezone.now()
+            record.save(update_fields=["consumed_at"])
+            logger.exception("email verification mail failed for %s", email)
+            return Response(
+                {"detail": "驗證碼寄送失敗，請稍後再試。"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        return Response({"detail": "驗證碼已寄出。"})
+
+
+class EmailVerificationConfirmView(APIView):
+    """POST /api/email-verification/confirm/ — 註冊前，驗信箱驗證碼。
+
+    比中就把該紀錄標記 verified_at + consumed_at；註冊 serializer 之後會讀
+    verified_at 判斷「這個 email 驗過了」，並在成功建帳號時把紀錄刪掉。
+    """
+
+    authentication_classes = []
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "email_verification_confirm"
+
+    def post(self, request):
+        serializer = EmailVerificationConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"]
+        code = serializer.validated_data["code"]
+
+        record = (
+            EmailVerificationCode.objects.filter(
+                email__iexact=email, user__isnull=True, consumed_at__isnull=True
+            )
+            .order_by("-created_at")
+            .first()
+        )
+
+        def _ok():
+            now = timezone.now()
+            record.verified_at = now
+            record.consumed_at = now
+            record.save(update_fields=["verified_at", "consumed_at"])
+            return Response({"detail": "信箱驗證成功。"})
+
+        return _verify_code(record, code, on_success=_ok)
+
+
+class MeEmailVerificationRequestView(APIView):
+    """POST /api/me/email/verify/request/ — 登入後，寄驗證碼到自己目前的信箱。
+
+    給「補上／換了信箱、還沒驗證」的使用者用。已認證請求，限流依 user id
+    計數。
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "email_verification_request"
+
+    def post(self, request):
+        user = request.user
+        if not user.email:
+            return Response(
+                {"detail": "尚未設定信箱。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if user.email_verified_at is not None:
+            return Response(
+                {"detail": "信箱已驗證。"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        record, code = EmailVerificationCode.issue(user.email, user=user)
+        try:
+            send_email_verification_code(user.email, code)
+        except Exception:
+            record.consumed_at = timezone.now()
+            record.save(update_fields=["consumed_at"])
+            logger.exception(
+                "email verification mail failed for user id=%s", user.id
+            )
+            return Response(
+                {"detail": "驗證碼寄送失敗，請稍後再試。"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        return Response({"detail": "驗證碼已寄出。"})
+
+
+class MeEmailVerificationConfirmView(APIView):
+    """POST /api/me/email/verify/confirm/ — 登入後，用驗證碼確認自己的信箱。"""
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "email_verification_confirm"
+
+    def post(self, request):
+        serializer = MeEmailVerificationConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        code = serializer.validated_data["code"]
+        user = request.user
+
+        if not user.email or user.email_verified_at is not None:
+            # 沒有信箱、或已經驗過——沒有東西可驗。
+            return Response(
+                {"detail": EMAIL_CODE_GENERIC_ERROR},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        record = (
+            EmailVerificationCode.objects.filter(
+                user=user, email__iexact=user.email, consumed_at__isnull=True
+            )
+            .order_by("-created_at")
+            .first()
+        )
+
+        def _ok():
+            now = timezone.now()
+            record.verified_at = now
+            record.consumed_at = now
+            record.save(update_fields=["verified_at", "consumed_at"])
+            user.email_verified_at = now
+            user.save(update_fields=["email_verified_at"])
+            return Response({"detail": "信箱驗證成功。"})
+
+        return _verify_code(record, code, on_success=_ok)

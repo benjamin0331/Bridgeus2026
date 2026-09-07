@@ -333,6 +333,16 @@ REST_FRAMEWORK = {
         'password_reset_confirm': os.getenv(
             'THROTTLE_PASSWORD_RESET_CONFIRM', '10/hour'
         ),
+        # 信箱驗證碼。註冊前那支（request）依 IP 計數，而受試者會在同一場地
+        # 集體註冊、共用 NAT 出口 IP——放寬到跟 register scope 同一個量級，
+        # 否則第 N 位受試者就卡在驗證信這關。登入後補驗自己信箱的那兩支是
+        # 已認證請求，DRF 依 user id 計數，不受同場地共用 IP 影響。
+        'email_verification_request': os.getenv(
+            'THROTTLE_EMAIL_VERIFICATION_REQUEST', '60/hour'
+        ),
+        'email_verification_confirm': os.getenv(
+            'THROTTLE_EMAIL_VERIFICATION_CONFIRM', '60/hour'
+        ),
     },
 }
 
@@ -379,6 +389,16 @@ DEFAULT_FROM_EMAIL = os.getenv(
 
 # 忘記密碼驗證碼的有效時間（分鐘）。
 PASSWORD_RESET_CODE_TTL_MINUTES = _env_int("PASSWORD_RESET_CODE_TTL_MINUTES", 10)
+
+# 信箱驗證碼的有效時間（分鐘）。
+EMAIL_VERIFICATION_CODE_TTL_MINUTES = _env_int(
+    "EMAIL_VERIFICATION_CODE_TTL_MINUTES", 10
+)
+# 註冊前驗過的信箱，其「已驗證」狀態可保留多久（分鐘）——超過這段時間還沒
+# 完成註冊就要重驗，避免驗完關掉分頁、幾天後回來那組驗證還算數。
+EMAIL_VERIFICATION_GRACE_MINUTES = _env_int(
+    "EMAIL_VERIFICATION_GRACE_MINUTES", 30
+)
 
 
 # 允許 React 伺服器來拿資料

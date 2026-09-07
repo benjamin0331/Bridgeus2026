@@ -56,6 +56,69 @@
   font-size: 13px;
 }
 
+/* 信箱欄 + 「寄送驗證碼／驗證」按鈕並排 */
+.register-email-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.register-email-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  font-size: 15px;
+}
+
+.register-email-send {
+  flex-shrink: 0;
+  padding: 0 14px;
+  border: 1px solid #b98;
+  border-radius: 8px;
+  background: #fff;
+  color: #8a6d5c;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.register-email-send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.register-email-verified {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  color: #2e7d32;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.register-verify-box {
+  margin-top: 10px;
+}
+
+.register-verify-notice {
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #eef6ff;
+  color: #1f4e79;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.register-verify-hint {
+  margin: 4px 0 12px;
+  color: #8a6d5c;
+  font-size: 13px;
+}
+
 .register-consent {
   display: flex;
   align-items: flex-start;

@@ -9,6 +9,15 @@
 
 > 每完成一項未 commit 的工作就記在這；commit 後刪掉該行。
 
+- **信箱驗證（新功能，M1）**：註冊「一定要先驗信箱」＋登入後補／換信箱也要驗。
+  - 後端：`accounts.EmailVerificationCode`（migration `accounts/0007`，key 是 email＋可空的 user FK，另有 `verified_at`；同樣只存 SHA-256、單次、10 分鐘、錯 5 次作廢）。
+    - 註冊前（未登入）：`POST /api/email-verification/{request,confirm}/`（request 對已註冊的 email 回 400；confirm 成功寫 `verified_at`）。`RegistrationSerializer.validate_email` 多一關：`EmailVerificationCode.is_pre_registration_verified()`（該 email 在 `EMAIL_VERIFICATION_GRACE_MINUTES`＝30 內驗過），沒過回 400「請先完成信箱驗證。」；成功建帳號時把該 email 的驗證紀錄**刪掉**（不能拿去註冊第二個帳號），並把 `User.email_verified_at` 設起來。
+    - 登入後（補／換信箱）：`POST /api/me/email/verify/{request,confirm}/`（request 無 body、寄到 `request.user.email`；已驗證或沒信箱回 400）。`/api/me/` GET 多回 `email_verified` 布林。
+  - 限流：新 scope `THROTTLE_EMAIL_VERIFICATION_REQUEST`／`_CONFIRM`（預設 `60/hour`，量級對齊 register；未登入依 IP、登入依 user）。settings 新增 `EMAIL_VERIFICATION_CODE_TTL_MINUTES`／`EMAIL_VERIFICATION_GRACE_MINUTES`。
+  - 前端：`RegisterPage.jsx` email 欄位下方就地做驗證（寄送驗證碼 → 6 位數欄 → 驗證 → ✓ 已驗證，email 欄鎖定；改 email 就重來），「建立帳號」在驗證前 disabled；`SettingsPage` 的 `ProfileCard.jsx` 改／存 email 後顯示「這個信箱尚未驗證」＋寄碼／驗碼；`api/auth.js` 加 `requestEmailVerification`／`confirmEmailVerification`／`requestMyEmailVerification`／`confirmMyEmailVerification`。
+  - 共用 `accounts/emails.py` 的 `send_email_verification_code`（主旨「信箱驗證碼」）。
+  - 測試：`accounts/tests_email_verification.py`（18）＋`accounts/tests_registration.py` 補了 `_mark_email_verified` fixture（不然全紅）。
+  - ⚠️ 拉到這版要跑 `uv run python manage.py migrate accounts`（dev DB 已跑過）。
 - **忘記密碼：Email 收 6 位數驗證碼（新功能，M1）**：登入頁 →「忘記密碼？」→ 輸入 email → 收驗證碼 → 驗碼 + 設新密碼 → 回登入。
   - 後端：`accounts.PasswordResetCode`（migration `accounts/0006`，只存 SHA-256、單次使用、10 分鐘、錯 5 次作廢該碼）；`POST /api/password-reset/request/`（查無此信箱回 404「沒有註冊」——**刻意不做防帳號列舉**，註冊頁本來就會回報 email 已被使用；寄信失敗回 502 並作廢該碼）＋`POST /api/password-reset/confirm/`（驗碼 → `set_password` → `revoke_user_tokens` → 補 `email_verified_at`，**不發 token**；confirm 這支仍回通用錯誤不分辨）；serializer `PasswordResetRequestSerializer`／`PasswordResetConfirmSerializer`；寄信 `accounts/emails.py`（純文字常數）。
   - 限流（未認證、依 IP）：新 scope `THROTTLE_PASSWORD_RESET_REQUEST`（`5/hour`）／`THROTTLE_PASSWORD_RESET_CONFIRM`（`10/hour`）。真正的暴力破解防線是碼自己的 `attempt_count`。

@@ -1,5 +1,9 @@
 import { useEffect, useState } from 'react';
 import api from '../api/client';
+import {
+  requestMyEmailVerification,
+  confirmMyEmailVerification,
+} from '../api/auth';
 import './ProfileCard.css';
 
 // 個人資料：顯示名稱與 email。兩者都靠 PATCH /api/me/ 存回去（白名單只有這
@@ -35,6 +39,15 @@ function ProfileCard({ username }) {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
 
+  // 信箱驗證狀態。email_verified 由 /api/me/ 回；改了信箱存回去後後端會把它
+  // 清成 false，這張卡片就會再冒出驗證流程。
+  const [emailVerified, setEmailVerified] = useState(true);
+  const [codeSent, setCodeSent] = useState(false);
+  const [verifyCode, setVerifyCode] = useState('');
+  const [verifyBusy, setVerifyBusy] = useState(false);
+  const [verifyError, setVerifyError] = useState('');
+  const [verifyNotice, setVerifyNotice] = useState('');
+
   useEffect(() => {
     let cancelled = false;
 
@@ -50,6 +63,7 @@ function ProfileCard({ username }) {
         setDisplayName(next.displayName);
         setEmail(next.email);
         setLoaded(next);
+        setEmailVerified(Boolean(response.data?.email_verified));
       } catch (requestError) {
         if (cancelled) return;
         setError(extractError(requestError, '目前無法讀取個人資料。'));
@@ -89,11 +103,63 @@ function ProfileCard({ username }) {
       setDisplayName(next.displayName);
       setEmail(next.email);
       setLoaded(next);
+      setEmailVerified(Boolean(response.data?.email_verified));
+      // 換了信箱就重來一輪驗證。
+      setCodeSent(false);
+      setVerifyCode('');
+      setVerifyError('');
+      setVerifyNotice('');
       setNotice('已儲存。');
     } catch (requestError) {
       setError(extractError(requestError, '儲存失敗，請再試一次。'));
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleSendVerifyCode = async () => {
+    setVerifyError('');
+    setVerifyNotice('');
+    setVerifyBusy(true);
+    try {
+      await requestMyEmailVerification();
+      setCodeSent(true);
+      setVerifyNotice(
+        '驗證碼已寄出，請查看信箱（含垃圾郵件匣）。驗證碼 10 分鐘內有效。',
+      );
+    } catch (requestError) {
+      const status = requestError?.response?.status;
+      const detail = requestError?.response?.data?.detail;
+      if (status === 429) {
+        setVerifyError('索取驗證碼過於頻繁，請稍後再試。');
+      } else {
+        setVerifyError(detail || '目前無法寄送驗證碼，請稍後再試。');
+      }
+    } finally {
+      setVerifyBusy(false);
+    }
+  };
+
+  const handleConfirmVerifyCode = async () => {
+    setVerifyError('');
+    setVerifyBusy(true);
+    try {
+      await confirmMyEmailVerification({ code: verifyCode.trim() });
+      setEmailVerified(true);
+      setCodeSent(false);
+      setVerifyCode('');
+      setVerifyNotice('');
+      setNotice('信箱已驗證。');
+    } catch (requestError) {
+      const status = requestError?.response?.status;
+      const detail = requestError?.response?.data?.detail;
+      if (status === 429) {
+        setVerifyError('嘗試過於頻繁，請稍後再試。');
+      } else {
+        setVerifyError(detail || '驗證碼不正確或已失效，請重新索取。');
+      }
+    } finally {
+      setVerifyBusy(false);
     }
   };
 
@@ -146,9 +212,68 @@ function ProfileCard({ username }) {
             placeholder="尚未設定"
           />
           <span className="settings-hint">
-            用來識別你的帳號。目前不會寄送任何信件，也不會顯示給其他使用者。
+            用來識別你的帳號、以及忘記密碼時收驗證碼。不會顯示給其他使用者。
           </span>
         </label>
+
+        {loaded?.email && email.trim() === loaded.email && (
+          emailVerified ? (
+            <p className="profile-email-verified">✓ 信箱已驗證</p>
+          ) : (
+            <div className="profile-email-verify">
+              <p className="profile-email-unverified">
+                這個信箱尚未驗證。
+                {!codeSent && (
+                  <button
+                    type="button"
+                    className="profile-verify-link"
+                    onClick={handleSendVerifyCode}
+                    disabled={verifyBusy}
+                  >
+                    寄送驗證碼
+                  </button>
+                )}
+              </p>
+              {verifyNotice && (
+                <p className="profile-verify-notice">{verifyNotice}</p>
+              )}
+              {codeSent && (
+                <div className="profile-verify-row">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="\d{6}"
+                    maxLength={6}
+                    placeholder="6 位數驗證碼"
+                    value={verifyCode}
+                    onChange={(e) =>
+                      setVerifyCode(e.target.value.replace(/\D/g, ''))
+                    }
+                    autoComplete="one-time-code"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleConfirmVerifyCode}
+                    disabled={verifyCode.length !== 6 || verifyBusy}
+                  >
+                    驗證
+                  </button>
+                  <button
+                    type="button"
+                    className="profile-verify-link"
+                    onClick={handleSendVerifyCode}
+                    disabled={verifyBusy}
+                  >
+                    重新寄送
+                  </button>
+                </div>
+              )}
+              {verifyError && (
+                <p className="settings-action-error">{verifyError}</p>
+              )}
+            </div>
+          )
+        )}
       </div>
 
       {error ? <p className="settings-action-error">{error}</p> : null}

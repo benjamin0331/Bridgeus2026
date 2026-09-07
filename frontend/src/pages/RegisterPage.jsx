@@ -1,7 +1,11 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import './RegisterPage.css';
-import { register } from '../api/auth';
+import {
+  register,
+  requestEmailVerification,
+  confirmEmailVerification,
+} from '../api/auth';
 
 // 後端 accounts/consent.py 的 CONSENT_DOCUMENT_PATH。兩邊都是常數，
 // 改動時要一起改——目前沒有把後端常數送到前端的機制，為了一個字串
@@ -25,8 +29,78 @@ function RegisterPage({ setUser }) {
   const [generalError, setGeneralError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
+  // 信箱驗證：必須先驗過信箱，後端才准建帳號。
+  const [emailVerified, setEmailVerified] = useState(false);
+  const [codeSent, setCodeSent] = useState(false);
+  const [verifyCode, setVerifyCode] = useState('');
+  const [verifyBusy, setVerifyBusy] = useState(false);
+  const [verifyError, setVerifyError] = useState('');
+  const [verifyNotice, setVerifyNotice] = useState('');
+
   const updateField = (name) => (event) => {
     setForm((prev) => ({ ...prev, [name]: event.target.value }));
+  };
+
+  const handleEmailChange = (event) => {
+    const value = event.target.value;
+    setForm((prev) => ({ ...prev, email: value }));
+    // 改了信箱，之前那次驗證就不算數，整個驗證流程重來。
+    setEmailVerified(false);
+    setCodeSent(false);
+    setVerifyCode('');
+    setVerifyError('');
+    setVerifyNotice('');
+  };
+
+  const handleSendCode = async () => {
+    setVerifyError('');
+    setVerifyNotice('');
+    setVerifyBusy(true);
+    try {
+      await requestEmailVerification({ email: form.email });
+      setCodeSent(true);
+      setVerifyNotice(
+        '驗證碼已寄出，請查看信箱（含垃圾郵件匣）。驗證碼 10 分鐘內有效。',
+      );
+    } catch (error) {
+      const status = error?.response?.status;
+      const data = error?.response?.data;
+      if (status === 400 && data?.email) {
+        setVerifyError(
+          Array.isArray(data.email) ? data.email.join(' ') : String(data.email),
+        );
+      } else if (status === 400) {
+        setVerifyError('請輸入有效的電子信箱。');
+      } else if (status === 429) {
+        setVerifyError('索取驗證碼過於頻繁，請稍後再試。');
+      } else if (status === 502) {
+        setVerifyError(data?.detail || '驗證碼寄送失敗，請稍後再試。');
+      } else {
+        setVerifyError('目前無法處理，請檢查網路連線後再試。');
+      }
+    } finally {
+      setVerifyBusy(false);
+    }
+  };
+
+  const handleConfirmCode = async () => {
+    setVerifyError('');
+    setVerifyBusy(true);
+    try {
+      await confirmEmailVerification({ email: form.email, code: verifyCode.trim() });
+      setEmailVerified(true);
+      setVerifyNotice('');
+    } catch (error) {
+      const status = error?.response?.status;
+      const detail = error?.response?.data?.detail;
+      if (status === 429) {
+        setVerifyError('嘗試過於頻繁，請稍後再試。');
+      } else {
+        setVerifyError(detail || '驗證碼不正確或已失效，請重新索取。');
+      }
+    } finally {
+      setVerifyBusy(false);
+    }
   };
 
   const handleSubmit = async (event) => {
@@ -92,15 +166,63 @@ function RegisterPage({ setUser }) {
 
           <div className="register-field">
             <label htmlFor="email">電子信箱</label>
-            <input
-              id="email"
-              type="email"
-              value={form.email}
-              onChange={updateField('email')}
-              autoComplete="email"
-              required
-            />
+            <div className="register-email-row">
+              <input
+                id="email"
+                type="email"
+                value={form.email}
+                onChange={handleEmailChange}
+                autoComplete="email"
+                readOnly={emailVerified}
+                required
+              />
+              {emailVerified ? (
+                <span className="register-email-verified">✓ 已驗證</span>
+              ) : (
+                <button
+                  type="button"
+                  className="register-email-send"
+                  onClick={handleSendCode}
+                  disabled={!form.email || verifyBusy}
+                >
+                  {codeSent ? '重新寄送' : '寄送驗證碼'}
+                </button>
+              )}
+            </div>
             {errorFor('email')}
+
+            {!emailVerified && codeSent && (
+              <div className="register-verify-box">
+                {verifyNotice && (
+                  <p className="register-verify-notice">{verifyNotice}</p>
+                )}
+                <div className="register-email-row">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="\d{6}"
+                    maxLength={6}
+                    placeholder="6 位數驗證碼"
+                    value={verifyCode}
+                    onChange={(e) =>
+                      setVerifyCode(e.target.value.replace(/\D/g, ''))
+                    }
+                    autoComplete="one-time-code"
+                  />
+                  <button
+                    type="button"
+                    className="register-email-send"
+                    onClick={handleConfirmCode}
+                    disabled={verifyCode.length !== 6 || verifyBusy}
+                  >
+                    驗證
+                  </button>
+                </div>
+              </div>
+            )}
+            {verifyError && (
+              <span className="register-field-error">{verifyError}</span>
+            )}
           </div>
 
           <div className="register-field">
@@ -167,10 +289,14 @@ function RegisterPage({ setUser }) {
           </label>
           {errorFor('consent')}
 
+          {!emailVerified && (
+            <p className="register-verify-hint">請先完成電子信箱驗證才能建立帳號。</p>
+          )}
+
           <button
             className="register-submit"
             type="submit"
-            disabled={!consent || submitting}
+            disabled={!consent || submitting || !emailVerified}
           >
             {submitting ? '註冊中…' : '建立帳號'}
           </button>

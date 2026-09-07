@@ -256,6 +256,28 @@ uv run python manage.py migrate accounts
 Researcher-created accounts without an email cannot use this flow — reset those
 through `POST /api/accounts/<id>/reset-password/`.
 
+### Email verification (registration + adding an email)
+
+`POST /api/register/` requires the email to be verified first:
+
+1. `POST /api/email-verification/request/` `{ "email": ... }` — mails a code
+   (`400` if the address is already registered).
+2. `POST /api/email-verification/confirm/` `{ "email", "code" }` — marks it
+   verified for `EMAIL_VERIFICATION_GRACE_MINUTES` (default 30).
+3. `POST /api/register/` — `validate_email` checks for that verification and
+   `400`s on `email` with "請先完成信箱驗證。" otherwise. A successful
+   registration consumes the verification so it can't be reused.
+
+A signed-in user whose email is unverified (added or changed it in the settings
+page) verifies it with `POST /api/me/email/verify/request/` (no body, mails the
+current address) then `POST /api/me/email/verify/confirm/` `{ "code" }`, which
+sets `User.email_verified_at`. `GET /api/me/` returns `email_verified`.
+
+Codes live in `accounts.EmailVerificationCode` (SHA-256 hash only, single-use,
+`EMAIL_VERIFICATION_CODE_TTL_MINUTES` = 10, 5 attempts). Rate limited by
+`THROTTLE_EMAIL_VERIFICATION_REQUEST` / `_CONFIRM` (default `60/hour`, per IP
+before login and per user after). Same `migrate accounts` as above covers it.
+
 **Email delivery.** Dev uses the console backend (mail is printed to stdout, no
 credentials needed). For production set these in `backend/.env`:
 

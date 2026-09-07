@@ -1833,6 +1833,8 @@ class MeView(APIView):
             # email 在 DB 可以是 NULL（研究者代開的帳號都沒有），但前端要拿它
             # 當 <input value>，回 null 會讓 React 把 input 變成 uncontrolled。
             "email": user.email or "",
+            # 設定頁用這個決定要不要顯示「信箱未驗證」＋驗證流程。
+            "email_verified": user.email_verified_at is not None,
             "is_researcher": is_researcher,
             "entry_mode": get_entry_mode(is_researcher=is_researcher),
             # 前端只需要「要不要自動跳導覽」，回布林而不是時間戳。

@@ -52,6 +52,33 @@ export function confirmPasswordReset({ email, code, newPassword, newPasswordConf
     .then((response) => response.data);
 }
 
+// 註冊前的信箱驗證：先寄碼、再驗碼。驗過之後後端才准 /api/register/ 建帳號
+// （見 backend/accounts/serializers.py 的 validate_email）。
+export function requestEmailVerification({ email }) {
+  return api
+    .post('/api/email-verification/request/', { email })
+    .then((response) => response.data);
+}
+
+export function confirmEmailVerification({ email, code }) {
+  return api
+    .post('/api/email-verification/confirm/', { email, code })
+    .then((response) => response.data);
+}
+
+// 登入後補驗自己目前的信箱（設定頁改了信箱、或研究者代開的帳號補上信箱）。
+export function requestMyEmailVerification() {
+  return api
+    .post('/api/me/email/verify/request/', {})
+    .then((response) => response.data);
+}
+
+export function confirmMyEmailVerification({ code }) {
+  return api
+    .post('/api/me/email/verify/confirm/', { code })
+    .then((response) => response.data);
+}
+
 export function register(payload) {
   return api.post('/api/register/', payload).then((response) => {
     return persistSession({

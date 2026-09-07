@@ -184,6 +184,53 @@ throttled.
 
 ---
 
+### Email verification
+
+Registration requires a verified email. The flow issues a 6-digit code (stored
+as a SHA-256 hash only, single-use, expires after
+`EMAIL_VERIFICATION_CODE_TTL_MINUTES` = 10, voided after 5 wrong attempts).
+
+#### POST `/api/email-verification/request/`
+Public (no auth). Used before the account exists. Rate limited per IP
+(`THROTTLE_EMAIL_VERIFICATION_REQUEST`, default `60/hour` — matches `register`
+because participants sign up together behind one NAT).
+
+**Request** `{ "email": "string" }`
+
+**Response** `200` `{ "detail": "驗證碼已寄出。" }`
+
+**Errors** `400` `{ "email": ["這個 email 已經註冊過了。"] }` if the address is
+already registered; `400` on a malformed email; `502` if the mail server rejects
+the send (the code is voided); `429` when throttled.
+
+#### POST `/api/email-verification/confirm/`
+Public (no auth). Marks the address verified for the grace window
+(`EMAIL_VERIFICATION_GRACE_MINUTES`, default 30), after which `POST /api/register/`
+will accept it. A successful registration consumes that verification (deletes
+the rows), so it cannot be reused for a second account.
+
+**Request** `{ "email": "string", "code": "string (6 digits)" }`
+
+**Response** `200` `{ "detail": "信箱驗證成功。" }`
+
+**Errors** `400` `{ "detail": "驗證碼不正確或已失效，請重新索取。" }` (wrong /
+expired / used / locked); `400` field error on `code`; `429` when throttled.
+
+`POST /api/register/` now returns `400` on `email` with `"請先完成信箱驗證。"`
+when the address has no verification within the grace window.
+
+#### POST `/api/me/email/verify/request/` · POST `/api/me/email/verify/confirm/`
+Auth required. Same codes, but for a signed-in user verifying the address
+currently on their account (after adding or changing it in the settings page).
+`request` takes no body and mails `request.user.email`; `confirm` takes
+`{ "code": "..." }` and sets `User.email_verified_at`. `request` returns `400`
+if there is no email on file or it is already verified. Rate limited per user
+(same scopes as above).
+
+`GET /api/me/` includes `"email_verified": bool`.
+
+---
+
 ## M2 — Topic Selection & Stance Measurement
 
 ### GET `/stance/topics/`

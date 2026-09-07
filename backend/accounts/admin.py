@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.contrib.auth.admin import UserAdmin
 
-from .models import PasswordResetCode
+from .models import EmailVerificationCode, PasswordResetCode
 
 User = get_user_model()
 
@@ -53,6 +53,38 @@ class PasswordResetCodeAdmin(admin.ModelAdmin):
         "code_hash",
         "created_at",
         "expires_at",
+        "consumed_at",
+        "attempt_count",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+
+@admin.register(EmailVerificationCode)
+class EmailVerificationCodeAdmin(admin.ModelAdmin):
+    """唯讀，用途同 PasswordResetCodeAdmin：排查「使用者說沒收到驗證信 /
+    一直說碼錯」。明碼從不落庫（只存 SHA-256）。
+    """
+
+    list_display = (
+        "email",
+        "user",
+        "created_at",
+        "expires_at",
+        "verified_at",
+        "consumed_at",
+        "attempt_count",
+    )
+    list_filter = ("created_at", "verified_at")
+    search_fields = ("email", "user__username")
+    readonly_fields = (
+        "email",
+        "user",
+        "code_hash",
+        "created_at",
+        "expires_at",
+        "verified_at",
         "consumed_at",
         "attempt_count",
     )

@@ -10,9 +10,11 @@ from django.contrib.auth.password_validation import validate_password as dj_vali
 from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 from rest_framework import serializers
 
 from .consent import CONSENT_VERSION
+from .models import EmailVerificationCode
 
 User = get_user_model()
 
@@ -43,6 +45,11 @@ class RegistrationSerializer(serializers.Serializer):
     def validate_email(self, value):
         if User.objects.filter(email__iexact=value).exists():
             raise serializers.ValidationError("這個 email 已經註冊過了。")
+        # 必須先通過信箱驗證（POST /api/email-verification/{request,confirm}/）
+        # 才能建帳號。驗過的紀錄在成功建帳號時會被刪掉，所以這裡「還查得到」
+        # 就代表這組驗證還沒被別的註冊用掉。
+        if not EmailVerificationCode.is_pre_registration_verified(value):
+            raise serializers.ValidationError("請先完成信箱驗證。")
         return value
 
     def validate_consent(self, value):
@@ -82,13 +89,22 @@ class RegistrationSerializer(serializers.Serializer):
                 user.display_name = validated_data.get("display_name", "")
                 user.consent_version = CONSENT_VERSION
                 user.is_research_subject = True
+                # 註冊必經信箱驗證（validate_email 把關），所以建出來就是
+                # 已驗證的。
+                user.email_verified_at = timezone.now()
                 user.save(
                     update_fields=[
                         "display_name",
                         "consent_version",
                         "is_research_subject",
+                        "email_verified_at",
                     ]
                 )
+                # 認領這組驗證：刪掉該 email 的註冊前驗證紀錄，之後不能再拿去
+                # 註冊另一個帳號。
+                EmailVerificationCode.objects.filter(
+                    email__iexact=validated_data["email"], user__isnull=True
+                ).delete()
         except IntegrityError:
             # validate_username / validate_email 的 exists() 與這裡之間有空窗。
             # 併發註冊撞上時要回 400，不能讓 IntegrityError 冒成 500。
@@ -135,3 +151,26 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
         except DjangoValidationError as exc:
             raise serializers.ValidationError({"new_password": list(exc.messages)})
         return attrs
+
+
+class EmailVerificationRequestSerializer(serializers.Serializer):
+    """信箱驗證第一步（註冊前，未登入）：輸入信箱、請系統寄驗證碼。
+
+    只驗格式；「這個 email 是不是已經有人註冊」由 view 判斷（與註冊頁一致，
+    回報 email 已被使用）。
+    """
+
+    email = serializers.EmailField()
+
+
+class EmailVerificationConfirmSerializer(serializers.Serializer):
+    """信箱驗證第二步（註冊前，未登入）：信箱 + 驗證碼。"""
+
+    email = serializers.EmailField()
+    code = serializers.RegexField(r"^\d{6}$")
+
+
+class MeEmailVerificationConfirmSerializer(serializers.Serializer):
+    """登入後驗證自己目前信箱：只要驗證碼，信箱就是 request.user.email。"""
+
+    code = serializers.RegexField(r"^\d{6}$")

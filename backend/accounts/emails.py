@@ -23,6 +23,18 @@ BODY_TEMPLATE = (
     "— TakeAbridge 團隊"
 )
 
+VERIFICATION_SUBJECT = "【TakeAbridge】信箱驗證碼"
+
+VERIFICATION_BODY_TEMPLATE = (
+    "您好，\n\n"
+    "請用以下驗證碼確認這個信箱是您本人的：\n\n"
+    "    {code}\n\n"
+    "驗證碼將在 {ttl_minutes} 分鐘後失效，且僅能使用一次。\n"
+    "請回到頁面輸入這組驗證碼。\n\n"
+    "如果這不是您本人的操作，請忽略這封信。\n\n"
+    "— TakeAbridge 團隊"
+)
+
 
 def send_password_reset_code(email: str, code: str) -> None:
     """把驗證碼寄到 email。寄失敗會讓 send_mail 拋例外，由呼叫端處理。"""
@@ -32,6 +44,21 @@ def send_password_reset_code(email: str, code: str) -> None:
     )
     send_mail(
         SUBJECT,
+        body,
+        settings.DEFAULT_FROM_EMAIL,
+        [email],
+        fail_silently=False,
+    )
+
+
+def send_email_verification_code(email: str, code: str) -> None:
+    """把信箱驗證碼寄到 email。寄失敗會拋例外，由呼叫端處理。"""
+    body = VERIFICATION_BODY_TEMPLATE.format(
+        code=code,
+        ttl_minutes=settings.EMAIL_VERIFICATION_CODE_TTL_MINUTES,
+    )
+    send_mail(
+        VERIFICATION_SUBJECT,
         body,
         settings.DEFAULT_FROM_EMAIL,
         [email],

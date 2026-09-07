@@ -54,3 +54,76 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+.profile-email-verified {
+  margin: -4px 0 0;
+  color: #2e7d32;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.profile-email-verify {
+  margin-top: -4px;
+}
+
+.profile-email-unverified {
+  margin: 0;
+  color: #b45309;
+  font-size: 13px;
+}
+
+.profile-verify-link {
+  margin-left: 8px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #2563eb;
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.profile-verify-link:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.profile-verify-notice {
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #eef6ff;
+  color: #1f4e79;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.profile-verify-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.profile-verify-row input {
+  flex: 1;
+  min-width: 120px;
+  padding: 8px 10px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.profile-verify-row button {
+  padding: 6px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.profile-verify-row button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

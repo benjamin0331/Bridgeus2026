@@ -117,3 +117,90 @@ class PasswordResetCode(models.Model):
             and self.attempt_count < self.MAX_ATTEMPTS
             and timezone.now() < self.expires_at
         )
+
+
+class EmailVerificationCode(models.Model):
+    """證明「這個信箱是本人的」用的一次性驗證碼。兩種場景共用：
+
+    1. **註冊時**（`user` 為 NULL）：帳號還不存在，用 `email` 當鍵。註冊
+       serializer 會檢查「這個 email 最近有沒有一組 `verified_at` 已填的
+       紀錄」，沒有就擋下註冊。成功建帳號後把該 email 的紀錄整批刪掉，這組
+       驗證不能再拿去註冊第二個帳號。
+    2. **登入後補／改信箱**（`user` 指向本人）：直接把 `User.email_verified_at`
+       設起來。
+
+    與 PasswordResetCode 刻意分開（同 RegistrationSerializer 與
+    AccountCreateSerializer 的關係）：鍵不同（email vs user）、成功後的副作用
+    不同、生命週期不同，硬抽共同基底只會讓兩邊都難讀。存的一樣只有 SHA-256
+    雜湊，`attempt_count` 一樣是暴力破解的主要防線。
+    """
+
+    MAX_ATTEMPTS = 5
+
+    email = models.EmailField(db_index=True)
+    # NULL = 註冊前的驗證（帳號還不存在）。
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="email_verification_codes",
+        null=True,
+        blank=True,
+    )
+    code_hash = models.CharField(max_length=64)  # SHA-256 hexdigest
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    # 驗證成功的時間。註冊 serializer 讀這欄判斷「這個 email 驗過了」。
+    verified_at = models.DateTimeField(null=True, blank=True)
+    attempt_count = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        indexes = [models.Index(fields=["email", "consumed_at"])]
+
+    def __str__(self):
+        return f"EmailVerificationCode(email={self.email}, created={self.created_at:%Y-%m-%d %H:%M})"
+
+    @staticmethod
+    def hash_code(code: str) -> str:
+        return hashlib.sha256(code.encode()).hexdigest()
+
+    @classmethod
+    def issue(cls, email, user=None) -> tuple["EmailVerificationCode", str]:
+        """作廢這個 (email, user) 現有的碼，產一組新的六位數字碼。
+
+        回傳 `(instance, 明碼)`。
+        """
+        now = timezone.now()
+        cls.objects.filter(
+            email__iexact=email, user=user, consumed_at__isnull=True
+        ).update(consumed_at=now)
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        ttl = getattr(settings, "EMAIL_VERIFICATION_CODE_TTL_MINUTES", 10)
+        instance = cls.objects.create(
+            email=email,
+            user=user,
+            code_hash=cls.hash_code(code),
+            expires_at=now + timedelta(minutes=ttl),
+        )
+        return instance, code
+
+    def is_usable(self) -> bool:
+        return (
+            self.consumed_at is None
+            and self.attempt_count < self.MAX_ATTEMPTS
+            and timezone.now() < self.expires_at
+        )
+
+    @classmethod
+    def is_pre_registration_verified(cls, email) -> bool:
+        """註冊 serializer 用：這個 email 最近有沒有完成過（未被帳號認領的）
+        註冊前驗證。認領（成功建帳號）時該 email 的紀錄會被刪掉，所以「還存在
+        且 verified_at 在寬限期內」就代表可以拿來註冊。
+        """
+        grace = getattr(settings, "EMAIL_VERIFICATION_GRACE_MINUTES", 30)
+        return cls.objects.filter(
+            email__iexact=email,
+            user__isnull=True,
+            verified_at__isnull=False,
+            verified_at__gte=timezone.now() - timedelta(minutes=grace),
+        ).exists()

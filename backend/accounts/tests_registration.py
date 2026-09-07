@@ -3,15 +3,18 @@
 對應 spec：docs/superpowers/specs/2026-08-18-self-service-registration-design.md
 """
 
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework.throttling import ScopedRateThrottle
 
 from accounts.consent import CONSENT_VERSION
+from accounts.models import EmailVerificationCode
 from accounts.serializers import RegistrationSerializer
 
 User = get_user_model()
@@ -32,7 +35,24 @@ def _payload(**overrides):
     return data
 
 
+def _mark_email_verified(email="subject01@example.com"):
+    """註冊現在強制先完成信箱驗證（見 RegistrationSerializer.validate_email）。
+    多數註冊測試不是在測這一關，所以先塞一筆「已驗證」的紀錄把門打開。
+    """
+    now = timezone.now()
+    EmailVerificationCode.objects.create(
+        email=email,
+        code_hash=EmailVerificationCode.hash_code("000000"),
+        expires_at=now + timedelta(minutes=10),
+        verified_at=now,
+        consumed_at=now,
+    )
+
+
 class RegistrationSerializerSuccessTests(TestCase):
+    def setUp(self):
+        _mark_email_verified()
+
     def test_creates_user_with_expected_fields(self):
         serializer = RegistrationSerializer(data=_payload())
         self.assertTrue(serializer.is_valid(), serializer.errors)
@@ -82,10 +102,21 @@ class RegistrationSerializerSuccessTests(TestCase):
 
 
 class RegistrationSerializerRejectionTests(TestCase):
+    def setUp(self):
+        # 讓每條測試因為它自己要測的原因失敗，而不是「沒驗信箱」。
+        _mark_email_verified()
+
     def _assert_invalid(self, field, **overrides):
         serializer = RegistrationSerializer(data=_payload(**overrides))
         self.assertFalse(serializer.is_valid())
         self.assertIn(field, serializer.errors)
+
+    def test_rejects_email_that_was_not_verified(self):
+        serializer = RegistrationSerializer(
+            data=_payload(username="nope", email="unverified@example.com")
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("email", serializer.errors)
 
     def test_rejects_missing_consent(self):
         payload = _payload()
@@ -146,6 +177,9 @@ class RegistrationSerializerRejectionTests(TestCase):
 class RegistrationSerializerIgnoresClientControlledFieldsTests(TestCase):
     """前端不得自行決定同意版本或受試者身分。"""
 
+    def setUp(self):
+        _mark_email_verified()
+
     def test_ignores_client_supplied_consent_version(self):
         serializer = RegistrationSerializer(
             data=_payload(consent_version="forged-version")
@@ -162,6 +196,7 @@ class RegistrationSerializerIgnoresClientControlledFieldsTests(TestCase):
 class RegistrationEndpointTests(TestCase):
     def setUp(self):
         self.client = APIClient()
+        _mark_email_verified()
 
     def test_registers_and_returns_usable_tokens(self):
         response = self.client.post("/api/register/", _payload(), format="json")
@@ -245,6 +280,7 @@ class RegistrationThrottleTests(TestCase):
 
     def test_excess_registrations_are_throttled(self):
         for i in range(self.RATE):
+            _mark_email_verified(f"s{i}@example.com")
             response = self.client.post(
                 "/api/register/",
                 _payload(username=f"s{i}", email=f"s{i}@example.com"),

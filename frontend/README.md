@@ -50,7 +50,9 @@ Auth:
 
 - `POST /api/token/`
 - `POST /api/token/refresh/`
-- `POST /api/register/`
+- `POST /api/register/` (needs a verified email first)
+- `POST /api/email-verification/request/` · `POST /api/email-verification/confirm/`
+- `POST /api/me/email/verify/request/` · `POST /api/me/email/verify/confirm/`
 - `POST /api/password-reset/request/` · `POST /api/password-reset/confirm/`
 
 Topics and surveys:
