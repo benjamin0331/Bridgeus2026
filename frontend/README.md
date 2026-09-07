@@ -48,7 +48,7 @@ VITE_PROXY_TARGET=http://127.0.0.1:8005 npm run dev
 
 Auth:
 
-- `POST /api/token/`
+- `POST /api/token/` (`username` may be the account's username or email)
 - `POST /api/token/refresh/`
 - `POST /api/register/` (needs a verified email first)
 - `POST /api/email-verification/request/` · `POST /api/email-verification/confirm/`

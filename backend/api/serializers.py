@@ -47,6 +47,25 @@ class BridgeUsTokenObtainPairSerializer(TokenObtainPairSerializer):
         token["is_researcher"] = user.groups.filter(name=RESEARCHER_GROUP_NAME).exists()
         return token
 
+    def validate(self, attrs):
+        # 允許用 email 登入：把 email 換成對應帳號的 username，再交給 simplejwt
+        # 原本的帳密驗證跑。email 在 DB 是 unique，至多一個對應。
+        #
+        # 先確認沒有帳號的 username 正好等於這個字串——UnicodeUsernameValidator
+        # 允許 username 含 "@"，硬把它當 email 解，會讓「username 剛好長得像
+        # 別人 email」的人登不進自己的帳號。username 查詢維持大小寫敏感（與
+        # Django 認證一致）。
+        login = attrs.get(self.username_field, "")
+        if (
+            login
+            and "@" in login
+            and not User.objects.filter(**{self.username_field: login}).exists()
+        ):
+            match = User.objects.filter(email__iexact=login).first()
+            if match is not None:
+                attrs[self.username_field] = match.get_username()
+        return super().validate(attrs)
+
 
 class ViewpointNodeReviewSerializer(serializers.ModelSerializer):
     """M6 觀點知識庫 Step 4 人工終審用的唯讀列表/詳情欄位。

@@ -9,6 +9,7 @@
 
 > 每完成一項未 commit 的工作就記在這；commit 後刪掉該行。
 
+- **登入可用帳號或 Email（新功能，M1）**：`BridgeUsTokenObtainPairSerializer.validate` 在交給 simplejwt 帳密驗證前，把 email 換成對應帳號的 username（`email__iexact`，email 是 unique）。守衛：某人 username 剛好等於別人 email 時，按 username 登入仍進自己的帳號（先查 `filter(username=login).exists()`）。前端 `LoginPage` label 改「帳號或 Email」；`api/auth.js` 的 `login()` 登入後多打一次 `/api/me/` 取回真正 username（否則首頁問候語／`changePassword` 會用到打字時輸入的 email）。測試 `api/tests_login_with_email.py`（8；其 setUp 會 `cache.clear()`，不然 login throttle 計數會溢到後面跑的測試檔）。文件：API Spec、backend/README、frontend/README。
 - **信箱驗證（新功能，M1）**：註冊「一定要先驗信箱」＋登入後補／換信箱也要驗。
   - 後端：`accounts.EmailVerificationCode`（migration `accounts/0007`，key 是 email＋可空的 user FK，另有 `verified_at`；同樣只存 SHA-256、單次、10 分鐘、錯 5 次作廢）。
     - 註冊前（未登入）：`POST /api/email-verification/{request,confirm}/`（request 對已註冊的 email 回 400；confirm 成功寫 `verified_at`）。`RegistrationSerializer.validate_email` 多一關：`EmailVerificationCode.is_pre_registration_verified()`（該 email 在 `EMAIL_VERIFICATION_GRACE_MINUTES`＝30 內驗過），沒過回 400「請先完成信箱驗證。」；成功建帳號時把該 email 的驗證紀錄**刪掉**（不能拿去註冊第二個帳號），並把 `User.email_verified_at` 設起來。

@@ -122,7 +122,8 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 Auth:
 
-- `POST /api/token/`
+- `POST /api/token/` — `username` accepts the account's username **or** its
+  email (case-insensitive)
 - `POST /api/token/refresh/`
 
 Topics/surveys:

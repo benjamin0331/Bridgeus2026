@@ -21,13 +21,24 @@ export function persistSession({ access, refresh, username }) {
 }
 
 export function login({ username, password }) {
-  // Django 預設的欄位名是 username。
-  return api.post('/api/token/', { username, password }).then((response) => {
-    return persistSession({
-      access: response.data.access,
-      refresh: response.data.refresh,
-      username,
-    });
+  // 後端 /api/token/ 的欄位名是 username，但值可以是帳號或 email——
+  // BridgeUsTokenObtainPairSerializer 會把 email 換成對應的 username。
+  return api.post('/api/token/', { username, password }).then(async (response) => {
+    const { access, refresh } = response.data;
+    // 先寫 access，下面那支 /api/me/ 才帶得到 Authorization。
+    localStorage.setItem('access', access);
+
+    // 使用者可能是用 email 登入的，這裡拿回真正的 username，否則首頁問候語
+    // 與 changePassword() 會用到打字時輸入的 email。
+    let resolvedUsername = username;
+    try {
+      const me = await api.get('/api/me/');
+      if (me.data?.username) resolvedUsername = me.data.username;
+    } catch {
+      // 讀不到就退回使用者輸入的值，不擋登入。
+    }
+
+    return persistSession({ access, refresh, username: resolvedUsername });
   });
 }
 

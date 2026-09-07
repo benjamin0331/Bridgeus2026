@@ -32,7 +32,7 @@ Register a new user.
 
 ---
 
-### POST `/auth/login/`
+### POST `/api/token/`
 Obtain JWT tokens.
 
 **Request**
@@ -40,10 +40,19 @@ Obtain JWT tokens.
 { "username": "string", "password": "string" }
 ```
 
+The `username` field accepts **either the account's username or its email**
+(case-insensitive; email is unique). A value containing `@` is resolved to a
+username only when no account literally has that username, so a username that
+looks like an email still logs into its own account.
+
 **Response** `200`
 ```json
 { "access": "string", "refresh": "string" }
 ```
+
+The access token carries an extra `is_researcher` claim. The response does not
+include the username — a client that logged in by email should call
+`GET /api/me/` to learn it.
 
 ---
 

@@ -172,13 +172,14 @@ function LoginPage({ setUser, authMessage = '' }) {
             <>
               <form className="login-form" onSubmit={handleLogin}>
                 <div className="input-group">
-                  <label>User ID</label>
+                  <label>帳號或 Email</label>
                   <input
                     type="text"
                     className="login-input"
-                    placeholder="請輸入帳號"
+                    placeholder="請輸入帳號或電子信箱"
                     value={userId}
                     onChange={(e) => setUserId(e.target.value)}
+                    autoComplete="username"
                     required
                   />
                 </div>
