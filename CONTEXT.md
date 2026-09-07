@@ -14,7 +14,7 @@
   - 限流（未認證、依 IP）：新 scope `THROTTLE_PASSWORD_RESET_REQUEST`（`5/hour`）／`THROTTLE_PASSWORD_RESET_CONFIRM`（`10/hour`）。真正的暴力破解防線是碼自己的 `attempt_count`。
   - Email：settings 新增 `EMAIL_*`（dev 預設 console backend，不寄真信）＋`PASSWORD_RESET_CODE_TTL_MINUTES`。正式機在 `backend/.env` 設 `EMAIL_BACKEND=...smtp...`＋`EMAIL_HOST_USER=bridgeus2026@gmail.com`＋`EMAIL_HOST_PASSWORD=<Gmail 應用程式密碼>`。⚠️ 多數 VPS 封鎖對外 587/465，部署要確認。
   - 舊帳號（研究者代開、無 email）走不到這條流程是刻意的，仍由研究者後台重設。
-  - 前端：`pages/ForgotPasswordPage.jsx`＋`.css`、`api/auth.js` 的 `requestPasswordReset()`／`confirmPasswordReset()`、`App.jsx` route `/forgot-password`、`LoginPage` 加連結。
+  - 前端：**做在登入卡片內的檢視切換**（不換頁）——`LoginPage.jsx` 加 `view` 狀態（login → request → confirm → done），「忘記密碼？」按鈕就地展開；`api/auth.js` 的 `requestPasswordReset()`／`confirmPasswordReset()`。（先前的獨立 `ForgotPasswordPage.jsx` 與 `/forgot-password` route 已移除。）
   - 測試：`accounts/tests_password_reset.py`（20 passed）。文件：`docs/BridgeUs_API_Spec.md`、`backend/README.md`、`backend/.env.example`、`frontend/README.md`。
   - ⚠️ 拉到這版要跑 `uv run python manage.py migrate accounts`（dev DB 已跑過）。
 

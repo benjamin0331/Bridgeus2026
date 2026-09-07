@@ -180,3 +180,60 @@
   font-size: 14px;
 }
 
+/* 忘記密碼流程：與登入表單共用 .login-card / .login-form / .login-input，
+   下面只補這個流程特有的元素。 */
+.login-link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #8a6d5c;
+  font-size: 14px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.login-link-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.login-reset-sep {
+  margin: 0 8px;
+  color: #ccc;
+}
+
+.login-reset-error {
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: #fdecea;
+  color: #c0392b;
+  font-size: 14px;
+}
+
+.login-reset-notice {
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: #eef6ff;
+  color: #1f4e79;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.login-reset-field-error {
+  margin-top: 6px;
+  padding-left: 5px;
+  color: #c0392b;
+  font-size: 13px;
+}
+
+.login-reset-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #666;
+  padding-left: 5px;
+}
+
