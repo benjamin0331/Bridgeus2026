@@ -1,258 +1,272 @@
-# BridgeUs (橋得攏)
+# TakeAbridge｜異質觀點討論平台
 
-BridgeUs is a heterogeneous-viewpoint dialogue platform for structured discussion across different stances. The current implementation focuses on the Taiwan nuclear-energy topic and supports two user-facing paths:
+> 一個把「跟立場相反的人好好講一次話」變成可量測、可重現的研究平台。
+> 使用者填立場問卷 → 系統媒合對立立場的真人或 AI 代理人 → 對話全程即時 NLP 分析並生成概念認知網路圖 → 前後測比較態度變化。
 
-- Human-AI dialogue with an AI agent taking the opposing stance.
-- Anonymous human-human matching based on survey stance scores and optional Q9 semantic distance.
+淡江大學資訊管理學系 115 學年度畢業專題｜國科會大專學生研究計畫
 
-The project is currently organized as a monorepo:
+🔗 **Demo**：https://dev.bridgeus.work
+📄 **系統說明文件**：[`docs/TakeAbridge_系統文件.pdf`](docs/)
 
-```text
-/Users/light/code
-├── backend/   # Django REST + Channels backend
-├── frontend/  # React + Vite frontend
-├── data/      # shared/source data
-└── docs/      # project notes
+---
+
+## 為什麼做這個
+
+演算法推薦讓每個人只看到同溫層的內容。既有研究已證實跨立場對話有去極化效果，但真人配對成本高、等待久，而且在敏感議題上跟真人正面交鋒本身就有社交壓力。
+
+已有的三條研究線各自留下缺口：
+
+| 研究 | AI 的位置 | 未回答的問題 |
+|---|---|---|
+| Combs et al. | 無（純真人對話） | 難以規模化 |
+| Argyle et al. | 第三方輔助者 | AI 自己當對話方會怎樣 |
+| Villanueva et al. | 對話方 | 效果高度依賴文化真實性感知 |
+
+**本專題的核心假設**：與具備高品質知識架構與結構化對話策略的 AI 進行異質對話，能否達到與真人異質對話同等的去極化效果？
+
+另一個缺口是測量方式。既有研究多用「前後測態度量表」這類結果指標，回答得了「態度有沒有變」，回答不了「觀點的廣度有沒有擴展」。本系統以對話全程留存的系統端資料補上歷程指標。
+
+---
+
+## 核心功能
+
+### 1. 異質立場配對
+
+兩階段設計。第一階段依李克特量表加權總分分池（支持 > 4.0、中立 3.0–4.0、反對 < 3.0）；第二階段在跨池候選人中計算異質度並取最大值配對：
+
+```
+異質度 = 0.6 × 歸一化李克特距離 + 0.4 × 歸一化語義距離
 ```
 
-## Current Git Layout
+中立池使用者不進入真人佇列，直接配對 AI 代理人。
 
-- Active repo root: `/Users/light/code`
-- Main remote: `origin https://github.com/bridgeus2026/Bridgeus2026.git`
-- Active working branch: `feat/Light`
-- Backend-only mirror remote may exist as `light-backend https://github.com/Bridge-US2026/Light_Django_backend.git`
+### 2. 三層 NLP 即時分析管線
 
-Before git operations, verify the target:
+同步阻斷與非同步分析分流，確保過濾零延遲又不卡訊息傳遞。
 
-```bash
-git rev-parse --show-toplevel
-git status -sb
-git remote -v
+| 層級 | 方法 | 觸發後行為 |
+|---|---|---|
+| 內容過濾 | 35 詞攻擊性黑名單，同步字串比對 | 直接攔截，不進後續流程 |
+| 語義分析 | Sentence-Transformers（paraphrase-multilingual-MiniLM-L12-v2，384 維） | 離題引導提示、論述位移計算 |
+| 情緒偵測 | DistilBERT 多語言情緒分類 | 私下推送改寫建議，使用者可 accept／modify／ignore |
+
+**閾值是實證校準出來的，不是拍腦袋定的**：
+
+- 離題閾值依議題性質分別設定（核能 0.35、女性服兵役 0.25）。核能閾值以 16 句三類語料校準——直接相關句平均相似度 0.67、間接相關 0.46、完全無關 0.17——再依實際模擬情境調整，使漸進式偏離的對話（實測均值 0.34）也能觸發引導。
+- 情緒閾值 0.65 經 24 句五類語氣語料校準，是攔截率天花板下誤觸率最低的選擇。
+- 情緒層另附**第二人稱前置條件**：只有訊息含第二人稱時才判定，用來區分「對議題的強烈批評」與「對人的攻擊」。
+
+介入採建議而非強制，訊息最終是否發送由使用者決定（設計原則參考 Argyle et al., 2023）。
+
+### 3. H-AI 對立立場對話代理人
+
+三個部分：
+
+- **立場校準**：依使用者前測分數鏡像生成對立立場參數，注入 System Prompt，全程不退回中立回應
+- **RAG 知識注入**：LangChain 串接 ChromaDB，以使用者訊息為查詢向量檢索外部知識庫，依「量化數據 > 案例 > 專家意見 > 法規條文」優先序組裝進 Prompt
+- **三階段對話策略**：engagement 建立論述 → confrontation 導入視角翻轉提問 → convergence 引導整合觀點
+
+回應採結構化輸出契約，內部判斷與對外回覆分離，避免推理內容外洩到使用者端。
+
+<details>
+<summary><b>技術選型：為什麼是 Claude Sonnet 而不是 Gemini Flash</b></summary>
+
+開發初期為降低 API 成本評估過 Gemini Flash，但實測顯示它在複雜 Prompt 的指令遵循上不穩定——面對「立場維持 + 視角翻轉提問格式 + 三階段策略切換」這種多重約束，會選擇性遵守部分指令，導致對立立場在對話中途失守。
+
+以相同 Prompt 對比測試，指令遵循評分：
+
+| 模型 | 評分 |
+|---|---|
+| Claude Sonnet | 85–90 / 100 |
+| Gemini Flash | 45–50 / 100 |
+
+差距確認為模型能力而非 Prompt 設計問題。基於實驗可靠性與代理人行為一致性，生產環境選定 Claude Sonnet。
+</details>
+
+### 4. 概念認知網路圖（CCND）
+
+把對話中出現的觀點轉成可視覺化的結構。兩層：上層是議題預先定義的宏觀面向（anchor），下層是對話中依發言產生的具體概念節點。
+
+節點判定走兩條路徑，輸出格式一致：
+
+- **已訓練議題**：兩階段 BERT 分類器（先判宏觀面向，再於該面向的封閉詞彙表下判具體概念），信心 < 0.35 不採計
+- **新議題**：LLM 直接擷取概念並掛在已定義的宏觀節點下
+
+節點立場一律由 LLM 判定。前端以 D3.js `d3-hierarchy` 放射狀樹狀圖即時渲染，樹狀態以 JSON 持久化於對話紀錄，支援回顧任一時間點的快照。
+
+### 5. 觀點知識庫
+
+對話結束後自動篩選有沉澱價值的內容，**四項指標全為純 NLP 計算，不依賴 LLM**：
+
+```
+綜合分數 = 0.35 × 語義推進度
+         + 0.35 × CCND 新點亮節點數
+         + 0.20 × 詞彙豐富度（jieba）
+         + 0.10 × 發言長度
 ```
 
-## Tech Stack
+三階段：整場篩選（輪數 ≥ 6、平均訊息長度 ≥ 30 字、攻擊性詞比例 < 15%）→ 單則篩選 → 加權評分取前 15 則，確保雙方立場皆有代表性後寫入 PostgreSQL，寫入前以語義相似度 0.92 為門檻去重。
 
-- Backend: Python 3.12+, Django 6, Django REST Framework, Django Channels, SimpleJWT
-- Database: SQLite for local smoke tests; PostgreSQL + pgvector for server/realistic testing
-- Matching/NLP: pgvector, scipy cosine distance, sentence-transformers embedding bridge
-- RAG/AI: Anthropic, LangChain, ChromaDB, sentence-transformers
-- Frontend: React 19, React Router 7, Vite 8, axios
-- Deployment: Docker Compose, uvicorn ASGI, optional Redis cache/channel layer
+### 6. 虛擬大廳
 
-## Backend Quick Start
+Godot 4.7 開發的像素風議題廣場，匯出 WebAssembly 後以 iframe 嵌入 React 前端。兩人坐上同一議題的樹幹座位即配對成功。相較於直接跳出配對畫面，遊戲化的相遇方式能降低面對異質觀點時的心理壓力。
+
+---
+
+## 系統架構
+
+```
+┌─────────────────────────────────────────────────────┐
+│  React 19 + Vite                                    │
+│  ├─ 對話室 UI                                        │
+│  ├─ CCND 視覺化（D3.js d3-hierarchy）                 │
+│  └─ 虛擬大廳（Godot 4.7 → WASM，iframe）              │
+└──────────────┬──────────────────────────────────────┘
+               │ REST (axios) / WebSocket
+┌──────────────▼──────────────────────────────────────┐
+│  Django 6.0 + DRF + Channels 4.1 (ASGI)             │
+│  ├─ 配對引擎                                         │
+│  ├─ NLP 分析管線（三層）                              │
+│  ├─ H-AI 代理人（Claude Sonnet + RAG）                │
+│  └─ CCND 生成（BERT 兩階段 ／ LLM）                    │
+└───┬──────────────┬──────────────┬───────────────────┘
+    │              │              │
+┌───▼────────┐ ┌───▼────┐ ┌───────▼──────┐
+│ PostgreSQL │ │ Redis  │ │  ChromaDB    │
+│ + pgvector │ │ Channel│ │  RAG 知識庫   │
+│ 對話向量    │ │ Layer  │ │              │
+└────────────┘ └────────┘ └──────────────┘
+```
+
+**訊息流程**：使用者發送 → Consumer 接收 → 同步觸發內容過濾 → 通過後轉發對方並非同步觸發 NLP 管線 → 分析結果透過 WebSocket 推回前端更新 CCND 與指標。
+
+---
+
+## 技術棧
+
+| 層 | 技術 |
+|---|---|
+| 後端 | Python / Django 6.0 / DRF / Simple JWT / Django Channels 4.1（ASGI） |
+| 前端 | React 19 / Vite / react-router-dom / axios / D3.js 7 |
+| 資料庫 | PostgreSQL 16 + pgvector（384 維語義向量與結構化欄位同表）、Redis 7、ChromaDB |
+| LLM | Anthropic Claude Sonnet（對話代理人、對話摘要）、OpenAI API（CCND 節點立場判定） |
+| NLP | Sentence-Transformers、DistilBERT 多語言情緒分類、BERT 兩階段分類器、jieba |
+| RAG | LangChain + ChromaDB |
+| 虛擬空間 | Godot 4.7（TileMap / 2D 節點 / MultiplayerSynchronizer） |
+| 測試 | pytest + pytest-django + pytest-asyncio，**390+ 測試案例** |
+| 部署 | Docker Compose（開發）、Daphne（WebSocket）+ Gunicorn（HTTP）+ Cloudflare（正式） |
+
+---
+
+## 實驗結果
+
+實際招募使用者跑完整流程（登入 → 議題選擇 → 前測 → 配對 → 對話 → 後測），議題為台灣核能政策與女性義務兵役，採 H-AI 模式。
+
+| 項目 | 數量 |
+|---|---|
+| 有效樣本 | 21 筆（來自 14 位獨立受試者） |
+| 對話場次 | 33 場，累積 **285 輪對話** |
+| 前後測完整率 | 100% |
+| **AI 立場契約違規** | **0 / 285 輪** |
+
+### 對話歷程指標
+
+| 指標 | 開場期 | 後段 |
+|---|---|---|
+| 收斂型回應比例 | 17.4% | 50.6% |
+| 單次發言平均字數 | 28.1 字 | 41.5 字 |
+
+AI 回應含提問的比例：開場 5.3% → 交鋒 22.0% → 收斂 2.2%，與三階段策略設計完全對應，證明切換機制在實際運作中確實執行。
+
+### CCND 三層認知路徑
+
+設計時預設「先注意到圖 → 才察覺觀點差異 → 才調整表達與思考」，實驗證實這條路徑成立：
+
+| 題項 | 平均（/7） | 達 5 分以上 |
+|---|---|---|
+| 注意並觀看 CCND | 5.33 | 90.5% |
+| 藉此察覺雙方觀點差異 | 5.14 | 76.2% |
+| 表達或思考因而調整 | 5.00 | 61.9% |
+
+Holm 校正後三題皆顯著高於量表中點，效果量 0.75–0.98。**逐筆檢視發現沒有任何一位使用者跳過前一階段**，路徑是逐層傳遞而非零星發生。
+
+### 立場前後測：平均沒動 ≠ 沒有效果
+
+平均只變動 +0.089 分。但拆開看：11 人往上移、8 人往下移、2 人持平，**平均移動幅度 0.650 分**——多數人的立場都動了，只是方向不一致，在群體層次互相抵消。
+
+為排除「樣本太小測不出來」，另以雙單尾等價檢定（TOST）、±0.5 分為等價界限進行檢驗，達顯著（p = .017）。此檢定的意義與一般檢定相反：不是證明有差異，而是主動確認差異不存在。
+
+### 一個意外發現
+
+21 位使用者中有 **20 位（95.2%）正確辨識出對話對象是 AI**，無人誤認為真人。但發言長度仍從 28.1 字成長到 41.5 字。使用者是在**清楚知道對方是 AI 的前提下**，仍願意持續投入這場對立立場的討論。
+
+> ⚠️ 樣本以人次為單位，未針對受試者內相關性作調整，統計推論應視為初步性質。
+
+---
+
+## 個人貢獻
+
+本專案為五人團隊之畢業專題，我（賴則名）擔任專案管理與系統架構。負責範圍：
+
+- **系統架構設計與技術選型**、專題題目發想、專案進度管理、系統說明文件撰寫
+- **H-AI 對話代理人模組**：Prompt 提示詞設計、三階段對話策略、API 串接、RAG 實作
+- **H-H 對話模組**：WebSocket 連線、情緒分析、敏感詞阻擋、離題度分析、AI 改寫建議與**數值校準**
+- **CCND 架構整理與可行性評估**、觀點知識庫規範制定
+- **問卷題目撰寫、數據分析、專題報告**
+- 各模組技術支援
+
+團隊其餘成員：伍晨安（後端整合個模組、伺服器架設）、陳彩希（UI&UX、Godot 虛擬大廳）、黃筱筑（CCND 機器學習方法、問卷計算設計、UI輔助、系統測試與合理性評估）、葉錦諦（RAG 資料爬取、觀點知識庫實作、系統測試）。
+
+---
+
+## 本機執行
 
 ```bash
+# 1. 啟動資料庫服務
+docker compose up -d          # PostgreSQL(pgvector) + Redis + ChromaDB
+
+# 2. 後端
 cd backend
-uv sync
-cp .env.example .env
-uv run python manage.py migrate
-uv run python manage.py createsuperuser
-uv run python scripts/build_knowledge_base.py --data-dir data/nuclear_energy --collection nuclear_energy_all
-uv run python manage.py warm_nlp_models
-uv run uvicorn BridgeUs_Django.asgi:application --host 0.0.0.0 --port 8005
-```
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env          # 填入 API keys 與資料庫設定
+python manage.py migrate
+python manage.py runserver    # 或 daphne config.asgi:application
 
-For simple HTTP-only development, this also works:
-
-```bash
-uv run python manage.py runserver 0.0.0.0:8005 --noreload
-```
-
-Use ASGI/uvicorn when testing WebSocket dialogue or matching-room chat.
-
-## Frontend Quick Start
-
-```bash
-cd frontend
+# 3. 前端
+cd ../frontend
 npm install
 npm run dev
+
+# 4. 測試
+cd ../backend && pytest
 ```
 
-Vite proxies `/api` and `/ws` to `VITE_PROXY_TARGET`, defaulting to `http://127.0.0.1:8005`.
+### 環境變數
 
-Open the frontend at the Vite dev-server URL, usually:
+參見 `backend/.env.example`。需要自行申請的外部服務：
 
-```text
-http://localhost:5173
-```
+- `ANTHROPIC_API_KEY` — H-AI 對話代理人
+- `OPENAI_API_KEY` — CCND 節點立場判定
 
-## Important Environment Values
+---
 
-In `backend/.env`:
+## 關於資料
 
-```env
-PORT=8005
-DJANGO_DEBUG=true
-DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1,0.0.0.0,dev.bridgeus.work
-CORS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,https://dev.bridgeus.work
-CSRF_TRUSTED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,https://dev.bridgeus.work
+本 repo **不包含** RAG 知識庫的新聞全文語料。原始語料來自各新聞媒體，研究內部使用屬合理使用範圍，公開散布全文則非。
 
-DB_ENGINE=sqlite
-# DB_ENGINE=postgres
-DB_NAME=bridgeus
-DB_USER=postgres
-DB_PASSWORD=replace-me
-DB_HOST=127.0.0.1
-DB_PORT=5432
-DB_CONN_MAX_AGE=0
-
-MATCHING_ALLOW_SAME_STANCE_FALLBACK=false
-MATCH_ROOM_IDLE_TIMEOUT_SECONDS=600
-H_H_AI_ASSIST_ENABLED=false
-AI_OPENING_ENABLED=true
-H_H_AI_ASSIST_TIMEOUT_SECONDS=2
-PRELOAD_NLP_MODELS=false
-GEMINI_API_KEY=replace-me
-GEMINI_MODEL=gemini-2.5-flash
-GEMINI_API_TIMEOUT_SECONDS=20
-SEMANTIC_TREE_ANALYZE_BATCH_SIZE=5
-USE_REDIS_CACHE=false
-USE_REDIS_CHANNEL=false
-```
-
-For production or shared server use, set `DJANGO_SECRET_KEY` and `JWT_SIGNING_KEY` to separate values with at least 32 characters.
-
-## Database Notes
-
-Local smoke testing can use SQLite. For the server or matching algorithm testing with semantic vectors, use PostgreSQL with pgvector enabled:
-
-```sql
-CREATE EXTENSION IF NOT EXISTS vector;
-```
-
-Then run:
+`data/` 下提供 **manifest**（來源 URL、標題、發布時間、抓取時間、內容 SHA-256）與重建腳本，可自行重新抓取以重現研究環境：
 
 ```bash
-cd backend
-uv run python manage.py migrate
+python scripts/rebuild_corpus.py
 ```
 
-## Current API Surface
+部分來源可能已下架或改版，manifest 保留原始 metadata 供查核。
 
-Authentication:
+實驗所得之受試者資料依研究倫理規範不予公開。
 
-- `POST /api/token/`
-- `POST /api/token/refresh/`
+---
 
-Topics and surveys:
+## 授權
 
-- `GET /api/dialogue/topics/`
-- `GET /api/dialogue/topics/<topic_id>/survey/`
-
-AI dialogue:
-
-- `POST /api/dialogue/sessions/`
-- `POST /api/dialogue/sessions/<session_id>/reply/`
-- `WS /ws/dialogue/<session_id>/`
-
-Human matching:
-
-- `POST /api/matching/join/`
-- `GET /api/matching/status/?topic_id=102`
-- `POST /api/matching/cancel/`
-- `GET /api/matching/rooms/<room_id>/messages/`
-- `POST /api/matching/rooms/<room_id>/messages/`
-- `POST /api/matching/rooms/<room_id>/leave/`
-- `GET /api/matching/rooms/<room_id>/semantic-tree/`
-- `POST /api/matching/rooms/<room_id>/semantic-tree/analyze/`
-- `WS /ws/matching/rooms/<room_id>/`
-
-## Matching Behavior
-
-- Topics: `102` `台灣核能議題討論`, `103` `女性義務兵役討論`, `104` `手扶梯靠邊站討論`.
-- Reverse-scored Likert items differ per topic (`102`: Q2/Q4/Q5/Q6; `103` and `104`: Q2/Q4/Q6/Q8) and are read from `SURVEY_CONFIGS[topic]["stance_rules"]`; the post-test derives its own reverse set from the same config, so a new topic needs no code change.
-- Stance score `S` is in `[1, 7]`.
-- `S > 4.5`: support.
-- `S < 3.5`: oppose.
-- `3.5 <= S <= 4.5`: neutral.
-- Default production matching only pairs support with oppose.
-- Neutral users receive `ai_recommended` and should be guided to AI dialogue.
-- Test-only fallback can be enabled with `MATCHING_ALLOW_SAME_STANCE_FALLBACK=true`.
-- Q9 is embedded for semantic matching; Q10 is stored but not scored yet.
-- Matching rooms are anonymous and auto-close after 10 minutes of no conversation activity by default.
-- Matching room semantic trees are built by backend Gemini analysis, not frontend keyword matching. `GET /semantic-tree/` returns the persisted `DialogueMatch.stats["semantic_tree"]` tree; `POST /semantic-tree/analyze/` analyzes unprocessed room messages in small batches and stores applied nodes/history. Missing `GEMINI_API_KEY` returns a semantic-tree error only; chat message delivery remains unaffected.
-- AI 開場（`AI_OPENING_ENABLED`，預設開啟）讓 AI 先開口：依受試者前測開放式作答（Q9／Q10）給出 3 個可討論方向。H-AI 寫成 session 的第一則 agent 訊息，H-H 則一房共用一則 `MatchOpeningBrief` 並以 WebSocket `match_opening` 廣播。生成是進房後才觸發的，LLM 慢不會卡住進房；LLM 不可用時退回議題錨點方向。
-- Human-human AI assistance is feature-flagged with `H_H_AI_ASSIST_ENABLED=true`; when enabled, WebSocket matching rooms can show content-block prompts and AI rephrase/direction/redirect suggestions. `H_H_AI_ASSIST_TIMEOUT_SECONDS` keeps slow NLP inference or first-time model downloads from blocking chat message delivery. Run `uv run python manage.py warm_nlp_models` before starting uvicorn, or set `PRELOAD_NLP_MODELS=true` in Docker, to download and warm models ahead of traffic. Repeated `GET /api/matching/rooms/<room_id>/messages/` logs during chat are the frontend polling room snapshots and are expected.
-
-## NLP Model Warmup
-
-If H-H AI assist is enabled, preload NLP models before testing chat intervention so first-use Hugging Face downloads do not happen during a live room:
-
-```bash
-cd backend
-uv run python manage.py warm_nlp_models
-```
-
-This warms the Q9/message embedding model and the emotion model. Use `--skip-embedding` or `--skip-emotion` when debugging only one side. Docker can run the same step before uvicorn with `PRELOAD_NLP_MODELS=true`.
-
-## Verification
-
-Backend:
-
-```bash
-cd backend
-uv run python manage.py check
-DB_ENGINE=sqlite uv run python manage.py test api --keepdb --noinput
-DB_ENGINE=sqlite uv run pytest api/tests_websocket.py chat/tests*.py
-```
-
-Frontend:
-
-```bash
-cd frontend
-npm run lint
-npm run build
-```
-
-## Docker
-
-Use the service-specific compose files for the current app layout. The root `docker-compose.yml` is an older integration draft and should be reviewed before use.
-
-Backend test container:
-
-```bash
-cd backend
-docker compose up --build
-```
-
-Frontend test container:
-
-```bash
-cd frontend
-docker compose up --build
-```
-
-Current defaults:
-
-- Backend: `http://localhost:8005`
-- Frontend: `http://localhost:8080`
-- Frontend container forwards `/api` and `/ws` to `host.docker.internal:8005` unless overridden.
-
-## Project Context
-
-BridgeUs is an NSTC undergraduate research project for structured depolarization dialogue. The research period is planned for 2026/07 - 2027/02. Advisor: 張昭憲（淡江大學資管系副教授）.
-
-Current engineering priority: make the survey, matching, AI dialogue, and anonymous chat lifecycle stable before adding long-running post-dialogue analysis and CCND visualization.
-
-Merge note: `feat/Light` is the source of truth for matching-room architecture. Do not directly merge `feat/benjamin`; selectively port compatible H-H AI-assist services into the current `DialogueMatch` / `MatchMessage` stack.
-
-## System Modules
-
-| Module | Name | Current status |
-|--------|------|----------------|
-| M1 | User Auth | JWT login/admin account flow is implemented. |
-| M2 | Topic Selection & Stance Measurement | Backend topic/survey config and Likert scoring are implemented for topic 102. |
-| M3 | Heterogeneous Matching & AI Agent Generation | Matching queue, stance score, Q9 semantic hook, and AI dialogue agent are implemented. |
-| M4 | Real-time Dialogue Room | WebSocket matching room and persisted messages are implemented; rooms auto-close when idle. |
-| M5 | NLP Analysis & CCND Generation | H-H AI assist, emotion timeout fail-open, NLP model warmup, and research suggestion records are implemented; CCND generation is planned. |
-| M6 | Post-Dialogue Summary & Knowledge Base | Knowledge-base build flow exists; post-dialogue summary is planned. |
-
-## Team
-
-| Member | Role |
-|--------|------|
-| 賴則名 (Benjamin) | Project Manager |
-| 伍晨安 | Backend / matching / AI agent development |
-| 陳彩希 | Frontend UI/UX |
-| 黃筱筑 | QA & optimization |
-| 葉錦諦 | Data engineering |
+本專案程式碼採用 MIT License。研究成果與系統文件之引用請註明出處。
