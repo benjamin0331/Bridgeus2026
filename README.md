@@ -6,7 +6,6 @@
 淡江大學資訊管理學系 115 學年度畢業專題｜國科會大專學生研究計畫
 
 🔗 **Demo**：https://dev.bridgeus.work
-📄 **系統說明文件**：[`docs/TakeAbridge_系統文件.pdf`](docs/)
 
 ---
 
