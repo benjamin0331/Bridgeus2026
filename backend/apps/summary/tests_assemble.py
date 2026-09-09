@@ -4,6 +4,8 @@ both per-speaker deltas (see apps.summary.pipeline.assemble module docstring for
 why they're deltas and not cumulative values) -- these tests pin that behavior down.
 """
 
+from unittest import mock
+
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
@@ -147,6 +149,66 @@ class BuildMessagesForMatchTests(TestCase):
         # 3 則短訊息一樣過不了 Step 1 的最低輪數門檻，重點是 dict 形狀能被
         # run_pipeline() 吃下去，不會 KeyError/crash。
         self.assertEqual(run_pipeline(messages), [])
+
+
+class OffTopicFlagTests(TestCase):
+    """build_messages_for_match 每則發言要帶 is_off_topic：這則發言自己的
+    embedding 與議題錨點的 cosine similarity < 門檻就是離題。這裡把
+    _topic_off_topic_context patch 成一組可控的錨點/門檻，避免依賴真實
+    sentence-transformer 錨點向量。"""
+
+    def setUp(self):
+        self.user_a = User.objects.create_user(username="ot_a", password="x")
+        self.user_b = User.objects.create_user(username="ot_b", password="x")
+        self.match = DialogueMatch.objects.create(
+            topic_id=102,
+            user_a=self.user_a,
+            user_b=self.user_b,
+            room_id="test-room-offtopic",
+        )
+        # 錨點 = EMB_X：embedding=EMB_X 的發言 similarity 1.0（在題），
+        # embedding=EMB_Y 的發言 similarity 0.0（離題），門檻 0.5。
+        self._patch = mock.patch(
+            "apps.summary.pipeline.assemble._topic_off_topic_context",
+            return_value=(EMB_X, 0.5),
+        )
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+
+    def test_flags_off_topic_and_on_topic_messages(self):
+        on_topic = MatchMessage.objects.create(
+            match=self.match, sender=self.user_a,
+            content="核能在低碳排放上有優勢但安全與核廢料疑慮不能忽視這是關鍵", embedding=EMB_X,
+        )
+        off_topic = MatchMessage.objects.create(
+            match=self.match, sender=self.user_b,
+            content="昨天那家新開的火鍋店排隊排了快一個小時完全跟核能沒有關係", embedding=EMB_Y,
+        )
+        no_embedding = MatchMessage.objects.create(
+            match=self.match, sender=self.user_a,
+            content="這則訊息當下 embedding 服務失敗所以沒有向量可以拿來比對錨點",
+        )
+
+        by_id = {m["message_id"]: m for m in build_messages_for_match(self.match)}
+
+        self.assertFalse(by_id[on_topic.id]["is_off_topic"])
+        self.assertTrue(by_id[off_topic.id]["is_off_topic"])
+        # 缺 embedding 不能判定 → 當作沒離題，不擋發言。
+        self.assertFalse(by_id[no_embedding.id]["is_off_topic"])
+
+    def test_no_anchor_configured_means_never_off_topic(self):
+        # 疊在 setUp 的 patch 上再 patch 一次同一個目標；離開 with 會還原成
+        # setUp 那組，addCleanup 仍只 stop 一次。
+        with mock.patch(
+            "apps.summary.pipeline.assemble._topic_off_topic_context",
+            return_value=(None, 0.5),
+        ):
+            MatchMessage.objects.create(
+                match=self.match, sender=self.user_a,
+                content="不管內容是什麼只要議題沒設定錨點就一律不判定為離題", embedding=EMB_Y,
+            )
+            messages = build_messages_for_match(self.match)
+        self.assertTrue(all(m["is_off_topic"] is False for m in messages))
 
 
 class StanceForScoreTests(TestCase):

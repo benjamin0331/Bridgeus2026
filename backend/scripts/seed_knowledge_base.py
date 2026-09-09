@@ -3,8 +3,8 @@
 執行：cd backend && uv run python scripts/seed_knowledge_base.py
 
 用 4 場模擬的 H-H 對話（topic 102 核能 x2、topic 103 女性兵役 x2）跑過完整
-pipeline：quality_filter.run_pipeline()（Step 1 品質篩選 → Step 2 擷取配對 →
-Step 3 評分排序）→ write_dialogue_summary() / write_viewpoint()，寫進真正的
+pipeline：quality_filter.run_pipeline()（Step 1 品質篩選 → Step 2 擷取配對）
+→ write_dialogue_summary() / write_viewpoint()，寫進真正的
 DialogueSummary / ViewpointNode 資料表。
 
 正常流程 ViewpointNode 建立後是 PENDING，要走 /viewpoint-review 人工終審才會
@@ -127,19 +127,20 @@ def main():
             for i, (side, content, semantic_dist, stance_shift) in enumerate(dialogue["messages"])
         ]
 
-        ranked_pairs = run_pipeline(pipeline_messages, top_n=3)
+        # Step 3 已移除：run_pipeline 現在回傳 Step 2 通過門檻的全部配對，
+        # 不含 composite_score / score_detail，也沒有 top_n。
+        ranked_pairs = run_pipeline(pipeline_messages)
         if not ranked_pairs:
             print(f"⚠ {dialogue['dialogue_id']} 沒有通過品質篩選，略過")
             continue
 
-        avg_score = sum(p["composite_score"] for p in ranked_pairs) / len(ranked_pairs)
         summary_id = write_dialogue_summary({
             "dialogue_id": dialogue["dialogue_id"],
             "topic_id": dialogue["topic_id"],
             "summary_text": "".join(m[1] for m in dialogue["messages"]),
             "side_a_stance": dialogue["side_a_stance"],
             "side_b_stance": dialogue["side_b_stance"],
-            "quality_score": round(avg_score, 4),
+            "quality_score": None,
             "stance_shift_magnitude": round(
                 sum(m[3] for m in dialogue["messages"]) / len(dialogue["messages"]), 4
             ),
@@ -157,8 +158,6 @@ def main():
                 "ai_response_text": pair["ai_response_text"],
                 "viewpoint_summary": pair["user_input_text"][:40],
                 "source_message_ids": [pair["user_message_id"]],
-                "composite_score": pair["composite_score"],
-                "score_detail": pair["score_detail"],
             })
             if written:
                 node = ViewpointNode.objects.filter(summary_id=summary_id, dimension=dimension).latest("created_at")

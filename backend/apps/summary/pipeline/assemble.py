@@ -17,9 +17,14 @@ ccnd_semantic_dist / ccnd_stance_shift 都是「這則發言本身帶來多少�
 """
 
 import logging
+import math
 
 from api.display_settings import resolve_stance_category
 from api.models import AIConversation, DialogueMatch, DialogueSessionRecord, MatchStanceDrift
+from apps.matching.services.topic_relevance import (
+    get_topic_anchor_embedding,
+    get_topic_relevance_policy,
+)
 from apps.matching.services.semantic_tree import (
     OWNER_USER_A,
     OWNER_USER_B,
@@ -34,13 +39,46 @@ from apps.matching.services.semantic_tree import (
 from apps.summary.models import DialogueSummary
 from apps.summary.pipeline.quality_filter import run_pipeline
 from apps.summary.pipeline.write import write_dialogue_summary, write_viewpoint
-from chat.services.embedding import cosine_distance
+from chat.services.embedding import cosine_distance, cosine_similarity
 
 logger = logging.getLogger(__name__)
 
-# ccnd_stance_shift 的縮放常數。Step 3 的 score_and_rank 會對整批候選配對做
-# min-max 正規化，任何正的線性縮放對正規化後的排序結果沒有影響——這個常數
-# 純粹是讓 score_detail 裡的原始值好讀，不影響評分結果。
+
+def _topic_off_topic_context(topic_id: int):
+    """回傳 (議題錨點 embedding | None, 離題相似度門檻)。
+
+    沿用 M4 對話室即時離題偵測的同一組設定
+    （TOPIC_CONFIGS[topic_id]["off_topic_detection"] 的 anchor_text / threshold），
+    這樣「哪些發言算離題」在對話當下的即時提示、跟事後進知識庫審核用的是同
+    一把尺。該議題沒設定錨點文字時回 (None, 門檻)，呼叫端因為錨點為 None 會
+    一律判定「沒離題」。"""
+    try:
+        policy = get_topic_relevance_policy(topic_id)
+        anchor = (
+            get_topic_anchor_embedding(policy.anchor_text)
+            if policy.anchor_text
+            else None
+        )
+        return anchor, policy.threshold
+    except (ValueError, KeyError):
+        return None, 0.0
+
+
+def _message_is_off_topic(embedding, anchor_embedding, threshold: float) -> bool:
+    """單則發言的離題判定：這則發言自己的 embedding 與議題錨點的 cosine
+    similarity < threshold 就算離題。缺 embedding 或錨點時一律回 False
+    ——訊號缺失不該讓發言被擋掉。"""
+    if embedding is None or anchor_embedding is None:
+        return False
+    sim = cosine_similarity(embedding, anchor_embedding)
+    if not math.isfinite(sim):
+        return False
+    return sim < threshold
+
+# ccnd_stance_shift 的縮放常數。Step 3（加權評分排序）移除後已經沒有下游會
+# 讀這個值——extract_valuable_pairs 仍把它放進配對 dict，但 assemble 這邊不再
+# 用它。保留常數只是因為 build_messages_for_match 仍會算出這個欄位、且測試有
+# 對它的數值斷言。
 MAX_LIT_NODES = 36
 
 
@@ -55,10 +93,13 @@ def build_messages_for_match(match: DialogueMatch) -> list[dict]:
     - ccnd_stance_shift：見模組 docstring，這位發言者這則訊息新點亮的
       CCND 節點數，換算成 100/MAX_LIT_NODES 分制
     - message_id：MatchMessage 的 id
+    - is_off_topic：這則發言的 embedding 相對議題錨點是否離題（門檻與錨點
+      沿用 M4 即時離題偵測設定，見 _topic_off_topic_context）
     """
     messages = []
     last_embedding_by_side: dict[str, list[float]] = {}
     last_lit_count_by_side: dict[str, int] = {}
+    off_topic_anchor, off_topic_threshold = _topic_off_topic_context(match.topic_id)
 
     for msg in match.messages.order_by("created_at", "id"):
         if msg.sender_id == match.user_a_id:
@@ -94,6 +135,9 @@ def build_messages_for_match(match: DialogueMatch) -> list[dict]:
                 "ccnd_semantic_dist": semantic_dist,
                 "ccnd_stance_shift": round(100 / MAX_LIT_NODES * new_lit_count, 4),
                 "message_id": msg.id,
+                "is_off_topic": _message_is_off_topic(
+                    msg.embedding, off_topic_anchor, off_topic_threshold
+                ),
             }
         )
     return messages
@@ -120,21 +164,13 @@ def _stance_for_score(topic_id: int, stance_score) -> str:
     return resolve_stance_category(topic_id=topic_id, user_stance_score=float(stance_score))
 
 
-def _quality_score(ranked: list[dict]) -> float | None:
-    """整場對話的品質分數 = Step 3 選中的配對 composite_score 平均值。"""
-    scores = [pair["composite_score"] for pair in ranked]
-    if not scores:
-        return None
-    return round(sum(scores) / len(scores), 4)
-
-
 def _build_summary_text(messages: list[dict]) -> str:
     """把整場對話雙方所有發言依時間順序串成純文字記錄，當作 AI 摘要
     （generate_ai_summary）失敗時的備援，以及還沒被知識庫頁面觸發過摘要生成
     前的暫時內容。
 
     對應 DialogueSummary.summary_text；messages 用的是 build_messages_for_match()
-    回傳的全部訊息，不是 Step 3 篩選後的 ranked 子集。
+    回傳的全部訊息，不是 Step 2 篩選後的配對子集。
     """
     return "\n".join(f"{msg['side'].upper()}: {msg['content']}" for msg in messages)
 
@@ -221,8 +257,10 @@ def run_pipeline_for_match(match_id: int) -> int:
     """
     match = DialogueMatch.objects.get(pk=match_id)
     messages = build_messages_for_match(match)
-    ranked = run_pipeline(messages)
-    if not ranked:
+    # Step 3 已移除：這是 Step 2 通過門檻的全部配對，沒有 composite_score /
+    # score_detail，沒有排序，也沒有取 Top N。
+    pairs = run_pipeline(messages)
+    if not pairs:
         return 0
 
     summary_id = write_dialogue_summary(
@@ -232,13 +270,15 @@ def run_pipeline_for_match(match_id: int) -> int:
             "summary_text": _build_summary_text(messages),
             "side_a_stance": _stance_for_score(match.topic_id, match.user_a_score),
             "side_b_stance": _stance_for_score(match.topic_id, match.user_b_score),
-            "quality_score": _quality_score(ranked),
+            # 原本是 Step 3 選中配對的 composite_score 平均值；Step 3 移除後
+            # 沒有分數可平均，整場對話的品質分數留空。
+            "quality_score": None,
             "stance_shift_magnitude": _stance_shift_magnitude(match),
         }
     )
 
     written = 0
-    for pair in ranked:
+    for pair in pairs:
         owner_key = OWNER_USER_A if pair["speaker_side"] == "a" else OWNER_USER_B
         dimension = get_message_dimension(
             match,
@@ -264,8 +304,6 @@ def run_pipeline_for_match(match_id: int) -> int:
                 "viewpoint_summary": "、".join(node["name"] for node in lit_nodes),
                 "stance_direction": lit_nodes[0]["stance"] if lit_nodes else "",
                 "source_message_ids": [pair["user_message_id"]],
-                "composite_score": pair["composite_score"],
-                "score_detail": pair["score_detail"],
             }
         ):
             written += 1
@@ -306,6 +344,7 @@ def build_messages_for_session(
       ccnd_semantic_dist = 這則 user_prompt 的 embedding 與「使用者上一則
       發言」的 cosine distance（缺 embedding 記 0.0），
       ccnd_stance_shift = 這則新點亮的 CCND 節點數（換算成 100/MAX_LIT_NODES 分制）
+      使用者發言另帶 is_off_topic（這則 user_prompt 相對議題錨點是否離題）。
     - AI 回覆：side="b"，message_id = "ai-<id>"（字串，永遠不會被寫成觀點），
       ccnd_* 一律 0.0——AI 回覆不做 CCND 分析，只是讓 Step 2 能把它配成
       使用者發言的「對方回應」。ai_response 為空的輪次不產生這則。
@@ -317,6 +356,7 @@ def build_messages_for_session(
     messages: list[dict] = []
     prev_user_embedding = None
     prev_lit_count = 0
+    off_topic_anchor, off_topic_threshold = _topic_off_topic_context(record.topic_id)
     for turn in turns:
         if not turn.user_prompt:
             continue
@@ -343,6 +383,9 @@ def build_messages_for_session(
                 "ccnd_semantic_dist": semantic_dist,
                 "ccnd_stance_shift": round(100 / MAX_LIT_NODES * new_lit_count, 4),
                 "message_id": turn.id,
+                "is_off_topic": _message_is_off_topic(
+                    turn.embedding, off_topic_anchor, off_topic_threshold
+                ),
             }
         )
         if turn.ai_response:
@@ -388,12 +431,14 @@ def run_pipeline_for_session(session_id: str) -> int:
     session_record = _session_record_dict(record)
     messages = build_messages_for_session(record, session_record)
     # turn_count_side="a"：Step 1 的「輪數 / 平均長度」只數使用者發言。
-    ranked = [
+    # Step 3 已移除：這是 Step 2 通過門檻的全部使用者發言配對，沒有
+    # composite_score / score_detail、沒有排序、沒有取 Top N。
+    pairs = [
         pair
         for pair in run_pipeline(messages, turn_count_side="a")
         if pair["speaker_side"] == "a"
     ]
-    if not ranked:
+    if not pairs:
         return 0
 
     stance_score = _session_user_stance_score(record)
@@ -405,14 +450,15 @@ def run_pipeline_for_session(session_id: str) -> int:
             # side_a = 使用者；side_b 留空——AI 代理人沒有量測到的立場分數。
             "side_a_stance": _stance_for_score(record.topic_id, stance_score),
             "side_b_stance": "",
-            "quality_score": _quality_score(ranked),
+            # 原本是 Step 3 選中配對的 composite_score 平均值；Step 3 移除後留空。
+            "quality_score": None,
             # H-AI 沒有 MatchStanceDrift 的等價紀錄，立場偏移量暫不計入。
             "stance_shift_magnitude": None,
         }
     )
 
     written = 0
-    for pair in ranked:
+    for pair in pairs:
         dimension = get_session_message_dimension(
             session_record, source_message_id=str(pair["user_message_id"])
         )
@@ -432,8 +478,6 @@ def run_pipeline_for_session(session_id: str) -> int:
                 "viewpoint_summary": "、".join(node["name"] for node in lit_nodes),
                 "stance_direction": lit_nodes[0]["stance"] if lit_nodes else "",
                 "source_message_ids": [pair["user_message_id"]],
-                "composite_score": pair["composite_score"],
-                "score_detail": pair["score_detail"],
             }
         ):
             written += 1
