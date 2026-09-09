@@ -240,6 +240,24 @@ if there is no email on file or it is already verified. Rate limited per user
 
 ---
 
+### GET `/api/registration/status/`
+Public (no auth). Whether self-service registration is currently open.
+
+**Response** `200`
+```json
+{ "open": true }
+```
+
+Backed by `PlatformDisplaySetting.registration_open` (see
+`PATCH /api/settings/display/`). The register page and the login page read this
+to show a "registration closed" notice / hide the register link. When it is
+`false`, `POST /api/register/` and `POST /api/email-verification/request/` both
+return `403` `{ "detail": "目前暫停開放註冊。" }` — checked before rate limiting,
+so a closed endpoint does not consume the `register` throttle budget. Researcher
+account creation (`POST /api/accounts/`) is unaffected.
+
+---
+
 ## M2 — Topic Selection & Stance Measurement
 
 ### GET `/stance/topics/`

@@ -1016,6 +1016,7 @@ class PlatformDisplaySettingSerializer(serializers.ModelSerializer):
             "participant_entry_mode",
             "researcher_entry_mode",
             "match_fallback_timeout_minutes",
+            "registration_open",
             "updated_at",
         ]
         read_only_fields = ["updated_at"]

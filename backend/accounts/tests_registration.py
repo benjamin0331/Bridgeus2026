@@ -294,3 +294,115 @@ class RegistrationThrottleTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 429)
+
+
+class RegistrationClosedTests(TestCase):
+    """研究者在設定頁把 registration_open 關掉之後，自助註冊那條路整條 403。
+
+    研究者代開帳號（/api/accounts/）走的是另一組 view，不在這個開關管轄內，
+    這裡不測（見 api/tests_account_management.py）。
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        _mark_email_verified()
+        from api.models import PlatformDisplaySetting
+
+        setting = PlatformDisplaySetting.load()
+        setting.registration_open = False
+        setting.save()
+
+    def test_register_endpoint_is_forbidden_when_closed(self):
+        response = self.client.post("/api/register/", _payload(), format="json")
+        self.assertEqual(response.status_code, 403, response.data)
+        self.assertFalse(User.objects.filter(username="subject01").exists())
+
+    def test_pre_registration_email_verification_is_forbidden_when_closed(self):
+        response = self.client.post(
+            "/api/email-verification/request/",
+            {"email": "someone@example.com"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403, response.data)
+
+    def test_forgot_password_still_sends_a_code_when_registration_is_closed(self):
+        """關閉的是「開新帳號」。已有帳號的人還是要能救回自己的密碼——
+        password-reset 那條路不掛註冊開關。
+        """
+        User.objects.create_user(
+            username="existing",
+            email="existing@example.com",
+            password=STRONG_PASSWORD,
+        )
+        with patch("accounts.views.send_password_reset_code") as mock_send:
+            response = self.client.post(
+                "/api/password-reset/request/",
+                {"email": "existing@example.com"},
+                format="json",
+            )
+        self.assertEqual(response.status_code, 200, response.data)
+        mock_send.assert_called_once()
+
+    def test_logged_in_email_verification_still_works_when_registration_is_closed(self):
+        user = User.objects.create_user(username="member", password=STRONG_PASSWORD)
+        user.email = "member@example.com"
+        user.email_verified_at = None
+        user.save(update_fields=["email", "email_verified_at"])
+        self.client.force_authenticate(user=user)
+
+        with patch("accounts.views.send_email_verification_code") as mock_send:
+            response = self.client.post(
+                "/api/me/email/verify/request/", {}, format="json"
+            )
+        self.assertEqual(response.status_code, 200, response.data)
+        mock_send.assert_called_once()
+
+    def test_closed_register_does_not_consume_throttle_budget(self):
+        """關閉時的 403 必須在限流計數之前發生：否則掃描者能靠狂打已關閉的
+        端點，把之後重新開放時的正常受試者擋在 429 外。
+        """
+        cache.clear()
+        self.addCleanup(cache.clear)
+        patcher = patch.dict(
+            ScopedRateThrottle.THROTTLE_RATES, {"register": "1/hour"}
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        for _ in range(3):
+            closed = self.client.post("/api/register/", _payload(), format="json")
+            self.assertEqual(closed.status_code, 403)
+
+        from api.models import PlatformDisplaySetting
+
+        setting = PlatformDisplaySetting.load()
+        setting.registration_open = True
+        setting.save()
+
+        opened = self.client.post("/api/register/", _payload(), format="json")
+        self.assertEqual(opened.status_code, 201, opened.data)
+
+
+class RegistrationStatusEndpointTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_reports_open_by_default(self):
+        response = self.client.get("/api/registration/status/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {"open": True})
+
+    def test_reflects_the_closed_flag(self):
+        from api.models import PlatformDisplaySetting
+
+        setting = PlatformDisplaySetting.load()
+        setting.registration_open = False
+        setting.save()
+
+        response = self.client.get("/api/registration/status/")
+        self.assertEqual(response.data, {"open": False})
+
+    def test_is_reachable_without_authentication(self):
+        response = self.client.get("/api/registration/status/")
+        self.assertNotEqual(response.status_code, 401)
+        self.assertNotEqual(response.status_code, 403)

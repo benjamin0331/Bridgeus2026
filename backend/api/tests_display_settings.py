@@ -563,6 +563,36 @@ class DisplaySettingsApiTests(APITestCase):
         self.assertEqual(setting.match_fallback_timeout_minutes, 7)
         self.assertEqual(setting.researcher_entry_mode, "mixed")
 
+    def test_registration_open_defaults_to_true_in_payload(self):
+        self.client.force_authenticate(user=self.researcher)
+        response = self.client.get("/api/settings/display/")
+        self.assertIs(response.data["platform"]["registration_open"], True)
+
+    def test_researcher_can_close_and_reopen_registration(self):
+        self.client.force_authenticate(user=self.researcher)
+
+        response = self.client.patch(
+            "/api/settings/display/", {"registration_open": False}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(PlatformDisplaySetting.load().registration_open)
+        self.assertEqual(
+            PlatformDisplaySetting.load().updated_by_id, self.researcher.id
+        )
+
+        self.client.patch(
+            "/api/settings/display/", {"registration_open": True}
+        )
+        self.assertTrue(PlatformDisplaySetting.load().registration_open)
+
+    def test_participant_cannot_close_registration(self):
+        self.client.force_authenticate(user=self.participant)
+        response = self.client.patch(
+            "/api/settings/display/", {"registration_open": False}
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(PlatformDisplaySetting.load().registration_open)
+
     def test_timeout_out_of_range_is_rejected(self):
         self.client.force_authenticate(user=self.researcher)
 

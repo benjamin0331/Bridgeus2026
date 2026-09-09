@@ -1,7 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import './LoginPage.css';
-import { login, requestPasswordReset, confirmPasswordReset } from '../api/auth';
+import {
+  login,
+  requestPasswordReset,
+  confirmPasswordReset,
+  getRegistrationStatus,
+} from '../api/auth';
 
 // 同一張登入卡片內切換：'login' 登入 → 'request' 輸入信箱 → 'confirm' 輸入
 // 驗證碼與新密碼 → 'done' 完成。忘記密碼不換頁，直接在登入介面上進行。
@@ -28,6 +33,20 @@ function LoginPage({ setUser, authMessage = '' }) {
   const [resetFieldErrors, setResetFieldErrors] = useState({});
   const [resetNotice, setResetNotice] = useState('');
   const [resetSubmitting, setResetSubmitting] = useState(false);
+
+  // 關閉自助註冊時不顯示「立即註冊」連結（後端仍會擋，這只是不引導過去）。
+  // 預設 true：讀不到狀態時寧可留著連結。
+  const [registrationOpen, setRegistrationOpen] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    getRegistrationStatus().then((open) => {
+      if (alive) setRegistrationOpen(open);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -213,9 +232,11 @@ function LoginPage({ setUser, authMessage = '' }) {
                 </button>
               </div>
 
-              <div className="login-register-link">
-                還沒有帳號？<Link to="/register">立即註冊</Link>
-              </div>
+              {registrationOpen && (
+                <div className="login-register-link">
+                  還沒有帳號？<Link to="/register">立即註冊</Link>
+                </div>
+              )}
             </>
           )}
 

@@ -14,6 +14,7 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+from api.display_settings import registration_is_open
 from api.serializers import BridgeUsTokenObtainPairSerializer
 from api.token_revocation import revoke_user_tokens
 
@@ -30,6 +31,36 @@ from .serializers import (
 )
 
 logger = logging.getLogger(__name__)
+
+REGISTRATION_CLOSED_MESSAGE = "目前暫停開放註冊。"
+
+
+class RegistrationOpenPermission(permissions.BasePermission):
+    """自助註冊總開關。研究者在設定頁關閉後，這條路上的端點一律 403。
+
+    做成 permission 而不是 view 內的 if：DRF 在 check_throttles() 之前先跑
+    check_permissions()，關閉時直接短路，不會把這次請求算進 register 的
+    限流計數（否則掃描者能靠打已關閉的端點把正常受試者鎖在門外）。
+    """
+
+    message = REGISTRATION_CLOSED_MESSAGE
+
+    def has_permission(self, request, view):
+        return registration_is_open()
+
+
+class RegistrationStatusView(APIView):
+    """GET /api/registration/status/ — 現在開不開放自助註冊。
+
+    公開端點（免登入）：註冊頁掛載時就要據此決定顯示表單還是「暫停開放」，
+    登入頁也用它決定要不要顯示「註冊」連結。
+    """
+
+    authentication_classes = []
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        return Response({"open": registration_is_open()})
 
 
 class ConsentDocumentView(APIView):
@@ -59,7 +90,7 @@ class RegistrationView(APIView):
     """
 
     authentication_classes = []
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [RegistrationOpenPermission]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "register"
 
@@ -254,7 +285,7 @@ class EmailVerificationRequestView(APIView):
     """
 
     authentication_classes = []
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [RegistrationOpenPermission]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "email_verification_request"
 

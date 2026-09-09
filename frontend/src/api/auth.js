@@ -90,6 +90,16 @@ export function confirmMyEmailVerification({ code }) {
     .then((response) => response.data);
 }
 
+// 現在開不開放自助註冊（研究者在設定頁切換）。公開端點、免登入。
+// 讀不到時預設「開放」——把使用者擋在註冊門外的成本，高於偶爾讓一個
+// 已關閉的表單顯示出來（送出時後端仍會回 403）。
+export function getRegistrationStatus() {
+  return api
+    .get('/api/registration/status/')
+    .then((response) => Boolean(response.data?.open))
+    .catch(() => true);
+}
+
 export function register(payload) {
   return api.post('/api/register/', payload).then((response) => {
     return persistSession({

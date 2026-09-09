@@ -445,6 +445,22 @@ function SettingsPage({ user, onReplayTour }) {
             </label>
           </div>
 
+          <div className="settings-display-row">
+            <label className="settings-display-toggle">
+              <input
+                type="checkbox"
+                checked={displaySettings.platform.registration_open}
+                onChange={(e) =>
+                  patchPlatformSetting({ registration_open: e.target.checked })
+                }
+              />
+              開放使用者自助註冊
+            </label>
+            <p className="settings-display-hint">
+              關閉後，註冊頁與註冊前信箱驗證一律拒絕；研究者在帳號管理代開帳號不受影響。
+            </p>
+          </div>
+
           <table className="settings-table">
             <thead>
               <tr>

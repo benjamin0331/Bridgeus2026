@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import './RegisterPage.css';
 import {
   register,
   requestEmailVerification,
   confirmEmailVerification,
+  getRegistrationStatus,
 } from '../api/auth';
 
 // 後端 accounts/consent.py 的 CONSENT_DOCUMENT_PATH。兩邊都是常數，
@@ -25,6 +26,9 @@ function RegisterPage({ setUser }) {
   });
   const [consent, setConsent] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+
+  // null = 還在問後端；true/false = 現在開不開放自助註冊。
+  const [registrationOpen, setRegistrationOpen] = useState(null);
   const [fieldErrors, setFieldErrors] = useState(EMPTY_FIELD_ERRORS);
   const [generalError, setGeneralError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -36,6 +40,16 @@ function RegisterPage({ setUser }) {
   const [verifyBusy, setVerifyBusy] = useState(false);
   const [verifyError, setVerifyError] = useState('');
   const [verifyNotice, setVerifyNotice] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    getRegistrationStatus().then((open) => {
+      if (alive) setRegistrationOpen(open);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const updateField = (name) => (event) => {
     setForm((prev) => ({ ...prev, [name]: event.target.value }));
@@ -139,6 +153,22 @@ function RegisterPage({ setUser }) {
     const text = Array.isArray(messages) ? messages.join(' ') : String(messages);
     return <span className="register-field-error">{text}</span>;
   };
+
+  if (registrationOpen === false) {
+    return (
+      <div className="register-page-container">
+        <div className="register-card">
+          <div className="register-header">
+            <h1>暫停開放註冊</h1>
+            <p>目前沒有開放新帳號註冊，請稍後再試或聯絡研究團隊。</p>
+          </div>
+          <div className="register-footer">
+            已經有帳號了？<Link to="/">返回登入</Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="register-page-container">

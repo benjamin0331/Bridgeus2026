@@ -148,3 +148,13 @@ def get_entry_mode(*, is_researcher: bool) -> str:
 def get_match_fallback_timeout_seconds() -> int:
     """配對等多久之後要詢問使用者改跟 AI 對話。設定值以分鐘存，這裡換算成秒。"""
     return PlatformDisplaySetting.load().match_fallback_timeout_minutes * 60
+
+
+def registration_is_open() -> bool:
+    """現在允不允許受試者自助註冊。
+
+    研究者在設定頁（PATCH /api/settings/display/）切換這個旗標。關閉只擋
+    自助註冊那條路（/api/register/ 與註冊前信箱驗證）；研究者在後台代開
+    帳號（/api/accounts/）走的是另一組 view，不受這裡影響。
+    """
+    return PlatformDisplaySetting.load().registration_open

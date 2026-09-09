@@ -9,6 +9,14 @@
 
 > 每完成一項未 commit 的工作就記在這；commit 後刪掉該行。
 
+- **管理者可在網頁開關「是否開放自助註冊」（新功能，M1）**：`PlatformDisplaySetting` 加 `registration_open` 布林欄（`BooleanField(default=True)`，migration `api/0040`）。研究者在設定頁「顯示設定」面板多一個勾選框，走現有的 `PATCH /api/settings/display/`（`IsResearcher` 把關，序列化器 `PlatformDisplaySettingSerializer` fields 加該欄）。
+  - 執行點：`accounts/views.py` 新增 `RegistrationOpenPermission`（做成 permission class 而非 view 內 if——DRF `check_permissions()` 在 `check_throttles()` 之前跑，關閉時直接短路，不會把請求算進 `register` 限流計數）。掛在 `RegistrationView` 與 `EmailVerificationRequestView`（註冊前那支，不是登入後補驗的 `MeEmailVerificationRequestView`）。關閉時兩者回 `403 {"detail": "目前暫停開放註冊。"}`。研究者代開帳號 `/api/accounts/` 不受影響。
+  - 公開讀取：`GET /api/registration/status/`（`AllowAny`，回 `{"open": bool}`），`accounts/views.RegistrationStatusView` + `accounts/urls.py`。
+  - 前端：`api/auth.js` 的 `getRegistrationStatus()`（讀不到預設 `true`）；`RegisterPage.jsx` 掛載時查，關閉時整頁換成「暫停開放註冊」卡片（不渲染表單）；`LoginPage.jsx` 關閉時隱藏「立即註冊」連結；`SettingsPage.jsx` 顯示設定面板加勾選框 + `SettingsPage.css` 的 `.settings-display-toggle` / `.settings-display-hint`。
+  - 測試：`accounts/tests_registration.py` 的 `RegistrationClosedTests`（5，含「關閉時忘記密碼／登入後補驗信箱仍可寄碼」的回歸測試）+ `RegistrationStatusEndpointTests`（3）；`api/tests_display_settings.py` 的 `DisplaySettingsApiTests` 補 3 項（payload 預設值、研究者可開關、受試者不可）。
+  - 文件：`docs/BridgeUs_API_Spec.md`（新增 `GET /api/registration/status/` 小節）。
+  - ⚠️ 拉到這版要跑 `uv run python manage.py migrate api`。
+
 - **登入可用帳號或 Email（新功能，M1）**：`BridgeUsTokenObtainPairSerializer.validate` 在交給 simplejwt 帳密驗證前，把 email 換成對應帳號的 username（`email__iexact`，email 是 unique）。守衛：某人 username 剛好等於別人 email 時，按 username 登入仍進自己的帳號（先查 `filter(username=login).exists()`）。前端 `LoginPage` label 改「帳號或 Email」；`api/auth.js` 的 `login()` 登入後多打一次 `/api/me/` 取回真正 username（否則首頁問候語／`changePassword` 會用到打字時輸入的 email）。測試 `api/tests_login_with_email.py`（8；其 setUp 會 `cache.clear()`，不然 login throttle 計數會溢到後面跑的測試檔）。文件：API Spec、backend/README、frontend/README。
 - **信箱驗證（新功能，M1）**：註冊「一定要先驗信箱」＋登入後補／換信箱也要驗。
   - 後端：`accounts.EmailVerificationCode`（migration `accounts/0007`，key 是 email＋可空的 user FK，另有 `verified_at`；同樣只存 SHA-256、單次、10 分鐘、錯 5 次作廢）。

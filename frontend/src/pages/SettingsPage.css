@@ -208,6 +208,27 @@
   border-radius: 6px;
 }
 
+.settings-display-toggle {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+  font-size: 14px;
+  color: #555;
+}
+
+.settings-display-toggle input[type='checkbox'] {
+  width: auto;
+  padding: 0;
+  border: 0;
+}
+
+.settings-display-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #888;
+  flex-basis: 100%;
+}
+
 .settings-hint {
   display: block;
   margin-top: 4px;

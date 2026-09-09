@@ -1056,6 +1056,13 @@ class PlatformDisplaySetting(models.Model):
         default=5,
         help_text="配對等待超過這個分鐘數後，詢問使用者要不要改跟 AI 對話",
     )
+    registration_open = models.BooleanField(
+        default=True,
+        help_text=(
+            "關閉時 /api/register/ 與註冊前信箱驗證端點一律回 403；"
+            "研究者代開帳號（/api/accounts/）不受影響"
+        ),
+    )
     # related_name="+"：不需要從 User 反查設定紀錄，這裡只是留個最後修改者。
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
