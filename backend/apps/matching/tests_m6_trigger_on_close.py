@@ -45,6 +45,18 @@ _EMBEDDINGS = {0: _EMB_A0, 2: _EMB_A2}
 
 class TriggerM6PipelineOnCloseTests(TestCase):
     def setUp(self):
+        # Step 2 的離題門檻比對「發言 embedding」與「議題錨點的真實
+        # sentence-transformer 向量」。這個 fixture 用刻意設計的正交假向量
+        # （_EMB_A0/_EMB_A2，為了精準控制 ccnd_semantic_dist），跟真實錨點不
+        # 在同一語意空間，會被整批誤判離題。這裡測的是「關房觸發 pipeline 並
+        # 寫入」，不是離題偵測本身，所以停用離題門檻——離題門檻的行為由
+        # apps/summary/tests_pipeline.py 與 tests_assemble.py 覆蓋。
+        patcher = mock.patch(
+            "apps.summary.pipeline.assemble._message_is_off_topic", return_value=False
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
         self.user_a = User.objects.create_user(username="user_a", password="x")
         self.user_b = User.objects.create_user(username="user_b", password="x")
         self.match = DialogueMatch.objects.create(

@@ -179,6 +179,20 @@ def _submit_questionnaire(client, capture):
 
 @pytest.mark.django_db
 class TestHAIViewpointReviewPipeline:
+    @pytest.fixture(autouse=True)
+    def _disable_off_topic_gate(self):
+        """Step 2 的離題門檻比對「這則發言的 embedding」與「議題錨點的真實
+        sentence-transformer embedding」。_TURNS 用的是刻意設計的正交假向量
+        （_EMB_T1/_EMB_T2，為了精準控制 ccnd_semantic_dist），跟真實錨點不在
+        同一個語意空間，會被整批誤判為離題。這個測試檔驗證的是「觀點進審核」
+        的流程，不是離題偵測本身，所以把離題門檻停用——比照本檔已經 mock 掉
+        真實 Anthropic API 的做法。離題門檻本身的行為由 tests_pipeline.py 與
+        tests_assemble.py 覆蓋。"""
+        with mock.patch(
+            "apps.summary.pipeline.assemble._message_is_off_topic", return_value=False
+        ):
+            yield
+
     def test_submitting_questionnaire_files_user_viewpoint_for_review(
         self, hai_session, django_capture_on_commit_callbacks
     ):
