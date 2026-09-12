@@ -62,6 +62,25 @@ server {
     proxy_set_header X-Forwarded-Proto $scheme;
   }
 
+  # Godot Web build：.html/.js/.wasm/.pck 四個檔必須永遠成套。JS glue 跟 wasm
+  # 對不上的症狀是 `import a:a must be an object`，進度條會卡在最後一格
+  # （檔案其實下載完了，死在 instantiate）。這件事會反覆發生的原因是三者的
+  # 快取行為不一致：38MB 的 .wasm 與 20MB 的 .pck 超過 CDN 可快取的物件大小，
+  # 永遠是新的，偏偏只有 280KB 的 .js 會被邊緣與瀏覽器留下來——於是每次改版
+  # 都可能變成「舊 js + 新 wasm」。
+  #
+  # no-cache 不是不快取，是「每次都帶 ETag 回來問一次」：檔沒變回 304，流量
+  # 幾乎不變，但改版當下一定拿到新的。
+  #
+  # ⚠️ Cloudflare 端要兩件事配合，否則這段等於沒寫：
+  #    1. Caching → Configuration → Browser Cache TTL 設 Respect Existing Headers
+  #       （預設會把回應改寫成 max-age=14400，瀏覽器四小時內不會再問伺服器）
+  #    2. Cache Rule：路徑符合 /godot/* → Bypass cache
+  location ^~ /godot/ {
+    add_header Cache-Control "no-cache" always;
+    try_files $uri =404;
+  }
+
   location / {
     try_files $uri $uri/ /index.html;
   }
