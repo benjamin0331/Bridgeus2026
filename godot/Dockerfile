@@ -4,7 +4,12 @@
 
 FROM debian:bookworm-slim AS godot-binary
 
-ARG GODOT_VERSION=4.7.1-stable
+# ⚠️ 這個版本要跟「匯出 Web build 的那台編輯器」一致：瀏覽器端的引擎是匯出
+# 模板帶進 wasm 的，所以 client 引擎版本 = 匯出時的編輯器版本，而 server 引擎
+# 版本 = 這一行。兩邊都是 Godot 自己的多人連線實作，對不上時最好的情況是沒事，
+# 最壞的情況是難查的同步異常。macOS 端是 Steam 版、會自動升版，所以升級的觸發
+# 點通常在那邊，這裡跟著改。
+ARG GODOT_VERSION=4.7.2-stable
 ARG GODOT_ARCHIVE=Godot_v${GODOT_VERSION}_linux.x86_64
 
 RUN apt-get update \
