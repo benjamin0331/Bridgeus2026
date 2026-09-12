@@ -25,7 +25,11 @@ var _redeem_pending := {}   # peer_id -> session 序號；兌換 HTTP 在途中�
 var _redeem_seq := 0        # 單調遞增；用來分辨「同一個 peer id 的不同連線階段」——
                             # 斷線後新 peer 可能拿到同一個 id，沒有這個序號的話
                             # 上一位的兌換結果會被寫成新來者的身份。
-var _title_ids: Array = []   # 頭銜下拉選單 index → 後端 title_id（0 = 假頭銜，不回寫後端）
+var _title_ids: Array = []   # 頭銜下拉選單 index → 後端 title_id
+                             # （0 = 假頭銜，不回寫後端；-1 = 「不顯示」那一項，
+                             #   回寫 null 明確取消——見 _on_banner_selected）
+const BANNER_NONE_LABEL := "不顯示"   # 下拉選單第一項：取消頭銜，回到頭上什麼都沒有
+const BANNER_NONE_ID := -1
 
 @onready var host_btn = $CanvasLayer/UI_Root/HostButton
 @onready var join_btn = $CanvasLayer/UI_Root/JoinButton
@@ -455,6 +459,7 @@ func _setup_banner_ui() -> void:
 func _load_placeholder_banners() -> void:
 	_title_ids.clear()
 	option_btn.clear()
+	_add_banner_none_item()
 	for t in ["test_1", "test_2", "test_3"]:
 		option_btn.add_item(t)
 		_title_ids.append(0)
@@ -469,14 +474,17 @@ func _fetch_banner_options() -> void:
 		var owned = data.get("owned", [])
 		_title_ids.clear()
 		option_btn.clear()
-		var selected_idx := -1
+		_add_banner_none_item()
 		var selected_id = data.get("selected_id")
+		# selected_id 是 null 代表後端記著「取消顯示」（TitleMeView 的 title_id: null），
+		# 那就停在「不顯示」這一項，讓玩家看得出目前的狀態不是「還沒選過」。
+		var selected_idx := 0 if selected_id == null else -1
 		for i in owned.size():
 			var t = owned[i]
 			option_btn.add_item(str(t.get("name", "")))
 			_title_ids.append(int(t.get("id", 0)))
 			if selected_id != null and int(t.get("id", 0)) == int(selected_id):
-				selected_idx = i
+				selected_idx = _title_ids.size() - 1   # 選單多了「不顯示」，index 不等於 i
 		# 程式設 selected 不會觸發 item_selected（只有玩家點才會），所以這一行只是
 		# 把「上次選的」顯示在下拉選單上；頭上要另外貼，見 _apply_banner_to_local_player。
 		option_btn.selected = selected_idx
@@ -514,12 +522,28 @@ func _apply_level_to_local_player() -> void:
 	for ui in get_tree().get_nodes_in_group("issue_ui"):
 		ui.refresh_level_legend(true)
 
+# 下拉選單第一項固定是「不顯示」。沒有它的話，玩家選過一個頭銜就回不到「頭上
+# 什麼都沒有」的狀態——option_btn 一開始是 selected = -1，但那個狀態點不回去。
+func _add_banner_none_item() -> void:
+	option_btn.add_item(BANNER_NONE_LABEL)
+	_title_ids.append(BANNER_NONE_ID)
+
 # 選了頭銜 → 用目前調色盤顏色貼到自己頭上（P2P 廣播）＋有真 id 才回寫後端。
 func _on_banner_selected(index: int) -> void:
 	var p = _local_player()
+	var tid: int = _title_ids[index] if index < _title_ids.size() else 0
+	if tid == BANNER_NONE_ID:
+		# 取消：空字串會讓 apply_banner 把整個 banner 藏起來（visible = text != ""）。
+		if p:
+			p.set_banner("", color_btn.color)
+		# 後端也要清，否則下次進場 _apply_banner_to_local_player 又把舊頭銜貼回來。
+		# set_my_title(0) 送的是 title_id: null，正是 TitleMeView 的「取消顯示」。
+		# 沒登入（桌面開發的假頭銜）就只做本地，不打一支註定被拒的 POST。
+		if Backend.access_token != "":
+			Backend.set_my_title(0, "#" + color_btn.color.to_html(false))
+		return
 	if p:
 		p.set_banner(option_btn.get_item_text(index), color_btn.color)
-	var tid: int = _title_ids[index] if index < _title_ids.size() else 0
 	if tid > 0:
 		Backend.set_my_title(tid, "#" + color_btn.color.to_html(false))
 

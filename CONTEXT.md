@@ -9,6 +9,12 @@
 
 > 每完成一項未 commit 的工作就記在這；commit 後刪掉該行。
 
+- **Godot 頭銜可以取消顯示（新功能）**：下拉選單原本沒有「回到沒有頭銜」的選項——`option_btn` 一開始是 `selected = -1`，但玩家選過一個之後就點不回那個狀態。現在選單第一項固定是「不顯示」（`BANNER_NONE_LABEL`／`BANNER_NONE_ID = -1`，跟「假頭銜 id=0，不回寫後端」是不同語意）。
+  - 選了它會 `set_banner("", color)`（空字串讓 `apply_banner` 把整個 banner 藏起來），並且**連後端一起清**：`Backend.set_my_title(0, ...)` 送的是 `title_id: null`，正是 `TitleMeView.post` 早就支援的「取消顯示」。不清後端的話下次進場 `_apply_banner_to_local_player` 又會把舊頭銜貼回來。沒登入（桌面開發的假頭銜）就只做本地，不打註定被拒的 POST。
+  - `_fetch_banner_options` 兩處配合：多了「不顯示」之後 owned[i] 的選單 index 不再等於 i；且後端回 `selected_id: null` 時停在「不顯示」那一項，讓玩家看得出現在是「已取消」而不是「還沒選過」。
+  - `_on_banner_color_changed` 不用改——它本來就有 `banner_text != ""` 與 `_title_ids[idx] > 0` 兩道守衛，取消狀態下不會把頭銜又叫回來。
+  - 純本地邏輯，**沒有新增 RPC**，不影響 client/server 協議相容性。
+
 - **Godot 大廳改用匿名代號顯示玩家（新功能）**：聊天／邀請／語音三處原本印 `玩家 <peer_id>`（Godot peer id 是隨機 32 bit，畫面上就是一串數字），改成與 H-H 聊天室同一套的匿名代號（飽食海星、噴水龍…）。
   - 新檔 `godot/Globals/AnonNames.gd`（`class_name`，非 autoload，比照 `Emoji.gd`）：`POOL` 是後端 `apps/matching/services/anonymity.py` 的 `ANONYMOUS_IDS` **手動複製**一份（大廳在桌面開發時沒有後端可問，且這是顯示常數不是模組契約；兩邊註解互指，改一邊要改另一邊）＋純函式 `pick(taken)`：挑第一個沒被佔用的，滿 10 人後加圈數（`香香泥 2`）。
   - 指派方式刻意跟後端不同：後端用 `room_id` 當種子抽樣（固定兩人一室），大廳人數不定且會進出，只能由 server 對著當下佔用狀況逐一發號。
