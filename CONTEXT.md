@@ -9,27 +9,6 @@
 
 > 每完成一項未 commit 的工作就記在這；commit 後刪掉該行。
 
-- **Godot 靜態檔不再被 CDN 凍住舊版（修正，部署）**：`frontend/nginx/default.conf.template` 加 `location ^~ /godot/`，送 `Cache-Control: no-cache`。
-  - 症狀：Safari／無痕開不起大廳，進度條卡在最後一格，console 是 `TypeError: import a:a must be an object`；但同一台的 Chrome「正常」——因為它快取裡有**成套的舊版**，跑的其實是舊客戶端（這也是 server log 一直出現 `checksum failed` 的來源）。
-  - 實測到的根因：線上 `.js` 是 315,645 bytes / 9-09 且 `cf-cache-status: HIT`，而 `.wasm`／`.pck` 是當天新版且永遠 `DYNAMIC`（38MB／20MB 超過 CDN 可快取物件上限）。四個必須成套的檔案裡偏偏只有 280KB 的 `.js` 會被凍住 → 舊 glue 配新 wasm → WASM import 對不上。
-  - **會反覆發生**，所以治根要兩層：邊緣層加 Cache Rule `/godot/*` → Bypass cache；瀏覽器層把 Cloudflare 的 Browser Cache TTL 改成 Respect Existing Headers（預設會改寫成 `max-age=14400`，瀏覽器四小時內根本不回來問，邊緣 purge 對它無效——這就是「邊緣已經是新版但我的 Safari 還是打不開」的原因）。這兩個是 Cloudflare 後台設定，不在 repo 裡。
-  - nginx 語法沒有在本機驗證（這台沒有 nginx／docker），`nginx -t` 在部署容器裡才跑得到。
-
-- **Godot 頭銜可以取消顯示（新功能）**：下拉選單原本沒有「回到沒有頭銜」的選項——`option_btn` 一開始是 `selected = -1`，但玩家選過一個之後就點不回那個狀態。現在選單第一項固定是「不顯示」（`BANNER_NONE_LABEL`／`BANNER_NONE_ID = -1`，跟「假頭銜 id=0，不回寫後端」是不同語意）。
-  - 選了它會 `set_banner("", color)`（空字串讓 `apply_banner` 把整個 banner 藏起來），並且**連後端一起清**：`Backend.set_my_title(0, ...)` 送的是 `title_id: null`，正是 `TitleMeView.post` 早就支援的「取消顯示」。不清後端的話下次進場 `_apply_banner_to_local_player` 又會把舊頭銜貼回來。沒登入（桌面開發的假頭銜）就只做本地，不打註定被拒的 POST。
-  - `_fetch_banner_options` 兩處配合：多了「不顯示」之後 owned[i] 的選單 index 不再等於 i；且後端回 `selected_id: null` 時停在「不顯示」那一項，讓玩家看得出現在是「已取消」而不是「還沒選過」。
-  - `_on_banner_color_changed` 不用改——它本來就有 `banner_text != ""` 與 `_title_ids[idx] > 0` 兩道守衛，取消狀態下不會把頭銜又叫回來。
-  - 純本地邏輯，**沒有新增 RPC**，不影響 client/server 協議相容性。
-
-- **Godot 大廳改用匿名代號顯示玩家（新功能）**：聊天／邀請／語音三處原本印 `玩家 <peer_id>`（Godot peer id 是隨機 32 bit，畫面上就是一串數字），改成與 H-H 聊天室同一套的匿名代號（飽食海星、噴水龍…）。
-  - 新檔 `godot/Globals/AnonNames.gd`（`class_name`，非 autoload，比照 `Emoji.gd`）：`POOL` 是後端 `apps/matching/services/anonymity.py` 的 `ANONYMOUS_IDS` **手動複製**一份（大廳在桌面開發時沒有後端可問，且這是顯示常數不是模組契約；兩邊註解互指，改一邊要改另一邊）＋純函式 `pick(taken)`：挑第一個沒被佔用的，滿 10 人後加圈數（`香香泥 2`）。
-  - 指派方式刻意跟後端不同：後端用 `room_id` 當種子抽樣（固定兩人一室），大廳人數不定且會進出，只能由 server 對著當下佔用狀況逐一發號。
-  - `World/game.gd`：新增 server 權威的 `_peer_names`，在 `_spawn_player`（「成為玩家」的唯一入口）發號，用 `apply_names.rpc()`（authority/call_local/reliable）**整份**廣播名冊——冪等、且遲到玩家 spawn 當下就收到完整名冊，不需要另一條 `request_issue_sync` 式的補救路徑；`_on_peer_disconnected` 清掉並重播，代號放回池子（代價：後來者可能接手離開者的代號，舊聊天記錄變成同名不同人，一場大廳內可接受）。
-  - `UI/game_ui.gd`：只存一份顯示用副本（`set_peer_names()` 由 game.gd 推進來），維持「UI 零 RPC」的既有切分；名冊還沒到就顯示 `AnonNames.UNKNOWN`（「某位玩家」），**不退回顯示 peer id**。
-  - 頭上氣泡維持只顯示議題，沒加名字。後端完全沒動（除了 anonymity.py 的交叉引用註解）。
-  - 驗證：`godot/Globals/anon_names_check.gd`（headless 自我檢查，7 項全過）＋ headless dedicated server 開得起來（三支腳本都編譯過）。**尚未**跑過四 process 的真人對話驗證。
-  - 文件：`godot/CLAUDE.md`（新增一段設計說明＋Running 補上自我檢查指令）。
-
 - **管理者可在網頁開關「是否開放自助註冊」（新功能，M1）**：`PlatformDisplaySetting` 加 `registration_open` 布林欄（`BooleanField(default=True)`，migration `api/0040`）。研究者在設定頁「顯示設定」面板多一個勾選框，走現有的 `PATCH /api/settings/display/`（`IsResearcher` 把關，序列化器 `PlatformDisplaySettingSerializer` fields 加該欄）。
   - 執行點：`accounts/views.py` 新增 `RegistrationOpenPermission`（做成 permission class 而非 view 內 if——DRF `check_permissions()` 在 `check_throttles()` 之前跑，關閉時直接短路，不會把請求算進 `register` 限流計數）。掛在 `RegistrationView` 與 `EmailVerificationRequestView`（註冊前那支，不是登入後補驗的 `MeEmailVerificationRequestView`）。關閉時兩者回 `403 {"detail": "目前暫停開放註冊。"}`。研究者代開帳號 `/api/accounts/` 不受影響。
   - 公開讀取：`GET /api/registration/status/`（`AllowAny`，回 `{"open": bool}`），`accounts/views.RegistrationStatusView` + `accounts/urls.py`。
