@@ -14,6 +14,10 @@ var _occupancy := {}   # trunk_path:String -> peer_id:int（僅 server 使用）
 var _matching_topics := {}   # topic:String -> true，建房 HTTP 在途中；防插隊與重入
 var _peer_users := {}   # peer_id:int -> 後端 user_id:int（僅 server 使用，不同步——
                         # 身份的真值只能放 server；任何 client 可寫的同步屬性都可冒充）
+var _peer_names := {}   # peer_id:int -> 匿名代號:String。server 是唯一發號者，
+                        # 再用 apply_names 廣播整份給所有人；每個 peer 手上這份
+                        # 只是顯示用的副本。代號綁 peer 而不綁 user_id，所以本機
+                        # 開發（無服務金鑰、沒有身份）也照樣有名字可顯示。
 var _ticket := ""       # client 端：join 前向宿主頁拉到的入場券，連上後遞給 server
 var _redeem_pending := {}   # peer_id -> session 序號；兌換 HTTP 在途中。
                             # 節點要等 HTTP 回來才生，光靠 get_node_or_null 擋不住
@@ -269,6 +273,13 @@ func submit_ticket(ticket: String) -> void:
 
 # 4. 唯一的生成角色方法（由 Server 執行，Spawner 會自動空投給所有人）
 func _spawn_player(id):
+	# 匿名代號在這裡發：這是「某個 peer 正式成為玩家」的唯一入口，發號跟生身體
+	# 綁在一起就不會有「有身體卻沒名字」的中間狀態。只有 server 能發——client
+	# 自選的話既擋不住冒名，也沒人能協調撞名（見 Globals/AnonNames.gd）。
+	if multiplayer.is_server() and not _peer_names.has(id):
+		_peer_names[id] = AnonNames.pick(_peer_names.values())
+		apply_names.rpc(_peer_names)
+
 	var player_scene = preload("res://Entities/player/player_00.tscn")
 	var player = player_scene.instantiate()
 
@@ -278,6 +289,16 @@ func _spawn_player(id):
 	# 2. 出生點由玩家自己（authority）在 _ready 依場景的「SpawnPoint」定位，
 	#    這樣 host 與 join 都正確（見 player_00.gd 註解）。
 	add_child(player)
+
+# 4b. 匿名代號名冊廣播。整份送而不是只送異動的那一筆：名冊最多幾十筆，整份
+#     覆蓋天生冪等，遲到的玩家也不必另外補一條同步路徑（不像議題那樣需要
+#     request_issue_sync——他被 spawn 的那一刻就會收到含自己在內的完整名冊）。
+@rpc("authority", "call_local", "reliable")
+func apply_names(table: Dictionary) -> void:
+	_peer_names = table.duplicate()
+	var ui = _ui()
+	if ui:
+		ui.set_peer_names(_peer_names)
 
 # 5. 遲到同步：新玩家生成後向所有人索取議題。收到的人若自己的 authority 玩家已提交
 #    議題，就把它單獨補送給索取者（apply_issue 是 authority-gated，剛好合法）。
@@ -685,6 +706,11 @@ func _do_unseat(peer_id: int) -> void:
 func _on_peer_disconnected(id: int) -> void:
 	if multiplayer.is_server():
 		_peer_users.erase(id)   # 身份表跟著 peer 走；殘留會讓下一個拿到同 id 的人冒名
+		if _peer_names.erase(id):
+			# 代號跟著人走，放回池子讓後面的人可以撿。代價是離開者的名字之後可能
+			# 由別人接手——聊天記錄裡的舊訊息會變成「同名不同人」。在一場大廳內
+			# 可接受（換到的人本來就看不到你之前的對話），換取的是代號不會用完。
+			apply_names.rpc(_peer_names)
 		_redeem_pending.erase(id)   # 未決兌換也要跟著清；序號機制另外擋住晚到的回呼寫錯身份
 		_do_unseat(id)   # 等待中玩家斷線 → 釋放位子，別卡死配對
 		# 斷線（含直接關分頁——WS 連線只是被動掉線，沒有任何「離開」訊號）不會

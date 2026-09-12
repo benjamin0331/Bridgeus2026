@@ -9,6 +9,15 @@
 
 > 每完成一項未 commit 的工作就記在這；commit 後刪掉該行。
 
+- **Godot 大廳改用匿名代號顯示玩家（新功能）**：聊天／邀請／語音三處原本印 `玩家 <peer_id>`（Godot peer id 是隨機 32 bit，畫面上就是一串數字），改成與 H-H 聊天室同一套的匿名代號（飽食海星、噴水龍…）。
+  - 新檔 `godot/Globals/AnonNames.gd`（`class_name`，非 autoload，比照 `Emoji.gd`）：`POOL` 是後端 `apps/matching/services/anonymity.py` 的 `ANONYMOUS_IDS` **手動複製**一份（大廳在桌面開發時沒有後端可問，且這是顯示常數不是模組契約；兩邊註解互指，改一邊要改另一邊）＋純函式 `pick(taken)`：挑第一個沒被佔用的，滿 10 人後加圈數（`香香泥 2`）。
+  - 指派方式刻意跟後端不同：後端用 `room_id` 當種子抽樣（固定兩人一室），大廳人數不定且會進出，只能由 server 對著當下佔用狀況逐一發號。
+  - `World/game.gd`：新增 server 權威的 `_peer_names`，在 `_spawn_player`（「成為玩家」的唯一入口）發號，用 `apply_names.rpc()`（authority/call_local/reliable）**整份**廣播名冊——冪等、且遲到玩家 spawn 當下就收到完整名冊，不需要另一條 `request_issue_sync` 式的補救路徑；`_on_peer_disconnected` 清掉並重播，代號放回池子（代價：後來者可能接手離開者的代號，舊聊天記錄變成同名不同人，一場大廳內可接受）。
+  - `UI/game_ui.gd`：只存一份顯示用副本（`set_peer_names()` 由 game.gd 推進來），維持「UI 零 RPC」的既有切分；名冊還沒到就顯示 `AnonNames.UNKNOWN`（「某位玩家」），**不退回顯示 peer id**。
+  - 頭上氣泡維持只顯示議題，沒加名字。後端完全沒動（除了 anonymity.py 的交叉引用註解）。
+  - 驗證：`godot/Globals/anon_names_check.gd`（headless 自我檢查，7 項全過）＋ headless dedicated server 開得起來（三支腳本都編譯過）。**尚未**跑過四 process 的真人對話驗證。
+  - 文件：`godot/CLAUDE.md`（新增一段設計說明＋Running 補上自我檢查指令）。
+
 - **管理者可在網頁開關「是否開放自助註冊」（新功能，M1）**：`PlatformDisplaySetting` 加 `registration_open` 布林欄（`BooleanField(default=True)`，migration `api/0040`）。研究者在設定頁「顯示設定」面板多一個勾選框，走現有的 `PATCH /api/settings/display/`（`IsResearcher` 把關，序列化器 `PlatformDisplaySettingSerializer` fields 加該欄）。
   - 執行點：`accounts/views.py` 新增 `RegistrationOpenPermission`（做成 permission class 而非 view 內 if——DRF `check_permissions()` 在 `check_throttles()` 之前跑，關閉時直接短路，不會把請求算進 `register` 限流計數）。掛在 `RegistrationView` 與 `EmailVerificationRequestView`（註冊前那支，不是登入後補驗的 `MeEmailVerificationRequestView`）。關閉時兩者回 `403 {"detail": "目前暫停開放註冊。"}`。研究者代開帳號 `/api/accounts/` 不受影響。
   - 公開讀取：`GET /api/registration/status/`（`AllowAny`，回 `{"open": bool}`），`accounts/views.RegistrationStatusView` + `accounts/urls.py`。

@@ -14,6 +14,8 @@ var _voice_peer_id := -1
 var _react_buttons: Array[Button] = []
 var _react_bars: Array[ColorRect] = []
 var _reacted_targets := {}   # target_id → 已選的 idx（一人對一議題只回一個表情）
+var _peer_names := {}        # peer_id → 匿名代號。由 game.gd 的 apply_names 推進來
+                             # （UI 一如既往不碰 RPC），只拿來顯示。
 var _count_col: VBoxContainer
 var _count_labels: Array[Label] = []
 const REACT_COL_W := 120.0   # Read 面板右側表情統計欄寬度
@@ -435,7 +437,7 @@ func show_invite(from_id: int, is_voice := false):
 	_invite_from = from_id
 	_invite_is_voice = is_voice
 	var kind = "語音通話" if is_voice else "聊天"
-	_invite_label.text = "玩家 %d 想和你%s" % [from_id, kind]
+	_invite_label.text = "%s 想和你%s" % [_peer_name(from_id), kind]
 	_invite.visible = true
 	_update_menu()
 
@@ -480,6 +482,16 @@ func _set_chat_active(active: bool):
 	_chat_input.editable = active
 	_chat_send_btn.disabled = not active
 
+# --- 匿名代號 ------------------------------------------------------------
+# game.gd 收到 apply_names 後推進來；UI 只留一份顯示用副本。
+func set_peer_names(table: Dictionary) -> void:
+	_peer_names = table
+
+# 名冊還沒到（或那個 peer 剛斷線）就退回 AnonNames.UNKNOWN，刻意不退回顯示
+# peer id——那串數字正是這個功能要換掉的東西。
+func _peer_name(peer_id: int) -> String:
+	return _peer_names.get(peer_id, AnonNames.UNKNOWN)
+
 func _send_chat():
 	if not _chat_active:
 		return
@@ -496,7 +508,7 @@ func append_chat(from_id: int, text: String):
 	# Auto-open the window if a message arrives before it's shown.
 	if not _chat.visible:
 		open_chat(from_id)
-	var who = "我" if from_id == multiplayer.get_unique_id() else "玩家 %d" % from_id
+	var who = "我" if from_id == multiplayer.get_unique_id() else _peer_name(from_id)
 	_chat_log.append_text("[b]%s：[/b]%s\n" % [who, text])
 
 # --- voice call (open_voice / voice_peer_left called by the player) --------
@@ -510,7 +522,7 @@ func _send_voice_invite():
 
 func open_voice(other_id: int):
 	_voice_peer_id = other_id
-	_voice_title.text = "語音通話中（玩家 %d）" % other_id
+	_voice_title.text = "語音通話中（%s）" % _peer_name(other_id)
 	# 滑桿歸中性（原音）+ 更新說明文字。
 	_pitch_slider.value = 1.0
 	_pitch_label.text = "音高 低沉↔尖細：1.00"
