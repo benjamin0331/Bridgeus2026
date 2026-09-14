@@ -6,8 +6,19 @@ Same architecture as `nuclear_node_model` (topic 102): `hfl/chinese-roberta-wwm-
 fine-tuned as a macro classifier (`model_macro/`) plus one micro classifier per
 macro class (`model_micro_<class_id>/`).
 
-Training source: `woman_army_23_pytorch` (trained by 黃筱筑, provided as
-`map_woman.json` + the model directories on 2026-07-30).
+Training source: `woman_army_24_149_pytorch` (trained by 黃筱筑, provided as
+`map_woman.json` + the model directories on 2026-08-29). It replaced
+`woman_army_23_pytorch` (2026-07-30): same 6 macro classes, but the cluster
+space grew from 23 to 24 — cluster 23 "制度完善與否問題" was added under macro
+class 3 (軍中狀況), and clusters 6/11/12 were renamed. `class_maps.json` is a
+verbatim copy of that drop's `map_woman.json`.
+
+Cluster 6 stopped being a "/"-joined compound label in this version
+("歐洲徵兵制度/他國徵兵制度" -> "他國徵兵制度"), so it was dropped from
+`COMPOUND_CLUSTER_IDS` in `women_conscription_node_classifier.py`. Clusters 1
+and 12 do contain a "/" but are deliberately not in that set — pending
+confirmation from the trainer that their slash reads as "or" rather than as a
+merge of two distinct sub-topics.
 
 ## Class structure — 5 real classes, not 6
 

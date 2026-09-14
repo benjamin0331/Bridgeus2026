@@ -192,7 +192,7 @@ def classify(text: str) -> dict[str, Any]:
 # rather than one concept. Emitting the raw compound string as a node name is
 # misleading, so for these ids only, pick the single "/" segment whose
 # embedding is closest (cosine) to the message.
-COMPOUND_CLUSTER_IDS = {6, 9, 11, 17}
+COMPOUND_CLUSTER_IDS = {9, 11, 17}
 
 
 def _resolve_point_name(cleaned_text: str, cluster_id: int, cluster_name: str) -> str:
