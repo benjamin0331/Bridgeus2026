@@ -78,26 +78,38 @@ def _ensure_loaded() -> dict[str, Any]:
 
 
 def _get_micro_model(class_id: int):
+    """Load (and memoise) the micro model for one macro class.
+
+    The whole lookup-then-load runs under `_lock`, matching
+    women_conscription_node_classifier. Without it, callers that hit the same
+    cold class_id concurrently each load their own copy of the weights
+    (~391MB) — on CUDA that is a straight doubling of VRAM. This used to be
+    unreachable because a batch was analysed one turn at a time; it stopped
+    being unreachable when semantic_tree.analyze_pending_ai_conversations
+    started running a batch in parallel. See
+    api/tests_ccnd_tree_persistence.py.
+    """
     state = _ensure_loaded()
-    cache = state["micro_cache"]
-    if class_id in cache:
+    with _lock:
+        cache = state["micro_cache"]
+        if class_id in cache:
+            return cache[class_id]
+
+        micro_dir = MODEL_DIR / f"model_micro_{class_id}"
+        if not (micro_dir / "config.json").exists() or not (micro_dir / "model.safetensors").exists():
+            cache[class_id] = None
+            return None
+
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained(str(micro_dir))
+        model = AutoModelForSequenceClassification.from_pretrained(str(micro_dir))
+        model.to(state["device"])
+        model.eval()
+        mapping = _load_label_mapping(micro_dir)
+
+        cache[class_id] = (tokenizer, model, mapping)
         return cache[class_id]
-
-    micro_dir = MODEL_DIR / f"model_micro_{class_id}"
-    if not (micro_dir / "config.json").exists() or not (micro_dir / "model.safetensors").exists():
-        cache[class_id] = None
-        return None
-
-    from transformers import AutoModelForSequenceClassification, AutoTokenizer
-
-    tokenizer = AutoTokenizer.from_pretrained(str(micro_dir))
-    model = AutoModelForSequenceClassification.from_pretrained(str(micro_dir))
-    model.to(state["device"])
-    model.eval()
-    mapping = _load_label_mapping(micro_dir)
-
-    cache[class_id] = (tokenizer, model, mapping)
-    return cache[class_id]
 
 
 def classify(text: str) -> dict[str, Any]:
