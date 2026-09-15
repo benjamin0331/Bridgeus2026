@@ -4,6 +4,7 @@ import os
 import re
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from typing import Any
 
@@ -22,6 +23,10 @@ DEFAULT_OPENAI_TIMEOUT_SECONDS = 20.0
 # mid-level category to stay readable (max 4 visual layers). See
 # prompt_experiments/li-depth-recommendation.md in the CCND prototype.
 MAX_ANALYSIS_ITEMS = 2
+# 同一批次最多同時跑幾則分析（本地分類器路徑）。刻意用常數而不是 env：這個專案
+# 已經吃過各機器 env 不一致的虧（SEMANTIC_TREE_AI_TOPIC_IDS / OPENAI_MODEL），
+# 不要再多一個會讓「同樣的輸入在不同機器上表現不同」的旋鈕。
+MAX_PARALLEL_ANALYSIS = 5
 MAX_PATH_DEPTH = 1
 MIN_CONFIDENCE = 0.55
 SEMANTIC_TREE_STATS_KEY = "semantic_tree"
@@ -1928,29 +1933,56 @@ def analyze_pending_ai_conversations(
     ):
         raise MissingOpenAIApiKey("server 缺少 OPENAI_API_KEY，無法呼叫 OpenAI。")
 
-    # 分析跑在鎖外面，套在一棵**拋棄式**的工作樹上。逐則套用是必要的：同一批的
-    # 下一則要看得到前一則長出來的節點，那是餵給模型的合併依據，拿掉會讓同一批
-    # 裡冒出近義節點。但這棵樹不能是最後要存的那一棵——真正算數的套用在鎖裡對
-    # DB 最新的樹重做一次，共用同一棵的話那一輪會被套兩次：訊息紀錄靠
-    # _append_node_message 的去重擋下來了，但 applyMode 會把新節點記成
-    # merge-existing，analysisHistory 這份研究稽核資料就失真了。
+    # 分析跑在鎖外面，套在一棵**拋棄式**的工作樹上。這棵樹不能是最後要存的那一
+    # 棵——真正算數的套用在鎖裡對 DB 最新的樹重做一次，共用同一棵的話那一輪會被
+    # 套兩次：訊息紀錄靠 _append_node_message 的去重擋下來了，但 applyMode 會把
+    # 新節點記成 merge-existing，analysisHistory 這份研究稽核資料就失真了。
     working_tree = deepcopy(owner_state["treeData"])
-    analyzed = []
-    for turn in pending_turns:
-        source_message = _ai_turn_to_source(turn)
-        result = analyze_text_for_tree(
+    sources = [(turn, _ai_turn_to_source(turn)) for turn in pending_turns]
+
+    def analyse(turn, tree):
+        return analyze_text_for_tree(
             topic_id=session_record.get("topic_id"),
             text=turn.user_prompt,
-            tree=working_tree,
+            tree=tree,
             anchors=state["anchors"],
             anchor_descriptions=anchor_descriptions,
         )
-        apply_analysis_items_to_tree(
-            working_tree,
-            result.get("items", []),
-            source_message=source_message,
-        )
-        analyzed.append((turn, source_message, result))
+
+    if len(sources) > 1 and uses_local_classifier(session_record.get("topic_id")):
+        # 本地分類器路徑：同一批次並行。這裡的並行是**語意等價**的——
+        # `build_candidate_items(text, anchors)` 根本不吃樹，樹在
+        # validate_analysis_items 裡只影響純資訊欄位 mergeTargetName，而真正的
+        # 合併是下面鎖裡的 apply_analysis_items_to_tree 對最新的樹重新判定。
+        # 所以並行與循序的最終樹完全相同。
+        #
+        # 為什麼值得做：實測（2026-09-15，143 個有樹的 session）同批次內每一則
+        # 的分析耗時中位數 1.59 秒、p90 9.0 秒，而 batch size 是 5。時間不在
+        # BERT 推論，在每個節點多打的那一次 classify_stance_with_openai——那是
+        # 阻塞式 HTTP，執行緒期間 GIL 是放開的，所以 thread pool 就夠。
+        #
+        # working_tree 在這個分支只被讀不被寫，5 條執行緒共用同一棵是安全的。
+        with ThreadPoolExecutor(
+            max_workers=min(len(sources), MAX_PARALLEL_ANALYSIS)
+        ) as pool:
+            results = list(pool.map(lambda item: analyse(item[0], working_tree), sources))
+        analyzed = [
+            (turn, source_message, result)
+            for (turn, source_message), result in zip(sources, results)
+        ]
+    else:
+        # OpenAI 路徑維持循序：那條的 prompt 夾帶整棵樹與現有節點清單，同一批的
+        # 下一則要看得到前一則長出來的節點才合併得起來（見 build_openai_request
+        # 的「合併規則」）。並行會讓整批都看到同一棵起始樹，近義節點就會增生。
+        analyzed = []
+        for turn, source_message in sources:
+            result = analyse(turn, working_tree)
+            apply_analysis_items_to_tree(
+                working_tree,
+                result.get("items", []),
+                source_message=source_message,
+            )
+            analyzed.append((turn, source_message, result))
 
     analyzed_count = 0
     with transaction.atomic():

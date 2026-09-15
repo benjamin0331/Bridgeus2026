@@ -354,3 +354,283 @@ def test_first_analysis_records_each_turn_on_the_node_exactly_once(
     # 鎖裡就變成第二次套用，這裡會讀到 merge-existing。
     applied = owner["analysisHistory"][0]["appliedItems"]
     assert [item["applyMode"] for item in applied] == ["new"]
+
+
+# ── 同一批次的分析並行化 ──────────────────────────────────────────────
+#
+# 實測（2026-09-15，143 個有樹的 session）：同批次內每一則的分析耗時中位數
+# 1.59 秒、p90 9.0 秒，batch size 是 5，所以一次 analyze 請求中位數就要 8 秒。
+# 時間不在 BERT 推論，在每個節點多打的那一次 classify_stance_with_openai。
+
+def _pending_turns(user, count):
+    return [
+        AIConversation.objects.create(
+            user=user,
+            session_id=SESSION_ID,
+            topic_id=TOPIC_ID,
+            user_prompt=f"第 {i} 則發言：核廢料的最終處置還沒有解方。",
+            ai_response="…",
+        )
+        for i in range(count)
+    ]
+
+
+def _stub_result(text, point_name=None):
+    return {
+        "items": [
+            {
+                "claimText": text,
+                "anchorId": "anchor_safety",
+                "path": [],
+                "pointName": point_name or f"節點-{text[2]}",
+                "stance": "反對",
+                "confidence": 0.9,
+            }
+        ],
+        "invalidItems": [],
+        "model": "test-stub",
+    }
+
+
+def test_local_classifier_batch_runs_in_parallel(user, stored_record, monkeypatch):
+    """本地分類器議題的同一批次必須並行跑。
+
+    並行在這條路上是**語意等價**的：`build_candidate_items(text, anchors)`
+    根本不吃樹，樹只在 validate_analysis_items 影響純資訊欄位 mergeTargetName，
+    真正的合併是鎖裡的 apply_analysis_items_to_tree 對最新的樹重新判定。
+    """
+    import threading
+    from apps.matching.services import semantic_tree as st
+
+    turns = _pending_turns(user, 3)
+    monkeypatch.setattr(st, "uses_local_classifier", lambda topic_id: True)
+
+    barrier = threading.Barrier(3)
+    observed = {"parallel": False}
+
+    def stub(**kwargs):
+        try:
+            barrier.wait(timeout=5)
+            observed["parallel"] = True
+        except threading.BrokenBarrierError:
+            # 循序執行時第一個就會等到逾時，旗標維持 False。
+            pass
+        return _stub_result(kwargs["text"])
+
+    monkeypatch.setattr(st, "analyze_text_for_tree", stub)
+
+    session_record = _session_record(user)
+    st.analyze_pending_ai_conversations(
+        session_record=session_record,
+        session_id=SESSION_ID,
+        user_id=user.id,
+        root_name="核能發電",
+    )
+
+    assert observed["parallel"], "同一批次的分析應該並行，不是一則跑完再跑下一則"
+
+    # 並行不得打亂套用順序：新分析的三則必須照 turn 的時間序接在後面。
+    # （前面那筆 "seed-turn" 來自 stored_record fixture 的樹——鎖裡會從 DB
+    # 重讀並採用那一份，所以它會留在清單開頭。）
+    owner = session_record["semantic_tree"]["participants"]["user"]
+    expected = [str(t.id) for t in turns]
+    assert owner["analyzedSourceIds"][-3:] == expected
+    assert [h["sourceId"] for h in owner["analysisHistory"]] == expected
+
+
+def test_openai_path_stays_sequential_so_merging_context_survives(
+    user, stored_record, monkeypatch
+):
+    """OpenAI 路徑必須維持循序。
+
+    那條路的 prompt 夾帶整棵樹與現有節點清單，同批的下一則要看得到前一則長出
+    的節點才合併得起來（見 build_openai_request 的「合併規則」）。並行會讓 5 則
+    都看到同一棵起始樹，近義節點就會增生。
+    """
+    from apps.matching.services import semantic_tree as st
+
+    _pending_turns(user, 3)
+    monkeypatch.setattr(st, "uses_local_classifier", lambda topic_id: False)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    seen_node_counts = []
+
+    def stub(**kwargs):
+        anchor = next(
+            (a for a in kwargs["tree"].get("children", []) if a["id"] == "anchor_safety"),
+            {"children": []},
+        )
+        seen_node_counts.append(len(anchor.get("children") or []))
+        return _stub_result(kwargs["text"])
+
+    monkeypatch.setattr(st, "analyze_text_for_tree", stub)
+
+    st.analyze_pending_ai_conversations(
+        session_record=_session_record(user),
+        session_id=SESSION_ID,
+        user_id=user.id,
+        root_name="核能發電",
+    )
+
+    # 每一則都該比前一則多看到一個節點；並行的話三次都會看到同一個數字。
+    assert seen_node_counts == sorted(set(seen_node_counts)), (
+        f"後一則沒有看到前一則長出的節點：{seen_node_counts}"
+    )
+    assert len(set(seen_node_counts)) == 3, (
+        f"三則看到的樹應該逐次成長，實際：{seen_node_counts}"
+    )
+
+
+def test_nuclear_micro_model_cache_is_guarded_by_the_lock(monkeypatch):
+    """topic 102 的 micro model 載入必須在鎖裡。
+
+    女性議題那支（women_conscription_node_classifier）本來就包了 `with _lock`，
+    核能這支沒有。循序執行時碰不到，一旦同批次並行，多條執行緒會同時 miss 同一
+    個 class_id 並各自載入一份 391MB 權重——CUDA 上就是 VRAM 直接翻倍。
+    """
+    import threading
+    from apps.matching.services import nuclear_node_classifier as nc
+
+    import time
+
+    loads = []
+    load_lock = threading.Lock()
+
+    def fake_from_pretrained(path, *a, **kw):
+        # 停一下，讓沒有鎖的版本確實有機會三條同時進到載入區。
+        # 不用 Barrier：有鎖時只有一條進得來，barrier 必然 broken，
+        # 會噴出跟受測行為無關的執行緒例外警告。
+        time.sleep(0.2)
+        with load_lock:
+            loads.append(str(path))
+
+        class _M:
+            def to(self, *_a, **_kw): return self
+            def eval(self): return self
+        return _M()
+
+    monkeypatch.setattr(nc, "_state", {
+        "device": "cpu", "micro_cache": {},
+        "class_name_map": {}, "cluster_name_map": {},
+        "macro_tokenizer": None, "macro_model": None, "macro_mapping": {},
+    })
+    monkeypatch.setattr(nc, "_ensure_loaded", lambda: nc._state)
+    monkeypatch.setattr(nc.Path, "exists", lambda self: True)
+    monkeypatch.setattr(nc, "_load_label_mapping", lambda d: {})
+
+    import transformers
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", fake_from_pretrained)
+    monkeypatch.setattr(
+        transformers.AutoModelForSequenceClassification, "from_pretrained", fake_from_pretrained
+    )
+
+    threads = [threading.Thread(target=lambda: nc._get_micro_model(0)) for _ in range(3)]
+    for t in threads: t.start()
+    for t in threads: t.join(timeout=10)
+
+    # 有鎖的話只有第一條會真的載入；沒鎖的話三條都會載入一遍。
+    assert len(loads) <= 2, f"同一個 micro model 被重複載入 {len(loads)} 次（權重約 391MB）"
+
+
+def _normalise_tree(node, turn_index):
+    """把樹壓成可跨次比對的形狀：去掉時間戳，把 turn id 換成該批次內的序號。"""
+    return {
+        "id": node.get("id"),
+        "name": node.get("name"),
+        "type": node.get("type"),
+        "claimText": node.get("claimText"),
+        "messages": [
+            {
+                "text": m.get("text"),
+                "stance": m.get("stance"),
+                "mode": m.get("mode"),
+                "turn": turn_index.get(str(m.get("sourceMessageId"))),
+            }
+            for m in node.get("messages") or []
+        ],
+        "children": [_normalise_tree(c, turn_index) for c in node.get("children") or []],
+    }
+
+
+def test_parallel_and_sequential_produce_the_same_tree(db, monkeypatch):
+    """並行與循序必須長出**一模一樣**的樹，包含合併行為與節點 id。
+
+    這是並行化唯一真正要證明的事。先前那次量測用的 stub 每則回傳不同的
+    pointName，整場沒發生過合併，等於沒測到關鍵情況。這裡刻意讓同一批次裡
+    三則指向同一個 pointName——如果並行讓後面幾則看不到前面長出的節點而
+    另開新節點，這個測試就會紅。
+
+    保證來源不是「剛好沒事」：真正的合併發生在鎖裡的
+    apply_analysis_items_to_tree，它對 DB 上最新的樹、**照 turn 順序循序**套用；
+    鎖外那趟只是拿來餵給模型的脈絡，而本地分類器根本不吃樹。
+    """
+    from apps.matching.services import semantic_tree as st
+
+    # 同一批次內刻意製造合併：0/1/3 同名，2 不同名。
+    POINT_NAMES = ["核廢最終處置", "核廢最終處置", "事故風險", "核廢最終處置"]
+
+    def run(session_id, parallel):
+        user = User.objects.create_user(username=f"eq-{session_id}", password="pw")
+        DialogueSessionRecord.objects.create(
+            user=user, session_id=session_id, topic_id=TOPIC_ID,
+            topic_title="核能發電", collection_name="c",
+            session_state={}, semantic_tree_state={},
+            status=DialogueSessionRecord.Status.ACTIVE,
+            last_activity_at=timezone.now(),
+        )
+        turns = [
+            AIConversation.objects.create(
+                user=user, session_id=session_id, topic_id=TOPIC_ID,
+                user_prompt=f"第 {i} 則發言：核廢料的最終處置還沒有解方。",
+                ai_response="…",
+            )
+            for i in range(len(POINT_NAMES))
+        ]
+        turn_index = {str(t.id): i for i, t in enumerate(turns)}
+
+        monkeypatch.setattr(st, "uses_local_classifier", lambda topic_id: parallel)
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+        def stub(**kwargs):
+            i = int(kwargs["text"][2])
+            return {
+                "items": [{
+                    "claimText": f"主張 {i}",
+                    "anchorId": "anchor_safety",
+                    "path": [],
+                    "pointName": POINT_NAMES[i],
+                    "stance": "反對" if i % 2 else "支持",
+                    "confidence": 0.9,
+                }],
+                "invalidItems": [],
+                "model": "test-stub",
+            }
+
+        monkeypatch.setattr(st, "analyze_text_for_tree", stub)
+
+        record = {
+            "user_id": user.id, "session_id": session_id, "topic_id": TOPIC_ID,
+            "topic_title": "核能發電", "collection_name": "c",
+            "survey_context": {}, "session": {},
+        }
+        st.analyze_pending_ai_conversations(
+            session_record=record, session_id=session_id,
+            user_id=user.id, root_name="核能發電",
+        )
+        owner = record["semantic_tree"]["participants"]["user"]
+        return _normalise_tree(owner["treeData"], turn_index), owner
+
+    parallel_tree, parallel_owner = run("eq-parallel", True)
+    sequential_tree, _ = run("eq-sequential", False)
+
+    assert parallel_tree == sequential_tree
+
+    # 這個測試本身要有意義：合併必須真的發生過，否則它只是在比兩棵各自獨立的樹。
+    safety = next(
+        a for a in parallel_tree["children"] if a["name"] == "核能安全"
+    )
+    merged = next(c for c in safety["children"] if c["name"] == "核廢最終處置")
+    assert [m["turn"] for m in merged["messages"]] == [0, 1, 3], (
+        "0/1/3 應該合併進同一個節點且保持順序"
+    )
+    assert len(safety["children"]) == 2, "同名的三則不該各自開一個節點"
