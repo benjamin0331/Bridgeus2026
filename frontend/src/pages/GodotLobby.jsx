@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import api from '../api/client';
+import api, { getVerifiedAccessToken } from '../api/client';
 import './GodotLobby.css';
 
 // Godot web build 是否已放進 public/godot/。抓 .wasm（永遠會匯出、不會被
@@ -60,7 +60,9 @@ export default function GodotLobby() {
     // 同一個瀏覽器信任域，跟 React 把 token 放 localStorage 是同一件事。
     // 不再交 user_id：對遊戲 server 的身份識別改走一次性入場券（見下），
     // client 不需要、也不該知道要自報什麼 id（自報的 id 就是可冒充的 id）。
-    frameWindow.bridgeus_token = localStorage.getItem('access') || '';
+    // 交出去之前要驗身分：token 一旦進了 iframe 就不再經過任何攔截，
+    // 帶錯的話 Godot client 會以另一個帳號去打議題／頭銜 API。
+    frameWindow.bridgeus_token = getVerifiedAccessToken() || '';
     frameWindow.bridgeus_api_base = `${api.defaults.baseURL || ''}/api`;
 
     // 拉式發券：Godot 每次要連線前呼叫這個函式，完成後把券寫進 bridgeus_ticket

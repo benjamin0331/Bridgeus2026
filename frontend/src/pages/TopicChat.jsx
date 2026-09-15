@@ -5,7 +5,7 @@ import './TopicChat.css';
 import ConversationTreePanel from '../components/ConversationTreePanel';
 import SurveyModal from '../components/SurveyModal';
 import StanceReuseModal from '../components/StanceReuseModal';
-import api from '../api/client';
+import api, { getVerifiedAccessToken } from '../api/client';
 import { useNotifications } from '../context/NotificationsContext';
 import { useMatchingHeartbeat } from '../context/MatchingHeartbeatContext';
 
@@ -758,7 +758,10 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
   }, []);
 
   const connectMatchWebSocket = useCallback((roomId) => {
-    const token = localStorage.getItem('access');
+    // WS 的 token 走 query string，不經過 axios 的 request interceptor，
+    // 所以帳號一致性要在這裡自己檢查一次——否則這個瀏覽器切換帳號之後，
+    // 掉線重連會拿新帳號的 token 去連上一位的配對房。
+    const token = getVerifiedAccessToken();
     if (!token) {
       setMatchChatError('登入已過期，請重新登入。');
       return null;
@@ -1770,7 +1773,10 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
       return;
     }
 
-    const token = localStorage.getItem('access');
+    // 這支是自己組 Authorization 的裸 fetch（要 keepalive，axios 給不了），
+    // 同樣繞過 interceptor。離開頁面時送出，帳號不符的話會去取消**另一位**
+    // 使用者的配對佇列。
+    const token = getVerifiedAccessToken();
     if (!token) {
       return;
     }
@@ -1937,7 +1943,8 @@ function TopicChat({ user, issues, issuesLoaded, entryMode }) {
   };
 
   const connectDialogueWebSocket = (activeSessionId) => {
-    const token = localStorage.getItem('access');
+    // 同 connectMatchWebSocket：token 走 query string，不經過 interceptor。
+    const token = getVerifiedAccessToken();
     if (!token) {
       throw new Error('登入已過期，請重新登入。');
     }

@@ -1,0 +1,74 @@
+/* 背景刻意用不透明色而不是半透明：這一層的用途之一是遮住上一位受試者的
+   對話內容（共用機器＋共用 localStorage 的實驗情境），透出來就失去意義。 */
+.account-switched-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: #1b1f26;
+}
+
+.account-switched-card {
+  width: 100%;
+  max-width: 460px;
+  padding: 28px;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+.account-switched-card h2 {
+  margin: 0 0 14px;
+  font-size: 1.15rem;
+  line-height: 1.5;
+}
+
+.account-switched-card p {
+  margin: 0 0 12px;
+  font-size: 0.92rem;
+  line-height: 1.7;
+  color: #333;
+}
+
+.account-switched-hint {
+  font-size: 0.85rem !important;
+  color: #666 !important;
+}
+
+.account-switched-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 18px 0 12px;
+}
+
+.account-switched-actions button {
+  flex: 1 1 160px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 0.92rem;
+  cursor: pointer;
+}
+
+.account-switched-primary {
+  border: none;
+  background: #2f6fed;
+  color: #fff;
+}
+
+.account-switched-primary:hover {
+  background: #2559c4;
+}
+
+.account-switched-secondary {
+  border: 1px solid #c9ced6;
+  background: #fff;
+  color: #333;
+}
+
+.account-switched-secondary:hover {
+  background: #f2f4f7;
+}

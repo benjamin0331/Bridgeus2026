@@ -2,13 +2,21 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { Routes, Route, useNavigate, useParams, useLocation } from 'react-router-dom'
 import './App.css'
 
-import api, { AUTH_LOGOUT_EVENT, clearAuthStorage } from './api/client'
+import api, {
+  AUTH_IDENTITY_CHANGED_EVENT,
+  AUTH_LOGOUT_EVENT,
+  anchorAuthIdentity,
+  clearAuthIdentity,
+  clearAuthStorage,
+  detectIdentityChange,
+} from './api/client'
 import { resetFavoritesStore } from './hooks/useFavorites'
 import { NotificationsProvider } from './context/NotificationsContext'
 import { MatchingHeartbeatProvider, useMatchingHeartbeat } from './context/MatchingHeartbeatContext'
 import Navbar from './components/Navbar'
 import Sidebar from './components/Sidebar'
 import OnboardingTour from './components/OnboardingTour'
+import AccountSwitchedOverlay from './components/AccountSwitchedOverlay'
 import HomePage from './pages/HomePage'
 import TopicChat from './pages/TopicChat'
 import KnowledgeBase from './pages/KnowledgeBase'
@@ -88,6 +96,8 @@ function App() {
         return null;
       }
 
+      // 重新載入 = 重新確立身分：現在 localStorage 裡是誰，這個分頁就是誰。
+      anchorAuthIdentity();
       const storedUser = localStorage.getItem('bridgeus_user');
       return storedUser ? JSON.parse(storedUser) : null;
     } catch (error) {
@@ -97,6 +107,11 @@ function App() {
     }
   });
   const [authMessage, setAuthMessage] = useState('');
+  // 這個瀏覽器被切換到別的帳號了。同一瀏覽器的所有無痕／InPrivate 視窗共用
+  // 同一份 localStorage，所以在另一個視窗登入會直接換掉這個分頁手上的 token：
+  // 畫面還是上一位的，但每個請求都以新帳號送出。後端會擋（「找不到對話
+  // session」／後測問卷的帳號守衛），但使用者看不出發生了什麼事。
+  const [accountSwitched, setAccountSwitched] = useState(false);
   const [issues, setIssues] = useState([]);
   const [issuesLoaded, setIssuesLoaded] = useState(false);
   // null = /api/me/ 還沒回來（不是「分開入口」）。讀取失敗時會設成 'split'，
@@ -162,6 +177,8 @@ function App() {
   }, [toastQueue]);
 
   const handleLogin = useCallback((nextUser) => {
+    anchorAuthIdentity();
+    setAccountSwitched(false);
     setAuthMessage('');
     setIssues([]);
     setIssuesLoaded(false);
@@ -170,6 +187,8 @@ function App() {
 
   const handleLogout = useCallback((message = '') => {
     clearAuthStorage();
+    clearAuthIdentity();
+    setAccountSwitched(false);
     resetFavoritesStore();
     setAuthMessage(message);
     setUser(null);
@@ -218,6 +237,28 @@ function App() {
     window.addEventListener(AUTH_LOGOUT_EVENT, handleAuthLogout);
     return () => window.removeEventListener(AUTH_LOGOUT_EVENT, handleAuthLogout);
   }, [handleLogout]);
+
+  useEffect(() => {
+    // 兩條偵測路徑，缺一不可：
+    //   storage 事件——只在「其他分頁／視窗」改動 localStorage 時觸發，正好
+    //     就是另一個無痕視窗登入的那一刻，能在使用者動作之前先蓋上。
+    //   AUTH_IDENTITY_CHANGED_EVENT——client.js 在攔下請求或發現 refresh
+    //     換回別人的 token 時廣播。storage 事件在「自己這個分頁寫入」時不會
+    //     觸發，refresh 那條就只能靠它。
+    const check = () => {
+      if (detectIdentityChange() !== null) {
+        setAccountSwitched(true);
+      }
+    };
+
+    check();
+    window.addEventListener('storage', check);
+    window.addEventListener(AUTH_IDENTITY_CHANGED_EVENT, check);
+    return () => {
+      window.removeEventListener('storage', check);
+      window.removeEventListener(AUTH_IDENTITY_CHANGED_EVENT, check);
+    };
+  }, []);
 
   useEffect(() => {
     if (!user) {
@@ -286,6 +327,17 @@ function App() {
       cancelled = true;
     };
   }, [user]);
+
+  // 早於 !user 的判斷：這一層要蓋住的包含 Navbar、側邊欄與整個路由樹，
+  // 漏掉任何一塊，上一位受試者的內容就還看得見。
+  if (accountSwitched) {
+    return (
+      <AccountSwitchedOverlay
+        onReload={() => window.location.reload()}
+        onLogout={() => handleLogout('已登出。請用需要的帳號重新登入。')}
+      />
+    );
+  }
 
   if (!user) {
     return (
