@@ -166,13 +166,29 @@ def test_websocket_turn_does_not_wipe_a_tree_written_mid_turn(user, stored_recor
     assert _point_names(stored_record.semantic_tree_state) == ["事故風險", "核廢最終處置"]
 
 
+@pytest.mark.xfail(
+    reason=(
+        "鎖 + 重讀已於 2026-09-15 應要求移除（成本：穿隧 DB 下每次 analyze 多 "
+        "3~4 趟來回，約 0.6~1.3 秒）。這項保護因此不再成立，失敗是預期內的。\n"
+        "實際失去的是什麼：analyze 以「進來時的副本」為基準整份覆寫 "
+        "semantic_tree_state，所以在它跑的期間（本地分類器並行後仍有數秒）"
+        "任何其他寫入者的成果都會被蓋掉——另一個分頁、歷史頁的分析端點、"
+        "或 WS consumer 拿著一份較舊但非空的樹落庫。\n"
+        "注意 _persist_dialogue_session_record 的 `or {}` 修正仍在，所以 WS "
+        "那條「完全沒帶樹」的情況仍然安全；不安全的是它帶著舊樹的情況。\n"
+        "要恢復保護：把 transaction.atomic() + select_for_update() 重新包回 "
+        "analyze_pending_ai_conversations 的套用與寫入段（見 git "
+        "f5c9466），這個測試就會轉綠。"
+    ),
+    strict=False,
+)
 def test_analyze_does_not_drop_tree_changes_that_landed_since_it_read(
     user, stored_record, monkeypatch
 ):
     """分析必須在鎖裡重讀，不能拿進來時的副本當基準整份覆寫。
 
     對照組是 H-H 版的 `analyze_pending_room_messages`——它包了
-    transaction.atomic() + select_for_update()，H-AI 版沒有。
+    transaction.atomic() + select_for_update()，H-AI 版已移除。
     """
     from apps.matching.services import semantic_tree as st
 
@@ -336,6 +352,9 @@ def test_first_analysis_records_each_turn_on_the_node_exactly_once(
         user_id=user.id,
         root_name="核能發電",
     )
+    # 這支函式本身不寫 DB，落庫是 view 的責任（DialogueSessionSemanticTreeAnalyzeView
+    # 在它之後呼叫這支）。測試要走完整條路徑才算數。
+    _persist_dialogue_session_record(session_record)
 
     stored_record.refresh_from_db()
     owner = stored_record.semantic_tree_state["participants"]["user"]

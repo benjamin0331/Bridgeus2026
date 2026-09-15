@@ -1984,54 +1984,30 @@ def analyze_pending_ai_conversations(
             )
             analyzed.append((turn, source_message, result))
 
+    # === 實驗：鎖 + 重讀已移除（2026-09-15，尚未 commit）===
     analyzed_count = 0
-    with transaction.atomic():
-        record = (
-            DialogueSessionRecord.objects.select_for_update()
-            .filter(session_id=session_id, user_id=user_id)
-            .first()
+    for turn, source_message, result in analyzed:
+        source_id = clean_text(turn.id)
+        apply_result = apply_analysis_items_to_tree(
+            owner_state["treeData"],
+            result.get("items", []),
+            source_message=source_message,
         )
-        stored_state = record.semantic_tree_state if record is not None else None
-        if is_current_ai_tree_state(stored_state):
-            # 基準換成鎖住的那一份，分析期間別人寫進去的節點才不會被蓋掉。
-            # 舊格式／空值不採用：那會被 get_ai_semantic_tree_state 重置成空樹，
-            # 等於用讀不懂的資料把呼叫端手上的樹洗掉。
-            session_record[SEMANTIC_TREE_STATS_KEY] = deepcopy(stored_state)
-            state = get_ai_semantic_tree_state(session_record, root_name=root_name)
-            owner_state = state["participants"][OWNER_AI_USER]
+        owner_state["analysisHistory"].append(
+            {
+                "sourceId": source_id,
+                "sourceType": "ai_user_prompt",
+                "analyzedAt": timezone.now().isoformat(),
+                "model": result.get("model") or get_openai_model(),
+                "sourceText": turn.user_prompt,
+                "appliedItems": apply_result["appliedItems"],
+                "invalidItems": result.get("invalidItems", []),
+            }
+        )
+        owner_state["analyzedSourceIds"].append(source_id)
+        analyzed_count += 1
 
-        # 重讀之後要再檢一次：併行的另一個請求可能已經把同一輪分析掉了，
-        # 照套下去會長出重複節點。
-        analyzed_ids = set(owner_state["analyzedSourceIds"])
-        for turn, source_message, result in analyzed:
-            source_id = clean_text(turn.id)
-            if source_id in analyzed_ids:
-                continue
-
-            apply_result = apply_analysis_items_to_tree(
-                owner_state["treeData"],
-                result.get("items", []),
-                source_message=source_message,
-            )
-            owner_state["analysisHistory"].append(
-                {
-                    "sourceId": source_id,
-                    "sourceType": "ai_user_prompt",
-                    "analyzedAt": timezone.now().isoformat(),
-                    "model": result.get("model") or get_openai_model(),
-                    "sourceText": turn.user_prompt,
-                    "appliedItems": apply_result["appliedItems"],
-                    "invalidItems": result.get("invalidItems", []),
-                }
-            )
-            owner_state["analyzedSourceIds"].append(source_id)
-            analyzed_ids.add(source_id)
-            analyzed_count += 1
-
-        save_ai_semantic_tree_state(session_record, state)
-        if record is not None:
-            record.semantic_tree_state = state
-            record.save(update_fields=["semantic_tree_state", "updated_at"])
+    save_ai_semantic_tree_state(session_record, state)
 
     return semantic_tree_session_payload(
         session_record=session_record,
