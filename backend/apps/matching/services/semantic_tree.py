@@ -288,6 +288,22 @@ def get_semantic_tree_state(match: DialogueMatch, *, root_name: str) -> dict[str
     return state
 
 
+def is_current_ai_tree_state(value: Any) -> bool:
+    """這份 semantic_tree_state 是不是「本版的 H-AI 樹」。
+
+    get_ai_semantic_tree_state 碰到舊版號或別種 mode 會直接回一棵空樹。所以
+    從 DB 讀回來的東西不能無條件當基準——舊格式的那一筆會把呼叫端手上還在用
+    的新樹洗成空的，跟 analyze_pending_ai_conversations 要修的 bug 是同一個
+    形狀。條件與 get_ai_semantic_tree_state 的判斷保持一致。
+    """
+    return (
+        isinstance(value, dict)
+        and value.get("version") == SEMANTIC_TREE_STATE_VERSION
+        and value.get("mode") == AI_TREE_MODE
+        and isinstance(value.get("participants"), dict)
+    )
+
+
 def get_ai_semantic_tree_state(
     session_record: dict[str, Any],
     *,
@@ -1875,6 +1891,23 @@ def analyze_pending_ai_conversations(
     user_id: int,
     root_name: str,
 ) -> dict[str, Any]:
+    """把這場 H-AI 對話還沒分析過的使用者發言跑進 CCND 樹。
+
+    寫入必須在 DialogueSessionRecord 的列鎖裡、以 DB 上的樹為基準重做一次，
+    不能拿呼叫端傳進來的 session_record 當基準整份覆寫。這個 blob 同時被
+    WebSocket consumer（每輪回覆結束後整份寫回，而它握著的是回合開始時的副本）
+    和本函式寫，沒有這道防線的話，兩者互相把對方的成果洗掉：樹被清成 {}、
+    analyzedSourceIds 歸零，前端下一次分析就把整場對話重跑一次。
+    見 api/tests_ccnd_tree_persistence.py。
+
+    鎖只包「套用與寫入」，不包分析本身——刻意跟 H-H 版
+    analyze_pending_room_messages 不同，那支是整段（含最多 5 次 LLM 呼叫）
+    都握著列鎖。這條路每輪對話都會被打到，把上百秒的網路 I/O 關在交易裡會
+    長時間佔住連線。代價是模型看到的樹可能差幾秒——不影響正確性，因為節點
+    合併是在鎖裡對最新的樹做的（exact-name merge，見 apply_analysis_items_to_tree）。
+    """
+    from api.models import DialogueSessionRecord
+
     state = get_ai_semantic_tree_state(session_record, root_name=root_name)
     anchor_descriptions = get_topic_anchor_descriptions(session_record.get("topic_id"))
     owner_state = state["participants"][OWNER_AI_USER]
@@ -1895,36 +1928,79 @@ def analyze_pending_ai_conversations(
     ):
         raise MissingOpenAIApiKey("server 缺少 OPENAI_API_KEY，無法呼叫 OpenAI。")
 
-    analyzed_count = 0
+    # 分析跑在鎖外面，套在一棵**拋棄式**的工作樹上。逐則套用是必要的：同一批的
+    # 下一則要看得到前一則長出來的節點，那是餵給模型的合併依據，拿掉會讓同一批
+    # 裡冒出近義節點。但這棵樹不能是最後要存的那一棵——真正算數的套用在鎖裡對
+    # DB 最新的樹重做一次，共用同一棵的話那一輪會被套兩次：訊息紀錄靠
+    # _append_node_message 的去重擋下來了，但 applyMode 會把新節點記成
+    # merge-existing，analysisHistory 這份研究稽核資料就失真了。
+    working_tree = deepcopy(owner_state["treeData"])
+    analyzed = []
     for turn in pending_turns:
         source_message = _ai_turn_to_source(turn)
         result = analyze_text_for_tree(
             topic_id=session_record.get("topic_id"),
             text=turn.user_prompt,
-            tree=owner_state["treeData"],
+            tree=working_tree,
             anchors=state["anchors"],
             anchor_descriptions=anchor_descriptions,
         )
-        apply_result = apply_analysis_items_to_tree(
-            owner_state["treeData"],
+        apply_analysis_items_to_tree(
+            working_tree,
             result.get("items", []),
             source_message=source_message,
         )
-        owner_state["analysisHistory"].append(
-            {
-                "sourceId": clean_text(turn.id),
-                "sourceType": "ai_user_prompt",
-                "analyzedAt": timezone.now().isoformat(),
-                "model": result.get("model") or get_openai_model(),
-                "sourceText": turn.user_prompt,
-                "appliedItems": apply_result["appliedItems"],
-                "invalidItems": result.get("invalidItems", []),
-            }
-        )
-        owner_state["analyzedSourceIds"].append(clean_text(turn.id))
-        analyzed_count += 1
+        analyzed.append((turn, source_message, result))
 
-    save_ai_semantic_tree_state(session_record, state)
+    analyzed_count = 0
+    with transaction.atomic():
+        record = (
+            DialogueSessionRecord.objects.select_for_update()
+            .filter(session_id=session_id, user_id=user_id)
+            .first()
+        )
+        stored_state = record.semantic_tree_state if record is not None else None
+        if is_current_ai_tree_state(stored_state):
+            # 基準換成鎖住的那一份，分析期間別人寫進去的節點才不會被蓋掉。
+            # 舊格式／空值不採用：那會被 get_ai_semantic_tree_state 重置成空樹，
+            # 等於用讀不懂的資料把呼叫端手上的樹洗掉。
+            session_record[SEMANTIC_TREE_STATS_KEY] = deepcopy(stored_state)
+            state = get_ai_semantic_tree_state(session_record, root_name=root_name)
+            owner_state = state["participants"][OWNER_AI_USER]
+
+        # 重讀之後要再檢一次：併行的另一個請求可能已經把同一輪分析掉了，
+        # 照套下去會長出重複節點。
+        analyzed_ids = set(owner_state["analyzedSourceIds"])
+        for turn, source_message, result in analyzed:
+            source_id = clean_text(turn.id)
+            if source_id in analyzed_ids:
+                continue
+
+            apply_result = apply_analysis_items_to_tree(
+                owner_state["treeData"],
+                result.get("items", []),
+                source_message=source_message,
+            )
+            owner_state["analysisHistory"].append(
+                {
+                    "sourceId": source_id,
+                    "sourceType": "ai_user_prompt",
+                    "analyzedAt": timezone.now().isoformat(),
+                    "model": result.get("model") or get_openai_model(),
+                    "sourceText": turn.user_prompt,
+                    "appliedItems": apply_result["appliedItems"],
+                    "invalidItems": result.get("invalidItems", []),
+                }
+            )
+            owner_state["analyzedSourceIds"].append(source_id)
+            analyzed_ids.add(source_id)
+            analyzed_count += 1
+
+        save_ai_semantic_tree_state(session_record, state)
+        if record is not None:
+            record.semantic_tree_state = state
+            record.save(update_fields=["semantic_tree_state", "updated_at"])
+
     return semantic_tree_session_payload(
         session_record=session_record,
         session_id=session_id,

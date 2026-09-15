@@ -304,22 +304,32 @@ def _dialogue_session_cache_payload_from_record(
 
 def _persist_dialogue_session_record(session_record: dict) -> DialogueSessionRecord:
     current_time = timezone.now()
+    defaults = {
+        "user_id": session_record["user_id"],
+        "topic_id": session_record["topic_id"],
+        "topic_title": session_record.get("topic_title")
+        or session_record.get("session", {}).get("topic")
+        or f"議題 {session_record['topic_id']}",
+        "collection_name": session_record.get("collection_name")
+        or DEFAULT_DIALOGUE_COLLECTION,
+        "survey_context": session_record.get("survey_context") or {},
+        "session_state": session_record.get("session") or {},
+        "status": DialogueSessionRecord.Status.ACTIVE,
+        "last_activity_at": current_time,
+    }
+    # payload 沒帶 semantic_tree ≠ 樹是空的。這個 session blob 有兩個寫入者
+    # （WS consumer 每輪寫回、CCND 分析端點），consumer 握的是回合開始時的副本，
+    # 那時候常常還沒有樹；之前用 `or {}` 無條件寫欄位，等於每輪都把分析好的
+    # CCND 樹清空，前端下一次分析再把整場對話重跑一次（節點因此每次都不一樣）。
+    # 沒帶就不要碰這一欄，讓 update_or_create 保留 DB 現值。
+    # 見 api/tests_ccnd_tree_persistence.py。
+    semantic_tree = session_record.get("semantic_tree")
+    if semantic_tree:
+        defaults["semantic_tree_state"] = semantic_tree
+
     record, _ = DialogueSessionRecord.objects.update_or_create(
         session_id=session_record["session_id"],
-        defaults={
-            "user_id": session_record["user_id"],
-            "topic_id": session_record["topic_id"],
-            "topic_title": session_record.get("topic_title")
-            or session_record.get("session", {}).get("topic")
-            or f"議題 {session_record['topic_id']}",
-            "collection_name": session_record.get("collection_name")
-            or DEFAULT_DIALOGUE_COLLECTION,
-            "survey_context": session_record.get("survey_context") or {},
-            "session_state": session_record.get("session") or {},
-            "semantic_tree_state": session_record.get("semantic_tree") or {},
-            "status": DialogueSessionRecord.Status.ACTIVE,
-            "last_activity_at": current_time,
-        },
+        defaults=defaults,
     )
     return record
 
