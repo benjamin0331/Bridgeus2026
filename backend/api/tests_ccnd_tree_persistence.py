@@ -558,6 +558,11 @@ def _normalise_tree(node, turn_index):
         "name": node.get("name"),
         "type": node.get("type"),
         "claimText": node.get("claimText"),
+        # 節點層級的立場欄位。_latest_stance 只在 messages 為空時才 fallback 到
+        # node["stance"]，但既然要證明等價就該連它一起比。
+        "stance": node.get("stance"),
+        "confidence": node.get("confidence"),
+        "rationale": node.get("rationale"),
         "messages": [
             {
                 "text": m.get("text"),
@@ -653,3 +658,27 @@ def test_parallel_and_sequential_produce_the_same_tree(db, monkeypatch):
         "0/1/3 應該合併進同一個節點且保持順序"
     )
     assert len(safety["children"]) == 2, "同名的三則不該各自開一個節點"
+
+    # 立場轉換：節點的「當下立場」是 messages[-1].stance（最新那句蓋掉舊的，
+    # 見 semantic_tree._latest_stance 與前端 ConversationTreePanel.stanceClassForNode）。
+    # 所以它完全取決於 messages 的順序——這個測試要確認那個順序在並行下沒變。
+    assert [m["stance"] for m in merged["messages"]] == ["支持", "反對", "反對"], (
+        "合併節點的立場歷程順序變了"
+    )
+
+    # 這條斷言要有意義：資料裡必須真的發生過立場翻轉，否則只是在比兩串相同的值。
+    assert len({m["stance"] for m in merged["messages"]}) > 1, (
+        "測資沒有發生立場轉換，這個測試證明不了什麼"
+    )
+
+    # 直接用線上那支函式驗「當下立場」，不要自己重算一遍規則。
+    from apps.matching.services.semantic_tree import _latest_stance
+
+    live_node = next(
+        c
+        for a in parallel_owner["treeData"]["children"]
+        if a["id"] == "anchor_safety"
+        for c in a["children"]
+        if c["name"] == "核廢最終處置"
+    )
+    assert _latest_stance(live_node) == "反對"
