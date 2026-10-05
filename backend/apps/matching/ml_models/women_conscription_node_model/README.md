@@ -2,7 +2,7 @@
 
 Two-stage hierarchical Chinese text classifier used to generate CCND/semantic-tree
 nodes for the women's-conscription topic (`topic_id=103`) without calling an LLM.
-Same architecture as `nuclear_node_model` (topic 102): `hfl/chinese-roberta-wwm-ext`
+Same architecture as `nuclear_node_model` (topic 102): [`ckiplab/bert-base-chinese`](https://huggingface.co/ckiplab/bert-base-chinese)
 fine-tuned as a macro classifier (`model_macro/`) plus one micro classifier per
 macro class (`model_micro_<class_id>/`).
 
