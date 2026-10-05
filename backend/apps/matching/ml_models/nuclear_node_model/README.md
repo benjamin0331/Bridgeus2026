@@ -12,7 +12,7 @@ to be retrained.
 
 ## Architecture
 
-- Base model: `hfl/chinese-roberta-wwm-ext` (`BertForSequenceClassification`,
+- Base model: [`ckiplab/bert-base-chinese`](https://huggingface.co/ckiplab/bert-base-chinese) (`BertForSequenceClassification`,
   12 layers, hidden size 768), fine-tuned separately for each stage via
   HuggingFace `Trainer`.
 - **Stage 1 — `model_macro/`**: classifies a raw message into one of 7 macro
